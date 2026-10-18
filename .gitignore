@@ -4,15 +4,18 @@ config.js
 .env.*
 *.local
 
-# Personal data — notes snapshots must never be committed
+# Personal data — notes snapshots and SQLite mirror must never be committed
 tools/fidelity/snapshot/
 tools/fidelity/report/
+data/
 
-# Build output
+# Build output & large binaries
 node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/bin/
+ui/vendor/
 
 # OS / editor
 .DS_Store

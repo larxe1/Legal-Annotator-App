@@ -1,0 +1,1316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Legal Annotator</title>
+<meta name="description" content="Cloud-synced PDF annotation tool for law students — highlight, draw, and annotate PDFs with notes. Synced across all devices.">
+<link rel="icon" type="image/x-icon" href="favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0c1322">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" sizes="512x512" href="icon-512.png">
+
+<!-- Google Fonts -->
+<link rel="stylesheet" href="fonts/fonts.css">
+
+<!-- PDF.js -->
+<script src="./vendor/pdf.min.js"></script>
+<!-- Supabase -->
+<script src="./vendor/supabase.min.js"></script>
+<!-- Mermaid (Diagrams & Flowcharts) -->
+<script src="./vendor/mermaid.min.js"></script>
+<!-- html2pdf.js for exporting notes -->
+<script src="./vendor/html2pdf.bundle.min.js"></script>
+<!-- Google Identity Services (for Drive OAuth) -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+
+<!-- App config -->
+<script>
+  window.APP_CONFIG = {
+    SUPABASE_URL:      'https://umxyyfneyhmjlfujlgkk.supabase.co',
+    SUPABASE_KEY:      'sb_publishable_l7gBFU9vkSjORhrYlPCy1A_ga4Vq53C',
+    GOOGLE_CLIENT_ID:  '572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com',
+  };
+</script>
+
+<!-- Stylesheet -->
+<link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+
+<div id="app">
+  <!-- ══════════════════════════════
+       LIBRARY SIDEBAR
+  ══════════════════════════════ -->
+  <div id="lib-hover-zone" title="Hover left edge to show Library"></div>
+  <div id="lib-backdrop"></div>
+  <div id="lib-side">
+    <div class="lib-hd">
+      <div class="brand">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <img src="ellen.png" alt="Logo" style="height:36px;width:36px;border-radius:6px;object-fit:cover;flex-shrink:0;">
+          <span id="app-title" style="cursor:pointer;transition:color .15s;" onmouseover="this.style.color='var(--gold)'" onmouseout="this.style.color=''">Legal Annotator</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button id="btn-pin-sidebar" title="Toggle Auto-Hide (Hover) or Pin Sidebar" style="background:none;border:1px solid var(--navy-b);color:var(--muted);border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;transition:all .15s;" onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'" onmouseout="this.style.borderColor='var(--navy-b)';this.style.color='var(--muted)'">📌</button>
+          <button id="btn-install-sidebar" title="Install App to Desktop" style="display:none;background:none;border:1px solid var(--gold);color:var(--gold);border-radius:6px;width:28px;height:28px;align-items:center;justify-content:center;cursor:pointer;font-size:13px;">📲</button>
+          <button id="btn-settings" title="Settings & Tools" style="background:none;border:1px solid var(--navy-b);color:var(--muted);border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;transition:all .15s;" onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'" onmouseout="this.style.borderColor='var(--navy-b)';this.style.color='var(--muted)'">⚙️</button>
+          <button id="lib-close" style="display:none;background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer">✕</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sync + auto-save bar -->
+    <div id="sync-bar" onclick="window.openSyncDiagnostics && window.openSyncDiagnostics()" title="Click to view System & Sync Diagnostics">
+      <div class="sdot spin" id="sdot"></div>
+      <span id="stxt">DB Connecting…</span>
+      <span id="autosave-lbl"></span>
+    </div>
+
+    <!-- Google Drive auth bar -->
+    <div id="drive-bar">
+      <span class="drive-icon">🔗</span>
+      <span id="drive-user">Not connected</span>
+      <button id="drive-sign-btn">Sign in</button>
+    </div>
+
+    <!-- Recent PDFs -->
+    <div id="recent-wrap" style="display:none">
+      <span class="recent-lbl">Recent</span>
+      <div id="recent-list"></div>
+    </div>
+
+    <div style="display:flex; margin: 8px 12px; gap: 6px;">
+      <button id="new-subj-btn" style="flex:1; margin:0; width:auto;">+ New Subject</button>
+      <button id="undo-btn" title="Undo Last Move (Ctrl+Z)" style="padding:0 10px; background:var(--navy-l); border:1px solid var(--navy-b); border-radius:6px; color:var(--text); cursor:pointer; font-size:14px; transition:background .15s" onmouseover="this.style.background='var(--navy)'" onmouseout="this.style.background='var(--navy-l)'" onclick="window.undoLastMove()">↩</button>
+      <button id="refresh-btn" title="Sync Library (Shift+Click or Long-Press to Hard Reload)" aria-label="Refresh and sync library"><span class="refresh-icon">⟳</span></button>
+    </div>
+    <div id="lib-tree"><div class="lib-empty">Loading…</div></div>
+    <div id="lib-resize-handle" class="panel-resizer-right" title="Drag to resize Library sidebar"></div>
+  </div>
+
+
+  <!-- ══════════════════════════════
+       VIEWER
+  ══════════════════════════════ -->
+  <div id="viewer-wrap">
+    <!-- Toolbar -->
+    <div id="toolbar">
+      <button id="mob-menu-btn">☰</button>
+
+      <!-- Mode toggle -->
+      <div id="mode-tog">
+        <button class="mode-btn active" data-mode="text">
+          <svg width="12" height="12" fill="currentColor" viewBox="0 0 20 20"><path d="M4 3h12v2H4V3zm0 4h12v2H4V7zm0 4h8v2H4v-2z"/></svg>
+          <span>Text</span>
+        </button>
+        <button class="mode-btn" data-mode="box">
+          <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" rx="1"/></svg>
+          <span>Box</span>
+        </button>
+        <button class="mode-btn" data-mode="draw">
+          <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+          <span>Draw</span>
+        </button>
+      </div>
+
+      <div class="tb-sep"></div>
+
+      <!-- Color dots -->
+      <div id="color-dots"></div>
+      <button id="add-color-btn" title="Add color">＋</button>
+
+      <div class="tb-sep"></div>
+
+      <!-- Draw controls (shown only in draw mode) -->
+      <div id="draw-ctrls">
+        <!-- Pen sizes -->
+        <div id="pen-sizes" style="display:flex;align-items:center;gap:4px">
+          <div class="dw-btn sel" data-w="2"><div class="dw-inner" style="width:5px;height:5px"></div></div>
+          <div class="dw-btn"    data-w="4"><div class="dw-inner" style="width:9px;height:9px"></div></div>
+          <div class="dw-btn"    data-w="8"><div class="dw-inner" style="width:13px;height:13px"></div></div>
+        </div>
+        <!-- Eraser sizes (hidden by default) -->
+        <div id="erase-sizes" style="display:none;align-items:center;gap:4px">
+          <div class="er-btn sel" data-ew="12"><div class="dw-inner" style="width:8px;height:8px;background:#e44"></div></div>
+          <div class="er-btn"     data-ew="24"><div class="dw-inner" style="width:14px;height:14px;background:#e44"></div></div>
+          <div class="er-btn"     data-ew="48"><div class="dw-inner" style="width:20px;height:20px;background:#e44"></div></div>
+        </div>
+        <button class="tb-btn" id="btn-erase">⊘ Erase</button>
+        <button class="tb-btn" id="btn-undo">↩ Undo</button>
+        <button class="tb-btn" id="btn-clear">🗑 Clear</button>
+        <div class="tb-sep"></div>
+      </div>
+
+      <button class="tb-btn" id="btn-toc" title="Table of Contents (PDF Bookmarks)">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h7"/></svg>
+        Contents
+      </button>
+      <button class="tb-btn" id="btn-search" title="Search (Ctrl+F)">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35"/></svg>
+        Search
+      </button>
+      <button class="tb-btn" id="btn-links" title="Important Links">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+        Links
+      </button>
+      <button class="tb-btn" id="btn-diagram" title="Legal Diagrammer & Flowcharts">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
+        Diagram
+      </button>
+
+      <div class="tb-sep"></div>
+
+      <!-- Zoom -->
+      <button class="tb-btn" id="btn-zout">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35M8 11h6"/></svg>
+      </button>
+      <span id="zoom-lbl">100%</span>
+      <button class="tb-btn" id="btn-zin">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></svg>
+      </button>
+
+      <div class="tb-sep"></div>
+
+      <!-- Page nav -->
+      <div id="pg-info">
+        <button class="tb-btn" id="btn-prev">◀</button>
+        <input type="number" id="pg-input" value="1" min="1">
+        / <span id="pg-total">—</span>
+        <button class="tb-btn" id="btn-next">▶</button>
+      </div>
+
+      <div class="tb-sep"></div>
+
+      <!-- Notepad button -->
+      <button class="tb-btn" id="btn-notepad" title="PDF Notepad">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+        Notepad
+      </button>
+
+      <!-- Swap panes button (only visible in dual view) -->
+      <button class="tb-btn" id="btn-swap-panes" title="Swap Primary / Reference" style="display:none; color:var(--gold)">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+        Swap
+      </button>
+    </div>
+
+    <!-- Search Panel -->
+    <div id="search-panel">
+      <div id="search-top">
+        <div id="search-tabs">
+          <button class="stab active" data-stab="pdf">📄 PDF Text</button>
+          <button class="stab"        data-stab="ann">🖊 Annotations</button>
+        </div>
+        <div id="search-input-wrap">
+          <input id="search-input" placeholder="Type to search…" autocomplete="off" spellcheck="false">
+          <span id="search-count"></span>
+          <button class="snav-btn" id="sprev" title="Previous">◀</button>
+          <button class="snav-btn" id="snext" title="Next">▶</button>
+        </div>
+        <button id="search-close-btn">✕</button>
+      </div>
+      <div id="search-ann-results"></div>
+    </div>
+
+    <!-- ══════════════════════════════
+         FOLDER DOCUMENT VIEWER
+    ══════════════════════════════ -->
+    <div id="folder-doc-viewer" style="display:none; flex:1; background:var(--navy); flex-direction:column; overflow-y:auto; padding:40px; align-items:center">
+      <div style="width:100%; max-width:800px; display:flex; flex-direction:column; flex:1">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px">
+          <h2 id="folder-doc-title" style="margin:0; font-weight:600; color:#e8e4db">Folder Notes</h2>
+          <span id="folder-doc-save-lbl" style="font-size:12px; color:var(--muted)"></span>
+        </div>
+        <div class="fmt-bar" id="folder-doc-toolbar" style="position: sticky; top: -40px; z-index: 100; background: var(--navy); padding: 40px 0 12px 0; margin-top: -20px; margin-bottom:12px; display:flex; flex-wrap:wrap; gap:4px">
+          <button class="folder-fmt-btn" data-cmd="bold" title="Bold"><b>B</b></button>
+          <button class="folder-fmt-btn" data-cmd="italic" title="Italic"><i>I</i></button>
+          <button class="folder-fmt-btn" data-cmd="underline" title="Underline"><u>U</u></button>
+          <button class="folder-fmt-btn" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+          <button class="folder-fmt-btn" data-cmd="grayOut" title="Subtly Gray Out / Dim Text (Low Relevance)" style="color:var(--muted); font-size:12px; font-weight:600">🌫️ Dim</button>
+          <button class="folder-fmt-btn" id="folder-doc-highlight" title="Highlight selected text with your annotation colours" style="font-size:12px; font-weight:600">🖊 Highlight</button>
+          <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
+          <button class="folder-fmt-btn" data-cmd="formatBlock" data-val="H1" title="Heading 1"><b>H1</b></button>
+          <button class="folder-fmt-btn" data-cmd="formatBlock" data-val="H2" title="Heading 2"><b>H2</b></button>
+          <button class="folder-fmt-btn" data-cmd="insertBanner" title="Section Header Banner (Box with line)" style="font-weight:600">🏷️ Banner</button>
+          <button class="folder-fmt-btn" data-cmd="formatBlock" data-val="P" title="Normal Text">P</button>
+          <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
+          <button class="folder-fmt-btn" data-cmd="fontSize" data-val="2" title="Small Font">Aa</button>
+          <button class="folder-fmt-btn" data-cmd="fontSize" data-val="3" title="Medium Font" style="font-size:14px">Aa</button>
+          <button class="folder-fmt-btn" data-cmd="fontSize" data-val="5" title="Large Font" style="font-size:16px; font-weight:bold">Aa</button>
+          <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
+          <button class="folder-fmt-btn" data-cmd="insertUnorderedList" title="Bulleted List">• List</button>
+          <button class="folder-fmt-btn" data-cmd="insertOrderedList" title="Numbered List">1. List</button>
+          <button class="folder-fmt-btn" data-cmd="outdent" title="Outdent / Decrease Indent (Shift+Tab or Backspace)" style="font-size:12px; font-weight:600">⇤ Outdent</button>
+          <button class="folder-fmt-btn" data-cmd="indent" title="Indent / Increase Indent (Tab)" style="font-size:12px; font-weight:600">⇥ Indent</button>
+          <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
+          <button class="folder-fmt-btn" data-cmd="insertTable" title="Insert Table">Table</button>
+          <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
+          <button class="folder-fmt-btn" id="folder-doc-link-pdf" title="Link a PDF from your library">📄 Link PDF</button>
+          <button class="folder-fmt-btn" id="folder-doc-link-url" title="Insert Web Link">🌐 Web Link</button>
+        </div>
+        <div id="folder-doc-editor" contenteditable="true" data-ph="Write general notes, provisions, or syllabus info for this folder..." spellcheck="true" style="flex:1; width:100%; min-height:800px; background:var(--navy); color:#e8e4db; border:1px solid var(--navy-b); padding:40px; font-size:16px; font-family:'Inter', sans-serif; line-height:1.6; outline:none; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.2)"></div>
+      </div>
+    </div>
+
+    <!-- Main content: dual-pane PDF area -->
+    <div id="content-area">
+
+      <!-- Pane A (Primary — full features) -->
+      <div id="pane-a" class="pdf-pane">
+        <div class="pane-header" id="pane-a-header" style="display:none">
+          <span class="pane-badge primary">🅐 Primary</span>
+          <span class="pane-pdf-name" id="pane-a-name"></span>
+        </div>
+        <div id="canvas-scroll">
+        <div id="welcome">
+          <div id="welcome-calendar">
+            <div class="cal-header">
+              <h2>Class Schedule</h2>
+              <p>2nd Year, 1st Semester</p>
+            </div>
+            <div class="cal-grid">
+              <div class="cal-day">
+                <div class="cal-day-title">MON</div>
+                <div class="cal-item">
+                  <strong>103: Sales</strong>
+                  <div class="cal-time">9:00 - 11:00 AM</div>
+                  Atty. Ryan Anthony Malit<br>321
+                </div>
+                <div class="cal-item">
+                  <strong>124: CrimPro</strong>
+                  <div class="cal-time">2:30 - 4:00 PM</div>
+                  Atty. Noel Lazaro<br>203-205
+                </div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-day-title">TUE</div>
+                <div class="cal-item">
+                  <strong>104: Torts and Damages</strong>
+                  <div class="cal-time">8:00 - 9:30 AM</div>
+                  Atty. Ramon Quintin Allado<br>321
+                </div>
+                <div class="cal-item">
+                  <strong>139: Insurance</strong>
+                  <div class="cal-time">10:00 - 12:00 PM</div>
+                  Atty. Jose Martin Loon<br>127
+                </div>
+                <div class="cal-item">
+                  <strong>113: Labor 1</strong>
+                  <div class="cal-time">3:00 - 4:30 PM</div>
+                  Atty. E. Leo Battad<br>221
+                </div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-day-title">WED</div>
+                <div class="cal-item">
+                  <strong>102: Property</strong>
+                  <div class="cal-time">3:00 - 5:00 PM</div>
+                  Atty. John Noah Red<br>Online
+                </div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-day-title">THU</div>
+                <div class="cal-item">
+                  <strong>104: Torts and Damages</strong>
+                  <div class="cal-time">8:00 - 9:30 AM</div>
+                  Atty. Ramon Quintin Allado<br>321
+                </div>
+                <div class="cal-item">
+                  <strong>113: Labor 1</strong>
+                  <div class="cal-time">3:00 - 4:30 PM</div>
+                  Atty. E. Leo Battad<br>221
+                </div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-day-title">FRI</div>
+                <div class="cal-item">
+                  <strong>124: CrimPro</strong>
+                  <div class="cal-time">1:00 - 2:30 PM</div>
+                  Atty. Noel Lazaro<br>203-205
+                </div>
+                <div class="cal-item">
+                  <strong>102: Property</strong>
+                  <div class="cal-time">5:00 - 7:00 PM</div>
+                  Atty. John Noah Red<br>303-305
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- END pane-a -->
+
+      <!-- Draggable divider (hidden until dual view) -->
+      <div id="dual-divider"></div>
+
+      <!-- Pane B (Reference — read-only) -->
+      <div id="pane-b" class="pdf-pane" style="display:none">
+        <div class="pane-header" id="pane-b-header">
+          <span class="pane-badge reference">🅑 Reference</span>
+          <span class="pane-pdf-name" id="pane-b-name"></span>
+          <button class="pane-close-btn" id="btn-close-pane-b" title="Close Reference Pane">✕</button>
+        </div>
+        <div id="canvas-scroll-b"></div>
+      </div>
+      <!-- END pane-b -->
+
+    </div>
+    <!-- END content-area -->
+
+  <!-- Notepad Panel -->
+  <div id="notepad-panel">
+    <div id="np-resize-handle" class="panel-resizer-left" title="Drag to resize notepad"></div>
+    <div class="np-hd">
+      <span class="np-title">📝 PDF Notepad</span>
+      <span id="np-local-lbl" style="font-size:11px;font-weight:600;opacity:0.85;white-space:nowrap;transition:color 0.3s;" title="Local storage save status"></span>
+      <span id="np-save-lbl"></span>
+      <button id="np-save-now-btn" title="Manually save notes to cloud now (Ctrl+S)" style="background:#1e6b3a;color:#d1fae5;border:none;padding:3px 9px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:4px;white-space:nowrap;flex-shrink:0;">💾 Save Now</button>
+      <button class="ap-close" id="np-close">✕</button>
+    </div>
+    <!-- Tabs: Notes vs Case Digest -->
+    <div class="ap-tabs" id="np-tabs" style="display:flex; border-bottom:1px solid var(--navy-b); background:rgba(0,0,0,0.18); flex-shrink:0;">
+      <button class="ap-tab active" data-nptab="notes" id="nptab-notes">📝 Notes</button>
+      <button class="ap-tab" data-nptab="digest" id="nptab-digest">⚖ Case Digest</button>
+    </div>
+    <!-- Notepad Toolbar -->
+    <div id="np-toolbar" class="toolbar-strip" style="position:sticky; top:0; z-index:100; padding:6px 14px; border-bottom:1px solid var(--navy-b); background:var(--navy-l); gap:6px; align-items:center; display:flex; flex-wrap:wrap;">
+      <button class="np-fmt-btn" data-cmd="bold" title="Bold"><b>B</b></button>
+      <button class="np-fmt-btn" data-cmd="italic" title="Italic"><i>I</i></button>
+      <button class="np-fmt-btn" data-cmd="underline" title="Underline"><u>U</u></button>
+      <button class="np-fmt-btn" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+      <button class="np-fmt-btn" data-cmd="grayOut" title="Subtly Gray Out / Dim Text (Low Relevance)" style="color:var(--muted); font-size:11px; font-weight:600">🌫️ Dim</button>
+      <button class="np-fmt-btn" id="np-highlight-btn" title="Highlight selected text with your annotation colours" style="font-size:11px; font-weight:600">🖊 Highlight</button>
+      <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
+      <button class="np-fmt-btn" data-cmd="formatBlock" data-val="H1" title="Heading 1" style="font-weight:bold;font-size:11px">H1</button>
+      <button class="np-fmt-btn" data-cmd="formatBlock" data-val="H2" title="Heading 2" style="font-weight:bold;font-size:11px">H2</button>
+      <button class="np-fmt-btn" data-cmd="insertBanner" title="Section Header Banner (Box with line)" style="font-weight:600;font-size:11px">🏷️ Banner</button>
+      <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
+      <button class="np-fmt-btn" data-cmd="insertUnorderedList" title="Bullet List">• List</button>
+      <button class="np-fmt-btn" data-cmd="insertOrderedList" title="Number List">1. List</button>
+      <button class="np-fmt-btn" data-cmd="outdent" title="Outdent / Decrease Indent (Shift+Tab or Backspace)" style="font-size:11px; font-weight:600">⇤ Outdent</button>
+      <button class="np-fmt-btn" data-cmd="indent" title="Indent / Increase Indent (Tab)" style="font-size:11px; font-weight:600">⇥ Indent</button>
+      <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
+      <button class="np-fmt-btn" data-cmd="insertTable" title="Insert Table">Table</button>
+      <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
+      <button class="np-fmt-btn" id="np-link-pdf" title="Link a PDF from your library">📄 Link PDF</button>
+      <button class="np-fmt-btn" id="np-link-url" title="Insert Web Link">🌐 Web Link</button>
+      <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
+      <button class="np-fmt-btn" data-cmd="fontSize" data-val="2" title="Small Text">S</button>
+      <button class="np-fmt-btn" data-cmd="fontSize" data-val="3" title="Normal Text">M</button>
+      <button class="np-fmt-btn" data-cmd="fontSize" data-val="5" title="Large Text">L</button>
+      <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
+      <button class="np-fmt-btn" id="np-history-btn" title="View note history and restore a previous version" style="font-size:11px;">🕐 History</button>
+    </div>
+    <div id="np-body">
+      <div
+        id="np-editor"
+        class="np-editor-pane"
+        contenteditable="true"
+        data-ph="Write general notes about this PDF here…"
+        spellcheck="true"
+      ></div>
+      <div
+        id="np-digest-editor"
+        class="np-editor-pane"
+        contenteditable="true"
+        data-ph="Write case summary & digest (Facts, Issue, Ruling, Doctrine)…"
+        spellcheck="true"
+        style="display:none;"
+      ></div>
+    </div>
+  </div>
+
+  <!-- Notepad History & Diagnostics Modal -->
+  <div id="np-history-modal" role="dialog" aria-modal="true" aria-label="Note History and Sync Diagnostics">
+    <div id="np-history-box">
+      <div class="nhm-header">
+        <div class="nhm-tabs">
+          <button class="nhm-tab-btn active" id="nhm-tab-snapshots">⏱️ Version Snapshots</button>
+          <button class="nhm-tab-btn" id="nhm-tab-logs">🚨 Error &amp; Sync Log (<span id="nhm-log-count">0</span>)</button>
+        </div>
+        <button class="nhm-action-btn" id="nhm-copy-diag-btn" title="Copy full diagnostic report to clipboard">📋 Copy Diagnostics</button>
+        <button class="nhm-close" id="np-history-close" title="Close">✕</button>
+      </div>
+      
+      <!-- Tab 1: Version Snapshots -->
+      <div id="np-history-view-snapshots" class="nhm-tab-view active">
+        <div id="np-history-warning">
+          ⚠️ Up to 20 local snapshots are kept per PDF. Restoring replaces your current notes — your current content is snapshotted first so you can always go back.
+        </div>
+        <div id="np-history-list">
+          <div class="nhm-empty">Loading history…</div>
+        </div>
+        <div class="nhm-footer">Local snapshots are stored on this device. The Supabase (cloud) version is shown at the top of the list for comparison.</div>
+      </div>
+
+      <!-- Tab 2: Error & Sync Diagnostics -->
+      <div id="np-history-view-logs" class="nhm-tab-view" style="display:none;">
+        <div id="np-diag-warning">
+          🔍 Real-time audit log of all Save, Load, and Sync actions for this PDF with exact Supabase HTTP codes, error messages, and payload sizes.
+        </div>
+        <div id="np-diag-list">
+          <div class="nhm-empty">Loading diagnostic logs…</div>
+        </div>
+        <div class="nhm-footer">Click "Copy Diagnostics" above to copy the full technical report to clipboard.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════
+       ANNOTATION PANEL
+  ══════════════════════════════ -->
+  <div id="ann-panel">
+    <div id="ap-resize-handle" class="panel-resizer-left" title="Drag to resize notes panel"></div>
+    <div class="ap-hd">
+      <div class="ap-ex" id="ap-ex"></div>
+      <button class="ap-close" id="ap-close">✕</button>
+    </div>
+    <div class="ap-colors" id="ap-colors">
+      <div class="ap-colors-lbl">Highlight Color</div>
+    </div>
+    <!-- Note Category Tabs -->
+    <div class="ap-tabs">
+      <button class="ap-tab active" data-aptab="general" id="aptab-general">
+        <span>📝 Notes</span> <span class="aptab-badge" id="badge-general">0</span>
+      </button>
+      <button class="ap-tab" data-aptab="case" id="aptab-case">
+        <span>⚖️ Case Summaries</span> <span class="aptab-badge" id="badge-case">0</span>
+      </button>
+    </div>
+    <div id="ann-notes"></div>
+    <div id="add-note-area">
+      <div class="fmt-bar" style="flex-wrap:wrap; gap:3px;">
+        <button class="fmt-btn" data-cmd="bold" title="Bold"><b>B</b></button>
+        <button class="fmt-btn" data-cmd="italic" title="Italic"><i>I</i></button>
+        <button class="fmt-btn" data-cmd="underline" title="Underline"><u>U</u></button>
+        <button class="fmt-btn" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+        <button class="fmt-btn" data-cmd="grayOut" title="Subtly Gray Out / Dim Text (Low Relevance)" style="color:var(--muted); font-size:11px; font-weight:600">🌫️ Dim</button>
+        <div style="width:1px; background:var(--navy-b); margin:0 2px;"></div>
+        <button class="fmt-btn" data-cmd="formatBlock" data-val="H1" title="Heading 1" style="font-weight:bold;font-size:11px">H1</button>
+        <button class="fmt-btn" data-cmd="formatBlock" data-val="H2" title="Heading 2" style="font-weight:bold;font-size:11px">H2</button>
+        <button class="fmt-btn" data-cmd="insertBanner" title="Section Header Banner (Box with line)" style="font-weight:600;font-size:11px">🏷️ Banner</button>
+        <div style="width:1px; background:var(--navy-b); margin:0 2px;"></div>
+        <button class="fmt-btn" data-cmd="insertUnorderedList" title="Bullet List">• List</button>
+        <button class="fmt-btn" data-cmd="insertOrderedList" title="Number List">1. List</button>
+        <button class="fmt-btn" data-cmd="outdent" title="Outdent / Decrease Indent (Shift+Tab or Backspace)" style="font-size:11px; font-weight:600">⇤</button>
+        <button class="fmt-btn" data-cmd="indent" title="Indent / Increase Indent (Tab)" style="font-size:11px; font-weight:600">⇥</button>
+        <div style="width:1px; background:var(--navy-b); margin:0 2px;"></div>
+        <button class="fmt-btn" id="btn-add-table" data-cmd="insertTable" title="Insert Table">Table</button>
+        <button class="fmt-btn" id="btn-add-pdflink" title="Link to another PDF">📄 Link PDF</button>
+        <button class="fmt-btn" id="btn-add-weblink" title="Insert Web Link">🌐 Web Link</button>
+      </div>
+      <div id="note-editor" contenteditable="true" data-ph="Add a note, doctrine, citation, table…"></div>
+      <div class="ann-btns">
+        <button class="btn-del-hi" id="btn-del-hi">Delete Highlight</button>
+        <button class="btn-gold" id="btn-add-note">Add Note</button>
+      </div>
+    </div>
+  </div>
+  <!-- END viewer-wrap -->
+</div>
+<!-- END app -->
+
+<!-- Selection confirm menu -->
+<div id="sel-menu">
+  <button class="sel-btn sel-confirm" id="sel-confirm">✓ Highlight</button>
+  <button class="sel-btn sel-cancel"  id="sel-cancel">✗ Cancel</button>
+</div>
+
+<!-- Box drag ghost -->
+<div id="drag-ghost"></div>
+
+<!-- ══════════════════════════════
+     MODALS
+══════════════════════════════ -->
+
+<!-- New Subject -->
+<div class="modal-ov" id="mo-subj">
+  <div class="modal-box">
+    <h3>New Subject</h3>
+    <div class="form-row">
+      <label>Name</label>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <input type="text" id="subj-name" placeholder="e.g. Labor Law 1">
+        <div id="subj-emojis" style="display:flex;gap:8px;font-size:18px">
+          <span class="subj-emo" style="cursor:pointer" title="Click to add emoji">⚖️</span>
+          <span class="subj-emo" style="cursor:pointer" title="Click to add emoji">📜</span>
+          <span class="subj-emo" style="cursor:pointer" title="Click to add emoji">💼</span>
+          <span class="subj-emo" style="cursor:pointer" title="Click to add emoji">🏛️</span>
+          <span class="subj-emo" style="cursor:pointer" title="Click to add emoji">📚</span>
+          <span style="font-size:11px;color:#888;margin-left:auto;align-self:center">(Or press Win + . for more)</span>
+        </div>
+      </div>
+    </div>
+    <div class="form-row">
+      <label>Color</label>
+      <div class="cpick-row" style="display:flex;gap:12px;align-items:center">
+        <input type="color" id="subj-color" value="#c9a84c" style="width:32px;height:32px;padding:0;border:none;cursor:pointer" title="Custom Color">
+        <div id="subj-presets" style="display:flex;gap:8px">
+          <!-- Preset color dots -->
+          <div class="subj-cpre" style="width:24px;height:24px;border-radius:50%;background:#c9a84c;cursor:pointer;border:2px solid transparent" data-c="#c9a84c"></div>
+          <div class="subj-cpre" style="width:24px;height:24px;border-radius:50%;background:#558abb;cursor:pointer;border:2px solid transparent" data-c="#558abb"></div>
+          <div class="subj-cpre" style="width:24px;height:24px;border-radius:50%;background:#5ca473;cursor:pointer;border:2px solid transparent" data-c="#5ca473"></div>
+          <div class="subj-cpre" style="width:24px;height:24px;border-radius:50%;background:#a65b69;cursor:pointer;border:2px solid transparent" data-c="#a65b69"></div>
+          <div class="subj-cpre" style="width:24px;height:24px;border-radius:50%;background:#8f72a4;cursor:pointer;border:2px solid transparent" data-c="#8f72a4"></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-acts">
+      <button class="btn-sec" data-close="mo-subj">Cancel</button>
+      <button class="btn-gold" id="save-subj">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Folder -->
+<div class="modal-ov" id="mo-fold">
+  <div class="modal-box">
+    <h3>New Folder</h3>
+    <div class="form-row"><label>Folder Name</label><input type="text" id="fold-name" placeholder="e.g. Cases, Codal…"></div>
+    <div class="form-row">
+      <label>Type</label>
+      <div class="fold-types">
+        <button class="ftype-btn sel" data-type="codal">📜 Codal</button>
+        <button class="ftype-btn"     data-type="cases">⚖ Cases</button>
+        <button class="ftype-btn"     data-type="laws">📋 Laws</button>
+        <button class="ftype-btn"     data-type="others">📁 Others</button>
+        <button class="ftype-btn"     data-type="custom">✏ Custom</button>
+      </div>
+    </div>
+    <div class="modal-acts">
+      <button class="btn-sec" data-close="mo-fold">Cancel</button>
+      <button class="btn-gold" id="save-fold">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Subfolder -->
+<div class="modal-ov" id="mo-subfold">
+  <div class="modal-box">
+    <h3>📁 New Subfolder</h3>
+    <div class="form-row"><label>Name</label><input type="text" id="subfold-name" placeholder="e.g. Digests, Rulings…"></div>
+    <div class="modal-acts">
+      <button class="btn-sec" data-close="mo-subfold">Cancel</button>
+      <button class="btn-gold" id="save-subfold">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Table of Contents Modal -->
+<div class="modal-ov" id="mo-toc">
+  <div class="modal-box" style="width:400px; max-height:80vh; display:flex; flex-direction:column">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+      <h3 style="margin:0">Table of Contents</h3>
+      <button class="btn-sec" data-close="mo-toc" style="padding:4px 8px">✕</button>
+    </div>
+    
+    <div style="display:flex; gap:8px; margin-bottom:12px; border-bottom:1px solid #333; padding-bottom:12px">
+      <input type="text" id="bm-title" placeholder="Type a chapter title..." style="flex:1" autocomplete="off">
+      <button class="btn-gold" id="btn-add-bm" style="padding:6px 12px; font-size:12px">+ Add on Current Page</button>
+    </div>
+    
+    <div id="toc-list" style="overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:4px">
+      <div style="color:#888; font-style:italic">Loading contents...</div>
+    </div>
+  </div>
+</div>
+
+<!-- New Color -->
+<div class="modal-ov" id="mo-color">
+  <div class="modal-box">
+    <h3>New Highlight Color</h3>
+    <div class="form-row"><label>Category Name</label><input type="text" id="cat-name" placeholder="e.g. Arguments, Key Terms…"></div>
+    <div class="form-row"><label>Color</label><div class="cpick-row"><input type="color" id="cat-color" value="#a855f7"></div></div>
+    <div class="modal-acts">
+      <button class="btn-sec" data-close="mo-color">Cancel</button>
+      <button class="btn-gold" id="save-color">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Note -->
+<div class="modal-ov" id="mo-edit-note">
+  <div class="modal-box" style="width:560px; max-width:92vw;">
+    <h3 id="mo-edit-note-title">Edit Note</h3>
+    <div class="fmt-bar" style="flex-wrap:wrap; gap:3px;">
+      <button class="fmt-btn" data-cmd2="bold" title="Bold"><b>B</b></button>
+      <button class="fmt-btn" data-cmd2="italic" title="Italic"><i>I</i></button>
+      <button class="fmt-btn" data-cmd2="underline" title="Underline"><u>U</u></button>
+      <button class="fmt-btn" data-cmd2="strikeThrough" title="Strikethrough"><s>S</s></button>
+      <button class="fmt-btn" data-cmd2="grayOut" title="Subtly Gray Out / Dim Text (Low Relevance)" style="color:var(--muted); font-size:11px; font-weight:600">🌫️ Dim</button>
+      <div style="width:1px; background:var(--navy-b); margin:0 2px;"></div>
+      <button class="fmt-btn" data-cmd2="formatBlock" data-val2="H1" title="Heading 1" style="font-weight:bold;font-size:11px">H1</button>
+      <button class="fmt-btn" data-cmd2="formatBlock" data-val2="H2" title="Heading 2" style="font-weight:bold;font-size:11px">H2</button>
+      <button class="fmt-btn" data-cmd2="insertBanner" title="Section Header Banner (Box with line)" style="font-weight:600;font-size:11px">🏷️ Banner</button>
+      <div style="width:1px; background:var(--navy-b); margin:0 2px;"></div>
+      <button class="fmt-btn" data-cmd2="insertUnorderedList" title="Bullet List">• List</button>
+      <button class="fmt-btn" data-cmd2="insertOrderedList" title="Number List">1. List</button>
+      <button class="fmt-btn" data-cmd2="outdent" title="Outdent / Decrease Indent (Shift+Tab or Backspace)" style="font-size:11px; font-weight:600">⇤</button>
+      <button class="fmt-btn" data-cmd2="indent" title="Indent / Increase Indent (Tab)" style="font-size:11px; font-weight:600">⇥</button>
+      <div style="width:1px; background:var(--navy-b); margin:0 2px;"></div>
+      <button class="fmt-btn" id="btn-edit-table" data-cmd2="insertTable" title="Insert Table">Table</button>
+      <button class="fmt-btn" id="btn-edit-pdflink" title="Link to another PDF">📄 Link PDF</button>
+      <button class="fmt-btn" id="btn-edit-weblink" title="Insert Web Link">🌐 Web Link</button>
+    </div>
+    <div id="edit-note-ed" contenteditable="true" style="background:var(--navy);border:1px solid var(--navy-b);border-radius:6px;padding:9px 10px;font-size:13px;line-height:1.6;color:#e8e4db;outline:none;margin-top:8px;transition:border-color .15s"></div>
+    <div class="modal-acts">
+      <button class="btn-sec" data-close="mo-edit-note">Cancel</button>
+      <button class="btn-gold" id="save-edit-note">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Select PDF Link Modal -->
+<div class="modal-ov" id="mo-pdf-link">
+  <div class="modal-box" style="width:400px; max-height:80vh; display:flex; flex-direction:column">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+      <h3 style="margin:0">Select a PDF to Link</h3>
+      <button class="btn-sec" data-close="mo-pdf-link" style="padding:4px 8px">✕</button>
+    </div>
+    <div class="form-row">
+      <input type="text" id="pdf-link-search" placeholder="Search your library..." style="margin-bottom:8px">
+    </div>
+    <div id="pdf-link-list" style="overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:4px">
+    </div>
+  </div>
+</div>
+
+<!-- Subject Notes Modal -->
+<div class="modal-ov" id="mo-subj-notes">
+  <div class="modal-box">
+    <h3 id="mo-subj-notes-title">Subject Notes</h3>
+    <textarea id="subj-notes-ta" style="width:100%; height:150px; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:10px; color:#e8e4db; font-family:'Inter', sans-serif; font-size:13px; resize:vertical; outline:none; transition:border-color .15s" placeholder="Write notes about this subject or professor here..."></textarea>
+    <div class="modal-acts" style="margin-top:12px">
+      <button class="btn-sec" data-close="mo-subj-notes">Cancel</button>
+      <button class="btn-gold" id="save-subj-notes">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Link PDF Modal -->
+<div class="modal-ov" id="mo-link-pdf">
+  <div class="modal-box" style="width:480px; max-width:92vw; max-height:86vh; display:flex; flex-direction:column; padding:22px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
+      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;">
+        <span>🔗</span> <span>Create Shortcut</span>
+      </h3>
+      <button class="btn-sec" data-close="mo-link-pdf" style="padding:3px 8px; border:none; font-size:16px; line-height:1; cursor:pointer; background:transparent;">✕</button>
+    </div>
+    
+    <div style="font-size:12px; color:var(--muted); margin-bottom:12px; line-height:1.4; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+      <span>File:</span>
+      <span id="link-pdf-source-name" style="color:#e8e4db; font-weight:500; background:rgba(255,255,255,0.06); padding:2px 8px; border-radius:4px; max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+    </div>
+
+    <!-- Quick filter input -->
+    <div style="position:relative; margin-bottom:10px;">
+      <input type="text" id="link-folder-search" placeholder="🔍 Search folders…" autocomplete="off" spellcheck="false"
+        style="width:100%; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:7px 10px; color:#e8e4db; font-family:'Inter', sans-serif; font-size:12px; outline:none; transition:border-color .15s;">
+    </div>
+
+    <!-- Tree container matching library structure -->
+    <div id="link-folder-tree" class="lft-container">
+      <div class="lft-empty">Loading folders…</div>
+    </div>
+
+    <!-- Destination path preview -->
+    <div style="margin-top:10px; padding:7px 10px; background:rgba(0,0,0,0.22); border-radius:5px; font-size:12px; min-height:30px; display:flex; align-items:center; gap:6px; border:1px solid rgba(255,255,255,0.04);">
+      <span style="color:var(--muted); flex-shrink:0;">Target:</span>
+      <span id="link-target-path-preview" style="color:var(--gold); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Select a folder above…</span>
+    </div>
+
+    <input type="hidden" id="link-target-folder" value="">
+
+    <div class="modal-acts" style="margin-top:14px; margin-bottom:0;">
+      <button class="btn-sec" data-close="mo-link-pdf">Cancel</button>
+      <button class="btn-gold" id="confirm-link-pdf" disabled style="opacity:0.45; cursor:not-allowed;">Create Shortcut</button>
+    </div>
+  </div>
+</div>
+
+<!-- Set Default Opening Page Modal -->
+<div class="modal-ov" id="mo-default-page">
+  <div class="modal-box" style="width:430px; max-width:92vw;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">📌 Set Default Opening Page</h3>
+      <button class="btn-sec" data-close="mo-default-page" style="padding:4px 8px;">✕</button>
+    </div>
+
+    <div style="font-size:12px; color:var(--muted); margin-bottom:12px; line-height:1.5;">
+      Set which page this PDF will always open to from this folder. This overrides your automatic last-left-read position.
+    </div>
+
+    <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:10px 12px; margin-bottom:14px; font-size:12px;">
+      <div style="font-weight:600; color:#e8e4db; margin-bottom:4px;" id="def-page-pdf-name">File Name</div>
+      <div style="color:var(--muted); font-size:11px;" id="def-page-folder-name">📁 Folder: ...</div>
+      <div style="margin-top:6px; color:var(--gold); font-size:11px; font-weight:500;" id="def-page-current-status">Currently: Automatic (resumes where last left)</div>
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:14px;">
+      <label for="inp-default-page-num" style="font-size:12px; font-weight:500; color:#e8e4db;">Default Opening Page:</label>
+      <div style="display:flex; gap:8px;">
+        <input type="number" id="inp-default-page-num" min="1" max="9999" placeholder="e.g. 36" style="flex:1; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-size:13px; padding:7px 10px; outline:none;" />
+        <button class="btn-sec" id="btn-use-cur-page" style="font-size:11px; padding:6px 10px; white-space:nowrap; display:none;" title="Use the page currently open in the viewer">Use Current Page</button>
+      </div>
+    </div>
+
+    <div class="modal-acts" style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; margin-bottom:0;">
+      <button class="btn-sec" id="btn-clear-default-page" style="color:var(--red); font-size:12px; display:none;">Reset to Automatic</button>
+      <div style="display:flex; gap:8px; margin-left:auto;">
+        <button class="btn-sec" data-close="mo-default-page">Cancel</button>
+        <button class="btn-gold" id="btn-save-default-page">Save Page</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Duplicate Upload Resolution Modal -->
+<div class="modal-ov" id="mo-dup-upload">
+  <div class="modal-box" style="width:480px; max-width:92vw;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">📄 File Already in Library</h3>
+      <button class="btn-sec" data-close="mo-dup-upload" style="padding:4px 8px">✕</button>
+    </div>
+    
+    <div id="dup-upload-desc" style="font-size:13px; color:#e2e8f0; line-height:1.5; margin-bottom:10px;">
+      The file you selected already exists in your library.
+    </div>
+
+    <div id="dup-upload-list" style="max-height:160px; overflow-y:auto; background:rgba(0,0,0,0.25); border:1px solid var(--navy-b); border-radius:6px; padding:8px 12px; margin-bottom:14px; font-size:12px; color:var(--muted); line-height:1.6;">
+    </div>
+
+    <div style="font-size:12px; color:#94a3b8; margin-bottom:14px; line-height:1.4;">
+      How would you like to handle this file?
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      <button class="btn-gold" id="dup-btn-shortcut" style="width:100%; padding:10px 14px; text-align:left; display:flex; flex-direction:column; gap:2px; cursor:pointer;">
+        <span style="font-weight:700; font-size:13px;">🔗 Create Linked Shortcut (Recommended)</span>
+        <span style="font-size:11px; opacity:0.85; font-weight:normal;">Shares the same annotations, notes &amp; digest with the original. Saves Drive storage.</span>
+      </button>
+      <button class="btn-sec" id="dup-btn-copy" style="width:100%; padding:10px 14px; text-align:left; display:flex; flex-direction:column; gap:2px; border:1px solid var(--navy-b); background:rgba(255,255,255,0.04); color:#e2e8f0; cursor:pointer;">
+        <span style="font-weight:700; font-size:13px;">📄 Upload as Independent Copy</span>
+        <span style="font-size:11px; color:#94a3b8; font-weight:normal;">Uploads a fresh copy with its own independent annotations, notes &amp; digest.</span>
+      </button>
+      <button class="btn-sec" id="dup-btn-cancel" data-close="mo-dup-upload" style="width:100%; padding:8px 12px; font-size:12px; color:#94a3b8; cursor:pointer;">
+        ✕ Cancel
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Important Links Modal -->
+<div class="modal-ov" id="mo-links">
+  <div class="modal-box" style="width:420px; max-height:80vh; display:flex; flex-direction:column">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+      <h3 style="margin:0">Important Links</h3>
+      <button class="btn-sec" data-close="mo-links" style="padding:4px 8px">✕</button>
+    </div>
+    
+    <div style="display:flex; gap:6px; margin-bottom:12px">
+      <input type="text" id="new-link-title" placeholder="Title (e.g. LawPhil, Canvas)" style="flex:1; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-family:'Inter', sans-serif; font-size:12px; padding:6px 10px; outline:none">
+      <input type="text" id="new-link-url" placeholder="URL (https://...)" style="flex:1.5; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-family:'Inter', sans-serif; font-size:12px; padding:6px 10px; outline:none">
+      <button class="btn-gold" id="btn-add-link" style="padding:6px 12px; border-radius:6px">Add</button>
+    </div>
+    
+    <div id="links-list" style="overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:6px; border-top:1px solid rgba(255,255,255,0.05); padding-top:12px">
+    </div>
+  </div>
+</div>
+
+<!-- Legal Diagrammer & Flowchart Studio Modal -->
+<div class="modal-ov" id="mo-diagram">
+  <div class="modal-box" style="width:960px; max-width:96vw; height:85vh; max-height:85vh; display:flex; flex-direction:column; padding:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid rgba(255,255,255,0.06); padding-bottom:8px;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">📊 Legal Diagrammer & Flowchart Studio</h3>
+        <span id="diag-modal-pdf-title" style="font-size:11px; color:var(--muted); background:rgba(0,0,0,0.25); padding:2px 8px; border-radius:12px; border:1px solid var(--navy-b);"></span>
+      </div>
+      <button class="btn-sec" data-close="mo-diagram" style="padding:4px 8px;">✕</button>
+    </div>
+
+    <!-- Template Selector & Controls Bar -->
+    <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+      <span style="font-size:11px; color:var(--muted); font-weight:500;">Templates:</span>
+      <select id="diag-template-select" style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-size:12px; padding:5px 8px; outline:none; flex:1; min-width:240px;">
+        <option value="succession">👨‍👩‍👧‍👦 Wills & Succession (Compulsory Heirs & Legitime)</option>
+        <option value="chain_of_custody">⛓️ Criminal Law: Chain of Custody (R.A. 9165)</option>
+        <option value="appeals_hierarchy">🏛️ Remedial Law: Appeals & Jurisdiction Route</option>
+        <option value="oblicon_remedies">📜 Obligations & Contracts: Breach & Remedies</option>
+        <option value="case_parties">⚖️ Case Parties, Facts & Doctrine Flow</option>
+        <option value="blank">🔲 Blank Custom Flowchart</option>
+      </select>
+
+      <div style="display:flex; gap:4px; align-items:center; margin-left:auto;">
+        <button class="btn-sec" id="btn-diag-zout" style="padding:4px 8px; font-size:11px;" title="Zoom Out">🔍−</button>
+        <span id="diag-zoom-lbl" style="font-size:11px; color:var(--muted); min-width:38px; text-align:center;">100%</span>
+        <button class="btn-sec" id="btn-diag-zin" style="padding:4px 8px; font-size:11px;" title="Zoom In">🔍+</button>
+        <button class="btn-sec" id="btn-diag-zreset" style="padding:4px 8px; font-size:11px;" title="Reset Zoom">Reset</button>
+      </div>
+    </div>
+
+    <!-- Split Editor & Live Preview -->
+    <div style="display:flex; gap:12px; flex:1; min-height:0; overflow:hidden;">
+      <!-- Left: Editor & Syntax helper -->
+      <div style="width:340px; display:flex; flex-direction:column; gap:6px;">
+        <div style="font-size:11px; color:var(--muted); display:flex; justify-content:space-between;">
+          <span>Mermaid Code (Live Edit):</span>
+          <span style="color:var(--gold); font-size:10px;">Auto-saved</span>
+        </div>
+        <textarea id="diag-editor" spellcheck="false" style="flex:1; width:100%; background:#070b14; border:1px solid var(--navy-b); border-radius:6px; padding:10px; color:#e8e4db; font-family:'Courier New', monospace; font-size:12px; line-height:1.5; resize:none; outline:none; white-space:pre; tab-size:2;"></textarea>
+        <div id="diag-error-lbl" style="display:none; font-size:11px; color:var(--red); background:rgba(250,82,82,0.1); border:1px solid rgba(250,82,82,0.3); border-radius:4px; padding:4px 8px;"></div>
+      </div>
+
+      <!-- Right: SVG Preview Canvas -->
+      <div id="diag-preview-canvas" style="flex:1; background:#070b14; border:1px solid var(--navy-b); border-radius:6px; display:flex; align-items:center; justify-content:center; overflow:auto; position:relative; padding:16px;">
+        <div id="diag-preview-inner" style="width:100%; height:100%; display:flex; align-items:center; justify-content:center;"></div>
+      </div>
+    </div>
+
+    <!-- Modal Footer Actions -->
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; border-top:1px solid rgba(255,255,255,0.06); padding-top:10px;">
+      <div style="display:flex; gap:6px;">
+        <button class="btn-sec" id="btn-diag-export-jpg" style="padding:6px 12px; font-size:12px;" title="Download as high-res JPG image">💾 Export JPG</button>
+        <button class="btn-sec" id="btn-diag-export-png" style="padding:6px 12px; font-size:12px;" title="Download as high-res PNG image">💾 Export PNG</button>
+        <button class="btn-sec" id="btn-diag-export-svg" style="padding:6px 12px; font-size:12px;" title="Download as vector SVG">💾 Export SVG</button>
+        <button class="btn-gold" id="btn-diag-insert-notes" style="padding:6px 12px; font-size:12px;" title="Insert this diagram into Folder Syllabus Notes or PDF Notepad">📥 Insert into Notes</button>
+      </div>
+      <button class="btn-sec" data-close="mo-diagram" style="padding:6px 14px; font-size:12px;">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Fullscreen Diagram Lightbox Modal -->
+<div class="modal-ov" id="mo-diagram-lightbox" style="z-index:4000; padding:10px; background:rgba(4,7,15,0.92); backdrop-filter:blur(6px);">
+  <div style="position:relative; width:96vw; height:94vh; max-width:96vw; max-height:94vh; display:flex; flex-direction:column; background:#0c1322; border:1px solid #2a3b5c; border-radius:12px; box-shadow:0 24px 72px rgba(0,0,0,0.8); overflow:hidden;">
+    <!-- Header -->
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 16px; border-bottom:1px solid var(--navy-b); background:var(--navy-l); flex-shrink:0;">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:14px; font-weight:600; color:var(--gold); font-family:'Libre Baskerville',serif;">🔍 Expanded Diagram Viewer</span>
+        <span style="font-size:11px; color:var(--muted);">(Scroll to zoom • Drag to pan)</span>
+      </div>
+      <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+        <button class="btn-sec" id="btn-lb-download-jpg" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download diagram as high-resolution JPG image">💾 Download JPG</button>
+        <button class="btn-sec" id="btn-lb-download-png" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download diagram as high-resolution PNG image">💾 Download PNG</button>
+        <button class="btn-sec" id="btn-lb-download-svg" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download as infinite-resolution Vector SVG">💾 Export SVG</button>
+        <div style="width:1px; height:16px; background:var(--navy-b); margin:0 2px;"></div>
+        <button class="btn-sec" id="btn-lb-zout" style="padding:4px 10px; font-size:12px;" title="Zoom Out">🔍−</button>
+        <span id="lb-zoom-lbl" style="font-size:11px; color:#e8e4db; min-width:44px; text-align:center;">100%</span>
+        <button class="btn-sec" id="btn-lb-zin" style="padding:4px 10px; font-size:12px;" title="Zoom In">🔍+</button>
+        <button class="btn-sec" id="btn-lb-zreset" style="padding:4px 10px; font-size:12px;" title="Reset Zoom">100%</button>
+        <button class="btn-sec" id="btn-lb-fit" style="padding:4px 10px; font-size:12px;" title="Fit to Screen">Fit</button>
+        <div style="width:1px; height:16px; background:var(--navy-b); margin:0 4px;"></div>
+        <button class="btn-sec" data-close="mo-diagram-lightbox" style="padding:4px 12px; font-size:14px; color:var(--gold);">✕</button>
+      </div>
+    </div>
+    <!-- Viewport Area with Pan & Zoom -->
+    <div id="lb-canvas" style="flex:1; width:100%; height:100%; overflow:hidden; position:relative; cursor:grab; display:flex; align-items:center; justify-content:center; background:#070b14; user-select:none;">
+      <div id="lb-target" style="transform-origin:center center; transition:transform 0.05s linear; display:flex; align-items:center; justify-content:center; max-width:96%; max-height:96%;">
+        <img id="lb-img" style="max-width:100%; max-height:100%; object-fit:contain;" alt="Expanded Diagram">
+        <div id="lb-svg-container" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Fullscreen Table Lightbox Modal -->
+<div class="modal-ov" id="mo-table-lightbox" style="z-index:4000; padding:10px; background:rgba(4,7,15,0.92); backdrop-filter:blur(6px);">
+  <div style="position:relative; width:96vw; height:94vh; max-width:96vw; max-height:94vh; display:flex; flex-direction:column; background:#0c1322; border:1px solid #2a3b5c; border-radius:12px; box-shadow:0 24px 72px rgba(0,0,0,0.8); overflow:hidden;">
+    <!-- Header -->
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 16px; border-bottom:1px solid var(--navy-b); background:var(--navy-l); flex-shrink:0; gap:10px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:14px; font-weight:600; color:var(--gold); font-family:'Libre Baskerville',serif;">📊 Expanded Table Viewer</span>
+        <span id="table-lb-info" style="font-size:11px; color:var(--muted);"></span>
+      </div>
+      <div style="display:flex; gap:6px; align-items:center; margin-left:auto;">
+        <input type="text" id="table-lb-search" placeholder="Filter rows..." style="background:var(--navy); border:1px solid var(--navy-b); color:#e8e4db; border-radius:4px; padding:4px 8px; font-size:12px; outline:none; width:160px;">
+        <button class="btn-sec" id="btn-table-copy-md" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Copy table in Markdown format">📋 Copy Markdown</button>
+        <button class="btn-sec" id="btn-table-copy-html" style="padding:4px 10px; font-size:12px;" title="Copy table HTML">📋 Copy HTML</button>
+        <button class="btn-sec" id="btn-table-export-csv" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download table as CSV spreadsheet">💾 Export CSV</button>
+        <div style="width:1px; height:16px; background:var(--navy-b); margin:0 4px;"></div>
+        <button class="btn-sec" data-close="mo-table-lightbox" style="padding:4px 12px; font-size:14px; color:var(--gold);">✕</button>
+      </div>
+    </div>
+    <!-- Scrollable Table Viewport -->
+    <div id="table-lb-viewport" style="flex:1; width:100%; height:100%; overflow:auto; padding:24px; background:#070b14; box-sizing:border-box;">
+      <div id="table-lb-container" style="width:100%; max-width:100%; overflow-x:auto;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings & Utilities Modal -->
+<div class="modal-ov" id="mo-settings">
+  <div class="modal-box" style="width:400px; max-width:92vw;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">⚙️ Settings & Tools</h3>
+      <button class="btn-sec" data-close="mo-settings" style="padding:4px 8px;">✕</button>
+    </div>
+
+    <!-- PWA Install Button -->
+    <button class="btn-gold" id="btn-pwa-install" style="display:none; width:100%; padding:9px 12px; font-size:13px; font-weight:600; margin-bottom:12px; border-radius:6px; box-shadow:0 2px 8px rgba(212,175,55,0.25);">📲 Install as Desktop App</button>
+
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      <!-- Data Backup & Cloud Backup -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <div style="font-size:13px; font-weight:600; color:#e8e4db;">💾 Data Backup</div>
+          <span id="backup-last-lbl" style="font-size:10px; color:var(--muted);"></span>
+        </div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Download a complete JSON snapshot of all your data or save to your Google Drive backup folder.</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-sec" id="backup-dl-btn" style="flex:1; padding:7px 10px; font-size:12px;" title="Download all data as a JSON file">⬇ Download JSON</button>
+          <button class="btn-gold" id="backup-drive-btn" style="flex:1; padding:7px 10px; font-size:12px;" title="Backup to Google Drive (auto-runs every 30 min)">☁ Drive Backup</button>
+        </div>
+      </div>
+
+      <!-- Export Annotations -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">📥 Export Annotations</div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Export all highlights and notes from the active PDF as a Markdown document.</div>
+        <button class="btn-sec" id="btn-export-settings" style="width:100%; padding:7px 10px; font-size:12px;">Export to Markdown</button>
+      </div>
+
+      <!-- Offline PDF Storage Manager -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <div style="font-size:13px; font-weight:600; color:#e8e4db;">📱 Offline PDF Storage</div>
+          <span id="cache-stats-lbl" style="font-size:10px; color:var(--gold); font-weight:500;">Calculating…</span>
+        </div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Opened PDFs are cached locally on your device for instant offline reading and annotation without Wi-Fi.</div>
+        
+        <!-- Storage Folder Path Display -->
+        <div style="background:rgba(0,0,0,0.3); border:1px solid var(--navy-b); border-radius:4px; padding:6px 8px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+          <div style="font-size:11px; color:#e8e4db; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;" id="cache-dir-display">
+            📁 Location: <span style="color:var(--gold);" id="cache-dir-name">Default Browser Storage</span>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:6px; margin-bottom:8px;" id="custom-folder-actions">
+          <button class="btn-sec" id="btn-choose-folder" style="flex:1; padding:6px 8px; font-size:11px;" title="Select a custom folder on your PC to store cached PDFs">📁 Choose Folder…</button>
+          <button class="btn-sec" id="btn-reset-folder" style="display:none; padding:6px 8px; font-size:11px;" title="Reset back to default browser sandbox">↩ Default</button>
+        </div>
+
+        <button class="btn-sec" id="btn-clear-cache" style="width:100%; padding:6px 8px; font-size:11px; color:var(--red);" onmouseover="this.style.borderColor='var(--red)'" onmouseout="this.style.borderColor=''">🗑 Clear Offline PDF Cache</button>
+      </div>
+
+      <!-- Download Folder Setting -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <div style="font-size:13px; font-weight:600; color:#e8e4db;">⬇ Download Folder</div>
+        </div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">When set, "Download to PC" saves PDFs directly to this folder — no dialog needed. Chrome/Edge only.</div>
+        <div style="background:rgba(0,0,0,0.3); border:1px solid var(--navy-b); border-radius:4px; padding:6px 8px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+          <div style="font-size:11px; color:#e8e4db; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;">
+            📁 <span id="dl-folder-name">None set — uses Downloads folder</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button class="btn-sec" id="btn-choose-dl-folder" style="flex:1; padding:6px 8px; font-size:11px;" title="Select a folder where PDFs will be saved when you click Download to PC">📁 Choose Folder…</button>
+          <button class="btn-sec" id="btn-clear-dl-folder" style="display:none; padding:6px 8px; font-size:11px; color:var(--muted);" title="Reset back to browser Downloads folder">✕ Clear</button>
+        </div>
+      </div>
+
+      <!-- System Diagnostics & Error Logs -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">🛠 System & Sync Diagnostics</div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Force-sync all folders, PDFs, notes &amp; Case Digests with Supabase, organize Google Drive to match your library tree, or inspect connection logs.</div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <button class="btn-gold" id="settings-btn-force-sync" style="width:100%; padding:8px 10px; font-size:12px; font-weight:700;">☁️ Force Sync Entire App Now</button>
+          <button class="btn-sec" id="settings-btn-organize-drive" style="width:100%; padding:7px 10px; font-size:12px; font-weight:600; color:var(--gold); border-color:rgba(201,168,76,0.4);">📁 Organize Google Drive Folders Now</button>
+          <button class="btn-sec" onclick="window.openSyncDiagnostics && window.openSyncDiagnostics()" style="width:100%; padding:7px 10px; font-size:12px;">Open Diagnostics &amp; Logs</button>
+        </div>
+      </div>
+
+      <!-- Apple Pencil / Pen -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">✒ Apple Pencil / Pen</div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Pen mode lets the Pencil highlight text and draw while your fingers scroll and zoom. You can also toggle it from the ✒ Pen button in the toolbar.</div>
+        <button class="btn-sec" id="btn-pen-setting" style="width:100%; padding:7px 10px; font-size:12px; margin-bottom:6px;">Toggle Pen Mode</button>
+        <a class="btn-sec" href="pen-debug.html" target="_blank" rel="noopener" style="display:block; box-sizing:border-box; width:100%; padding:7px 10px; font-size:12px; text-align:center; text-decoration:none;">Open Pen Diagnostic Page (for testing the Pencil)</a>
+      </div>
+
+      <!-- Gemini AI API Key (for AI Table of Contents) -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">✨ Gemini AI API Key</div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Used for AI Table of Contents generation. Get a free API key from Google AI Studio.</div>
+        <div style="display:flex; gap:8px; margin-bottom:6px;">
+          <input type="password" id="settings-gemini-key" placeholder="AIzaSy…" style="flex:1; padding:7px 10px; font-size:12px; border-radius:4px; border:1px solid var(--navy-b); background:rgba(0,0,0,0.3); color:#e8e4db; outline:none; box-sizing:border-box;">
+          <button class="btn-gold" id="settings-btn-save-gemini" style="padding:7px 12px; font-size:12px;">Save</button>
+          <button class="btn-sec" id="settings-btn-clear-gemini" style="padding:7px 10px; font-size:12px; color:var(--red);" title="Remove saved API key">✕</button>
+        </div>
+        <div id="settings-gemini-status" style="font-size:11px; color:var(--muted);"></div>
+      </div>
+
+      <!-- Keyboard Shortcuts -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">⌨️ Keyboard Shortcuts</div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">View the list of hotkeys and shortcuts for faster navigation and annotating.</div>
+        <button class="btn-sec" id="btn-open-keys" style="width:100%; padding:7px 10px; font-size:12px;">View Keyboard Shortcuts (?)</button>
+      </div>
+    </div>
+
+    <div class="modal-acts" style="margin-top:16px;">
+      <button class="btn-sec" data-close="mo-settings">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sync & Connection Diagnostics Modal -->
+<div class="modal-ov" id="mo-sync-diag">
+  <div class="modal-box" style="width:440px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:15px; color:var(--gold);">🛠 System & Sync Diagnostics</h3>
+      <button class="btn-sec" data-close="mo-sync-diag" style="padding:2px 8px;">✕</button>
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:10px; font-size:12px;">
+      <!-- Connection Status row -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:10px; display:flex; justify-content:space-between; align-items:center;">
+        <span style="color:var(--muted);">Network Status:</span>
+        <span id="diag-net-status" style="font-weight:600; color:var(--green);">Online</span>
+      </div>
+
+      <!-- Pending Outbox Queue -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:10px; display:flex; justify-content:space-between; align-items:center;">
+        <span style="color:var(--muted);">Pending Offline Edits:</span>
+        <span id="diag-queue-count" style="font-weight:600; color:#e8e4db;">0 edits</span>
+      </div>
+
+      <!-- Force Sync Entire App Action -->
+      <button class="btn-gold" id="diag-btn-force-sync" style="width:100%; padding:9px 12px; font-size:12px; font-weight:700; cursor:pointer; border-radius:6px;">
+        ☁️ Force Sync Entire App Now
+      </button>
+
+      <!-- Last Error Card -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px; display:flex; flex-direction:column; gap:6px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:600; color:#e8e4db;">Last Detected Error</span>
+          <span id="diag-err-time" style="font-size:10px; color:var(--muted);"></span>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <span style="color:var(--muted); font-size:11px;">Error Code:</span>
+          <code id="diag-err-code" style="background:rgba(250,82,82,0.15); color:var(--red); padding:1px 6px; border-radius:4px; font-size:11px; font-weight:bold;">None</code>
+        </div>
+        <div style="color:#e8e4db; font-size:11px; word-break:break-word; background:rgba(0,0,0,0.25); padding:6px 8px; border-radius:4px; border:1px solid rgba(255,255,255,0.05);" id="diag-err-msg">
+          No errors recorded. Everything is operating normally.
+        </div>
+        <div id="diag-err-details-wrap" style="display:none; color:var(--muted); font-size:10px; word-break:break-word;">
+          <span>Details: </span><span id="diag-err-details"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Actions -->
+    <div style="display:flex; gap:8px; justify-content:space-between; margin-top:16px;">
+      <button class="btn-sec" id="diag-btn-clear-queue" style="font-size:11px; padding:6px 10px; color:var(--red);" title="Purge stuck offline queue">🗑 Reset Queue</button>
+      <div style="display:flex; gap:6px;">
+        <button class="btn-sec" id="diag-btn-copy" style="font-size:11px; padding:6px 12px;">📋 Copy Error</button>
+        <button class="btn-gold" data-close="mo-sync-diag" style="font-size:11px; padding:6px 14px;">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard Shortcuts Help -->
+<div class="modal-ov" id="mo-keys">
+  <div class="modal-box">
+    <h3>⌨ Keyboard Shortcuts</h3>
+    <div class="key-grid">
+      <div class="key-row"><kbd>T</kbd><span class="key-desc">Text highlight mode</span></div>
+      <div class="key-row"><kbd>B</kbd><span class="key-desc">Box select mode</span></div>
+      <div class="key-row"><kbd>D</kbd><span class="key-desc">Draw mode</span></div>
+      <div class="key-row"><kbd>?</kbd><span class="key-desc">Show this help</span></div>
+      <div class="key-row"><kbd>Ctrl</kbd>+<kbd>F</kbd><span class="key-desc">Search</span></div>
+      <div class="key-row"><kbd>Ctrl</kbd>+<kbd>Z</kbd><span class="key-desc">Undo draw stroke</span></div>
+      <div class="key-row"><kbd>Ctrl</kbd>+<kbd>↵</kbd><span class="key-desc">Add note (in editor)</span></div>
+      <div class="key-row"><kbd>[</kbd> / <kbd>Ctrl</kbd>+<kbd>B</kbd><span class="key-desc">Toggle Library Sidebar</span></div>
+      <div class="key-row"><kbd>Esc</kbd><span class="key-desc">Close panels/search</span></div>
+    </div>
+    <div class="modal-acts">
+      <button class="btn-gold" data-close="mo-keys">Got it</button>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden file input -->
+<input type="file" id="pdf-file-in" accept="application/pdf" multiple>
+
+<!-- Toast notification -->
+<div id="toast"></div>
+
+
+
+
+
+
+<!-- ══════════════════════════════
+     SCRIPTS
+     Using ES modules with import maps for browser-native module support
+     No build step needed!
+══════════════════════════════ -->
+<script type="importmap">
+{
+  "imports": {}
+}
+</script>
+
+<!-- Wire help button (simple, no module needed) -->
+<script>
+  // Pre-flight reset: ensure all panels start closed on page load
+  document.querySelectorAll('#ann-panel, #notepad-panel, #search-panel').forEach(function(el) {
+    el.classList.remove('open');
+  });
+
+  // Zero-dependency fallback close handlers (guaranteed to work even if JS modules fail)
+  var fallbackCloseMap = {
+    'ap-close': 'ann-panel',
+    'search-close-btn': 'search-panel'
+  };
+  Object.keys(fallbackCloseMap).forEach(function(btnId) {
+    var btn = document.getElementById(btnId);
+    if (btn) {
+      btn.addEventListener('click', function() {
+        var panel = document.getElementById(fallbackCloseMap[btnId]);
+        if (panel) panel.classList.remove('open');
+      });
+    }
+  });
+
+  // Fallback Escape listener
+  window.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      document.querySelectorAll('#ann-panel, #search-panel').forEach(function(el) {
+        el.classList.remove('open');
+      });
+    }
+  });
+
+  document.getElementById('btn-settings')?.addEventListener('click', () => {
+    document.getElementById('mo-settings')?.classList.add('open');
+  });
+  document.getElementById('btn-open-keys')?.addEventListener('click', () => {
+    document.getElementById('mo-settings')?.classList.remove('open');
+    document.getElementById('mo-keys')?.classList.add('open');
+  });
+  // Set pdf.js worker
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    './vendor/pdf.worker.min.js';
+</script>
+
+<!-- Main app (ES module) -->
+<script type="module" src="./src/main.js"></script>
+
+<!-- Backup (completely independent module — zero imports from main app) -->
+<script type="module" src="./src/backup.js"></script>
+<script type="module" src="./src/desktop-bridge.js"></script>
+
+<!-- Table Context Menu -->
+<div id="table-ctx-menu" style="display:none; position:absolute; z-index:9999; background:var(--navy-l); border:1px solid var(--navy-b); border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.6); flex-direction:column; padding:4px; min-width:150px;">
+  <div class="ctx-item" id="ctx-expand-table" style="color:var(--gold); font-weight:600;">🔍 Expand Table</div>
+  <div class="ctx-item" id="ctx-export-csv">💾 Export CSV</div>
+  <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>
+  <div class="ctx-item" id="ctx-row-above">Add Row Above</div>
+  <div class="ctx-item" id="ctx-row-below">Add Row Below</div>
+  <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>
+  <div class="ctx-item" id="ctx-col-left">Add Column Left</div>
+  <div class="ctx-item" id="ctx-col-right">Add Column Right</div>
+  <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>
+  <div class="ctx-item" id="ctx-del-row" style="color:var(--red);">Delete Row</div>
+  <div class="ctx-item" id="ctx-del-col" style="color:var(--red);">Delete Column</div>
+  <div class="ctx-item" id="ctx-del-table" style="color:var(--red);">Delete Table</div>
+</div>
+
+<!-- Library Right-Click Context Menu -->
+<div id="lib-ctx-menu">
+  <div class="ctx-item" id="lib-ctx-open">📖 Open</div>
+  <div class="ctx-item" id="lib-ctx-reference">📑 Open as Reference</div>
+  <div class="ctx-item" id="lib-ctx-set-page">📌 Set Default Opening Page…</div>
+  <div class="ctx-item" id="lib-ctx-link">🔗 Create Shortcut…</div>
+  <div class="ctx-item" id="lib-ctx-offline">💾 Save for Offline</div>
+  <div class="ctx-item" id="lib-ctx-download">⬇ Download to PC</div>
+  <div class="ctx-item" id="lib-ctx-export-pdf" style="display:none">📥 Export Notes to PDF</div>
+  <div class="ctx-item" id="lib-ctx-force-sync" style="color:var(--gold); font-weight:600;">☁️ Force Sync to Cloud</div>
+  <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>
+  <div class="ctx-item" id="lib-ctx-gdrive">☁ Open in Google Drive</div>
+</div>
+
+<!-- Service Worker Registration & PWA Install Prompter -->
+<script>
+  let _deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    _deferredPrompt = e;
+    const pwaBtn = document.getElementById('btn-pwa-install');
+    const sideBtn = document.getElementById('btn-install-sidebar');
+    if (pwaBtn) pwaBtn.style.display = 'block';
+    if (sideBtn) sideBtn.style.display = 'flex';
+  });
+
+  function triggerPWAInstall() {
+    if (_deferredPrompt) {
+      _deferredPrompt.prompt();
+      _deferredPrompt.userChoice.then((choice) => {
+        if (choice.outcome === 'accepted') {
+          console.log('[PWA] User accepted install prompt');
+          const pwaBtn = document.getElementById('btn-pwa-install');
+          const sideBtn = document.getElementById('btn-install-sidebar');
+          if (pwaBtn) pwaBtn.style.display = 'none';
+          if (sideBtn) sideBtn.style.display = 'none';
+        }
+        _deferredPrompt = null;
+      });
+    } else {
+      alert('To install Legal Annotator:\n\n1. In Chrome / Edge, look for the (⊕) or (📥) icon on the right side of your address bar.\n2. Or click the 3-dots menu (⋮ / ...) in your browser -> "Install Legal Annotator" (or "Apps" -> "Install this site as an app").');
+    }
+  }
+
+  document.getElementById('btn-pwa-install')?.addEventListener('click', triggerPWAInstall);
+  document.getElementById('btn-install-sidebar')?.addEventListener('click', triggerPWAInstall);
+
+  if (false && 'serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').then(reg => {
+        console.log('[PWA] ServiceWorker registered with scope:', reg.scope);
+      }).catch(err => {
+        console.warn('[PWA] ServiceWorker registration failed:', err);
+      });
+    });
+  }
+</script>
+
+<!-- Export PDF Options Modal -->
+<div id="export-opts-modal" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">
+  <div style="background:#1a2135;border:1px solid #2e3f5c;border-radius:10px;padding:24px 28px;min-width:280px;max-width:360px;box-shadow:0 12px 40px rgba(0,0,0,0.6);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8e4db;">
+    <div id="export-opts-title" style="font-size:15px;font-weight:700;margin-bottom:6px;">📄 Export Notes to PDF</div>
+    <div id="export-opts-desc" style="font-size:11px;color:#94a3b8;margin-bottom:18px;">Choose page orientation before exporting.</div>
+
+    <div style="display:flex;gap:12px;margin-bottom:20px;">
+      <label id="export-opt-portrait-lbl" style="flex:1;border:2px solid #2e6bd6;border-radius:8px;padding:12px 10px;cursor:pointer;text-align:center;background:rgba(46,107,214,0.12);transition:all .15s;">
+        <input type="radio" name="export-orientation" id="export-opt-portrait" value="portrait" checked style="display:none">
+        <div style="font-size:22px;margin-bottom:4px;">📄</div>
+        <div style="font-size:12px;font-weight:700;">Portrait</div>
+        <div style="font-size:10px;color:#94a3b8;margin-top:2px;">8.5 × 11 in</div>
+      </label>
+      <label id="export-opt-landscape-lbl" style="flex:1;border:2px solid #2e3f5c;border-radius:8px;padding:12px 10px;cursor:pointer;text-align:center;background:transparent;transition:all .15s;">
+        <input type="radio" name="export-orientation" id="export-opt-landscape" value="landscape" style="display:none">
+        <div style="font-size:22px;margin-bottom:4px;">🖼️</div>
+        <div style="font-size:12px;font-weight:700;">Landscape</div>
+        <div style="font-size:10px;color:#94a3b8;margin-top:2px;">11 × 8.5 in</div>
+      </label>
+    </div>
+
+    <div style="display:flex;gap:10px;">
+      <button id="export-opts-cancel" style="flex:1;padding:8px;border:1px solid #2e3f5c;background:transparent;color:#94a3b8;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
+      <button id="export-opts-go" style="flex:2;padding:8px;border:none;background:#2e6bd6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">Export PDF →</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

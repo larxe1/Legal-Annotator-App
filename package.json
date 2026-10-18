@@ -1,0 +1,14 @@
+{
+  "name": "legal-annotator-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone Desktop Legal Annotator (Tauri 2 + Native C++ PDFium + Local SQLite Mirror)",
+  "scripts": {
+    "export-notes": "node tools/fidelity/export-notes.mjs",
+    "verify-notes": "node tools/fidelity/verify-fidelity.mjs",
+    "bundle-fonts": "node tools/fidelity/bundle-fonts.mjs",
+    "fetch-pdfium": "node tools/fetch-pdfium.mjs",
+    "sync-ui": "node tools/sync-from-web.mjs"
+  }
+}
