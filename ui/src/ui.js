@@ -438,9 +438,194 @@ export async function changeZoom(delta) {
   reRenderAll();
 }
 
+// ── Copy Entire PDF Text to Clipboard ──
+let _isExtractingPdfText = false;
+
+function cleanPageTextContent(tc) {
+  if (!tc || !tc.items || !tc.items.length) return '';
+  let text = '';
+  let lastY = null;
+  let lastX = null;
+
+  for (const item of tc.items) {
+    if (!item || typeof item.str !== 'string') continue;
+    const str = item.str;
+    if (!str && !item.hasEOL) continue;
+
+    const transform = item.transform;
+    const y = transform ? transform[5] : null;
+    const x = transform ? transform[4] : null;
+
+    if (lastY !== null && y !== null) {
+      if (Math.abs(y - lastY) > 5) {
+        if (!text.endsWith('\n')) text += '\n';
+      } else if (
+        lastX !== null &&
+        x !== null &&
+        x > lastX + 2 &&
+        !text.endsWith(' ') &&
+        !text.endsWith('\n') &&
+        !str.startsWith(' ')
+      ) {
+        text += ' ';
+      }
+    }
+
+    text += str;
+    if (item.hasEOL && !text.endsWith('\n')) {
+      text += '\n';
+    }
+
+    lastY = y;
+    lastX = (x !== null && typeof item.width === 'number') ? (x + item.width) : x;
+  }
+
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      console.warn('[copyEntirePdfText] navigator.clipboard.writeText failed, using fallback:', e);
+    }
+  }
+
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '-9999px';
+    ta.setAttribute('readonly', '');
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (err) {
+    console.error('[copyEntirePdfText] Fallback execCommand copy failed:', err);
+    return false;
+  }
+}
+
+export async function copyEntirePdfText() {
+  if (_isExtractingPdfText) return;
+
+  if (!S.pdfDoc || !S.totalPages || S.totalPages <= 0) {
+    toast('⚠️ No PDF is currently open');
+    return;
+  }
+
+  const btn = document.getElementById('btn-copy-pdf-text');
+  const originalHtml = btn ? btn.innerHTML : '';
+  const originalTitle = btn ? btn.title : '';
+
+  _isExtractingPdfText = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add('loading');
+    btn.title = 'Extracting and copying entire PDF text…';
+    btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg> <span>Copying…</span>';
+  }
+
+  const total = S.totalPages;
+  const doc = S.pdfDoc;
+  const pageTexts = new Array(total);
+  const BATCH_SIZE = 10;
+
+  try {
+    toast(`⏳ Extracting text from ${total} page${total === 1 ? '' : 's'}…`);
+
+    for (let i = 1; i <= total; i += BATCH_SIZE) {
+      if (doc !== S.pdfDoc) {
+        throw new Error('PDF changed during extraction');
+      }
+      const batchPromises = [];
+      for (let p = i; p < i + BATCH_SIZE && p <= total; p++) {
+        const pageNum = p;
+        batchPromises.push((async () => {
+          try {
+            const page = await doc.getPage(pageNum);
+            const tc = await page.getTextContent();
+            pageTexts[pageNum - 1] = cleanPageTextContent(tc);
+          } catch (err) {
+            console.warn(`[copyEntirePdfText] Failed extracting page ${pageNum}:`, err);
+            pageTexts[pageNum - 1] = '';
+          }
+        })());
+      }
+      await Promise.all(batchPromises);
+      if (i + BATCH_SIZE <= total) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    const hasAnyText = pageTexts.some(t => t && t.trim().length > 0);
+    if (!hasAnyText) {
+      toast('⚠️ No selectable text found in this PDF (it may be a scanned document without OCR).');
+      return;
+    }
+
+    let fullText = '';
+    if (total === 1) {
+      fullText = (pageTexts[0] || '').trim();
+    } else {
+      const parts = [];
+      for (let p = 1; p <= total; p++) {
+        const pText = (pageTexts[p - 1] || '').trim();
+        parts.push(`--- Page ${p} ---\n${pText || '[No selectable text on this page]'}`);
+      }
+      fullText = parts.join('\n\n').trim();
+    }
+
+    const ok = await copyTextToClipboard(fullText);
+    if (!ok) {
+      toast('❌ Failed to copy to clipboard. Please check clipboard permissions.');
+      return;
+    }
+
+    const wordCount = fullText.split(/\s+/).filter(Boolean).length;
+    const pageLabel = total === 1 ? '1 page' : `${total} pages`;
+
+    if (btn) {
+      btn.classList.remove('loading');
+      btn.classList.add('copied');
+      btn.innerHTML = '<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <span>Copied!</span>';
+      setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.innerHTML = originalHtml;
+        btn.title = originalTitle;
+      }, 2200);
+    }
+
+    toast(`✅ Copied entire PDF text (${wordCount.toLocaleString()} words, ${pageLabel}) to clipboard!`);
+  } catch (err) {
+    console.error('[copyEntirePdfText] Error:', err);
+    toast(`⚠️ Text extraction stopped: ${err.message || err}`);
+  } finally {
+    _isExtractingPdfText = false;
+    if (btn) {
+      btn.disabled = false;
+      if (!btn.classList.contains('copied')) {
+        btn.classList.remove('loading');
+        btn.innerHTML = originalHtml;
+        btn.title = originalTitle;
+      }
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.copyEntirePdfText = copyEntirePdfText;
+}
+
 export function initZoom() {
-  document.getElementById('btn-zin').addEventListener('click',  () => changeZoom( 0.25));
-  document.getElementById('btn-zout').addEventListener('click', () => changeZoom(-0.25));
+  document.getElementById('btn-zin')?.addEventListener('click',  () => changeZoom( 0.25));
+  document.getElementById('btn-zout')?.addEventListener('click', () => changeZoom(-0.25));
+  document.getElementById('btn-copy-pdf-text')?.addEventListener('click', copyEntirePdfText);
 }
 
 let _scrollTimer = null;

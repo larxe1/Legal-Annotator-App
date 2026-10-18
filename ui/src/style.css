@@ -246,6 +246,9 @@ html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; b
 .dw-inner { border-radius: 50%; background: var(--gold); }
 .tb-btn { background: none; border: 1px solid transparent; color: #b0aaa0; border-radius: 5px; padding: 5px 8px; font-size: 12px; cursor: pointer; transition: all .15s; font-family: 'Inter', sans-serif; display: flex; align-items: center; gap: 4px; white-space: nowrap; flex-shrink: 0; }
 .tb-btn:hover { background: rgba(255,255,255,.06); color: #e8e4db; }
+#btn-copy-pdf-text:hover { color: var(--gold); border-color: rgba(201,168,76,0.3); }
+#btn-copy-pdf-text.copied { color: #4ade80; border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.08); }
+@media (max-width: 900px) { #btn-copy-pdf-text span { display: none; } }
 #zoom-lbl { min-width: 34px; text-align: center; font-size: 12px; color: var(--muted); flex-shrink: 0; }
 #pg-info { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; margin-left: auto; flex-shrink: 0; }
 #pg-input { width: 36px; background: var(--navy); border: 1px solid var(--navy-b); color: #e8e4db; border-radius: 4px; padding: 3px 4px; text-align: center; font-size: 12px; }
