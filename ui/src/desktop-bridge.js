@@ -314,6 +314,50 @@ function injectDesktopUI() {
   document.body.appendChild(engineBar);
   engineBar.addEventListener('click', showDesktopStatusModal);
 
+  // Position updater to avoid overlapping with right-hand panels (Notes & Case Summaries / Notepad)
+  function updateDesktopEngineBarPosition() {
+    const bar = document.getElementById('desktop-engine-bar');
+    if (!bar) return;
+
+    const annPanel = document.getElementById('ann-panel');
+    const npPanel = document.getElementById('notepad-panel');
+    const isAnnOpen = annPanel && annPanel.classList.contains('open');
+    const isNpOpen = npPanel && npPanel.classList.contains('open');
+
+    if (window.innerWidth <= 1024) {
+      if (isAnnOpen || isNpOpen) {
+        const openPanel = isAnnOpen ? annPanel : npPanel;
+        const panelHeight = openPanel.offsetHeight || Math.round(window.innerHeight * 0.6);
+        bar.style.bottom = `${panelHeight + 12}px`;
+        bar.style.right = '12px';
+      } else {
+        bar.style.bottom = '12px';
+        bar.style.right = '12px';
+      }
+    } else {
+      if (isAnnOpen || isNpOpen) {
+        const openPanel = isAnnOpen ? annPanel : npPanel;
+        const panelWidth = openPanel.offsetWidth || 380;
+        bar.style.right = `${panelWidth + 14}px`;
+        bar.style.bottom = '12px';
+      } else {
+        bar.style.right = '12px';
+        bar.style.bottom = '12px';
+      }
+    }
+  }
+
+  // Observe opening/closing/resizing of right-hand panels
+  const panelObserver = new MutationObserver(() => {
+    updateDesktopEngineBarPosition();
+  });
+  const annPanelEl = document.getElementById('ann-panel');
+  const npPanelEl = document.getElementById('notepad-panel');
+  if (annPanelEl) panelObserver.observe(annPanelEl, { attributes: true, attributeFilter: ['class', 'style'] });
+  if (npPanelEl) panelObserver.observe(npPanelEl, { attributes: true, attributeFilter: ['class', 'style'] });
+  window.addEventListener('resize', updateDesktopEngineBarPosition);
+  updateDesktopEngineBarPosition();
+
   const settingsBtn = document.getElementById('btn-settings');
   if (settingsBtn && !document.getElementById('btn-desktop-update')) {
     const updBtn = document.createElement('button');
@@ -362,6 +406,8 @@ function injectDesktopUI() {
     const pulse = bar?.querySelector('.desktop-engine-pulse');
     if (!bar) return;
 
+    updateDesktopEngineBarPosition();
+
     if (!totalPages || totalPages <= 0) {
       clearTimeout(_disappearTimer);
       bar.classList.remove('visible');
@@ -372,11 +418,11 @@ function injectDesktopUI() {
     if (activeCanvases >= totalPages) {
       // Document is fully vaulted — display confirmation briefly, then disappear
       if (ramLbl) {
-        ramLbl.textContent = `Vaulted ${totalPages}/${totalPages} pgs`;
+        ramLbl.textContent = `${totalPages}/${totalPages} pgs`;
         ramLbl.style.color = '#4ade80';
       }
       if (engineLbl) {
-        engineLbl.textContent = '🔒 Fully Vaulted';
+        engineLbl.textContent = 'Vaulted';
         engineLbl.style.color = '#4ade80';
       }
       if (pulse) pulse.textContent = '✅';
@@ -388,8 +434,8 @@ function injectDesktopUI() {
           if (!bar.classList.contains('visible')) {
             bar.style.display = 'none';
           }
-        }, 400);
-      }, 1400);
+        }, 300);
+      }, 1200);
     } else {
       // Actively vaulting pages
       clearTimeout(_disappearTimer);
@@ -399,12 +445,12 @@ function injectDesktopUI() {
 
       const pct = Math.round((activeCanvases / totalPages) * 100);
       if (engineLbl) {
-        engineLbl.textContent = '⚡ PDFium';
+        engineLbl.textContent = 'PDFium';
         engineLbl.style.color = '#60a5fa';
       }
       if (pulse) pulse.textContent = '⚡';
       if (ramLbl) {
-        ramLbl.textContent = `Vaulting: ${activeCanvases}/${totalPages} (${pct}%)`;
+        ramLbl.textContent = `Vault: ${activeCanvases}/${totalPages} (${pct}%)`;
         ramLbl.style.color = '#cbd5e1';
       }
     }
