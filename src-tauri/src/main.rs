@@ -402,7 +402,7 @@ fn init_sqlite_mirror(db_path: &Path) -> Result<(usize, usize), String> {
 }
 
 #[tauri::command]
-fn desktop_system_status(state: tauri::State<'_, AppState>) -> SystemStatus {
+async fn desktop_system_status(state: tauri::State<'_, AppState>) -> Result<SystemStatus, String> {
     let pdfium_loaded = state
         .pdfium
         .lock()
@@ -410,7 +410,7 @@ fn desktop_system_status(state: tauri::State<'_, AppState>) -> SystemStatus {
         .unwrap_or(false);
     let (sqlite_notes, sqlite_ann_notes) =
         init_sqlite_mirror(&state.sqlite_path).unwrap_or((0, 0));
-    SystemStatus {
+    Ok(SystemStatus {
         available: true,
         pdfium_loaded,
         engine: if pdfium_loaded {
@@ -420,11 +420,11 @@ fn desktop_system_status(state: tauri::State<'_, AppState>) -> SystemStatus {
         },
         sqlite_notes,
         sqlite_ann_notes,
-    }
+    })
 }
 
 #[tauri::command]
-fn pdfium_open_path(
+async fn pdfium_open_path(
     state: tauri::State<'_, AppState>,
     doc_id: String,
     path: String,
@@ -438,7 +438,7 @@ fn pdfium_open_path(
 }
 
 #[tauri::command]
-fn pdfium_open_bytes(
+async fn pdfium_open_bytes(
     state: tauri::State<'_, AppState>,
     doc_id: String,
     base64: String,
@@ -453,7 +453,7 @@ fn pdfium_open_bytes(
 }
 
 #[tauri::command]
-fn pdfium_render_page(
+async fn pdfium_render_page(
     state: tauri::State<'_, AppState>,
     doc_id: String,
     page_num: u32,
@@ -465,7 +465,7 @@ fn pdfium_render_page(
 }
 
 #[tauri::command]
-fn pdfium_pick_local_pdf() -> Result<Option<PickedPdfResponse>, String> {
+async fn pdfium_pick_local_pdf() -> Result<Option<PickedPdfResponse>, String> {
     let picked = rfd::FileDialog::new()
         .set_title("Open PDF Document — Legal Annotator Desktop")
         .add_filter("PDF Document", &["pdf"])
@@ -616,7 +616,7 @@ const OAUTH_INIT_SCRIPT: &str = r#"
 "#;
 
 #[tauri::command]
-fn desktop_start_google_oauth(
+async fn desktop_start_google_oauth(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     silent: Option<bool>,
@@ -648,7 +648,7 @@ fn desktop_start_google_oauth(
     }
 
     if let Some(existing) = app.get_webview_window("google-auth") {
-        let _ = existing.destroy();
+        let _ = existing.close();
     }
 
     let auth_url_str = "https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=3&client_id=572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20email%20profile&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fnotetaking-app.pages.dev%3Fid%3Dauth123456&prompt=select_account&response_type=token&include_granted_scopes=true";
@@ -663,7 +663,6 @@ fn desktop_start_google_oauth(
         .title("Sign in with Google (Gmail) — Legal Annotator")
         .inner_size(520.0, 680.0)
         .center()
-        .always_on_top(true)
         .initialization_script(OAUTH_INIT_SCRIPT)
         .on_navigation(move |url| {
             let url_str = url.as_str();
@@ -677,9 +676,9 @@ fn desktop_start_google_oauth(
                 }
                 let app_clone = app_for_nav.clone();
                 std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(60));
+                    std::thread::sleep(std::time::Duration::from_millis(80));
                     if let Some(w) = app_clone.get_webview_window("google-auth") {
-                        let _ = w.destroy();
+                        let _ = w.close();
                     }
                 });
                 return false;
@@ -701,19 +700,19 @@ fn desktop_start_google_oauth(
 }
 
 #[tauri::command]
-fn desktop_poll_google_oauth(
+async fn desktop_poll_google_oauth(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> OAuthPollResponse {
+) -> Result<OAuthPollResponse, String> {
     let tok_opt = state.oauth_token.lock().ok().and_then(|g| g.clone());
     if let Some(tok) = tok_opt {
         if let Some(w) = app.get_webview_window("google-auth") {
-            let _ = w.destroy();
+            let _ = w.close();
         }
-        return OAuthPollResponse {
+        return Ok(OAuthPollResponse {
             status: "success".into(),
             access_token: Some(tok),
-        };
+        });
     }
 
     let mut status = state
@@ -730,10 +729,10 @@ fn desktop_poll_google_oauth(
         }
     }
 
-    OAuthPollResponse {
+    Ok(OAuthPollResponse {
         status,
         access_token: None,
-    }
+    })
 }
 
 #[tauri::command]
