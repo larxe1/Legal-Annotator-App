@@ -297,137 +297,107 @@ window.__DESKTOP_SQLITE__ = {
   },
 };
 
-async function openLocalPdfFromBytes(name, bytesUint8, localPath = null) {
-  // Compute stable deterministic ID from filename + size so notes & highlights persist
-  const slug = name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
-  const docId = `local_${slug}_${bytesUint8.byteLength}`;
-  const blob = new Blob([bytesUint8], { type: 'application/pdf' });
-  const pdfEntry = {
-    id: docId,
-    name: name.replace(/\.pdf$/i, ''),
-    drive_file_id: null,
-    folder_id: null,
-    _localBlob: blob,
-    _localPath: localPath,
-    _isLocalOnly: true,
-  };
-  if (!S.pdfs.some(p => p.id === docId)) {
-    S.pdfs.unshift(pdfEntry);
-  }
-  await openPDFFromLibrary(pdfEntry, 0);
-}
-
-async function handleOpenLocalPdfClick() {
-  if (invoke) {
-    try {
-      const picked = await invoke('pdfium_pick_local_pdf');
-      if (!picked || !picked.path) return;
-      const b64 = picked.base64;
-      const binStr = atob(b64);
-      const bytes = new Uint8Array(binStr.length);
-      for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
-      await openLocalPdfFromBytes(picked.name || 'Local Document.pdf', bytes, picked.path);
-      return;
-    } catch (e) {
-      console.warn('[Desktop] Native file picker fallback:', e);
-    }
-  }
-  // Fallback HTML5 file input
-  const inp = document.createElement('input');
-  inp.type = 'file';
-  inp.accept = 'application/pdf,.pdf';
-  inp.onchange = async () => {
-    const file = inp.files?.[0];
-    if (!file) return;
-    const buf = await file.arrayBuffer();
-    await openLocalPdfFromBytes(file.name, new Uint8Array(buf), null);
-  };
-  inp.click();
-}
-
 function injectDesktopUI() {
-  const syncBar = document.getElementById('sync-bar');
-  if (!syncBar || document.getElementById('desktop-engine-bar')) return;
+  if (document.getElementById('desktop-engine-bar')) return;
 
+  // Lower-right floating vaulting indicator pill
   const engineBar = document.createElement('div');
   engineBar.id = 'desktop-engine-bar';
   engineBar.className = 'desktop-engine-bar';
-  engineBar.style.cursor = 'pointer';
-  engineBar.title = 'Click to view Standalone Desktop Engine & Notes Fidelity status';
+  engineBar.title = 'Click to view Standalone Desktop Engine & Vault status';
   engineBar.innerHTML = `
-    <span id="desktop-engine-lbl" style="color:#60a5fa;font-weight:600;">⚡ Initializing Engine…</span>
-    <span id="desktop-ram-lbl" style="color:var(--muted);font-family:monospace;">Loaded: 0 pgs</span>
+    <span class="desktop-engine-pulse">⚡</span>
+    <span id="desktop-engine-lbl" style="color:#60a5fa;font-weight:600;">PDFium</span>
+    <span style="color:#475569;">·</span>
+    <span id="desktop-ram-lbl" style="color:#cbd5e1;font-family:monospace;">Vaulting…</span>
   `;
-  syncBar.insertAdjacentElement('afterend', engineBar);
+  document.body.appendChild(engineBar);
+  engineBar.addEventListener('click', showDesktopStatusModal);
 
   // Prominent Gmail / Google Drive Sign-In button if not connected
-  const gmailBtn = document.createElement('button');
-  gmailBtn.id = 'btn-desktop-gmail-login';
-  gmailBtn.className = 'desktop-open-local-btn';
-  gmailBtn.style.cssText = 'background:linear-gradient(135deg, rgba(234,179,8,0.18), rgba(202,138,4,0.28));border-color:#eab308;color:#fde047;margin-bottom:4px;';
-  gmailBtn.innerHTML = '🔑 Sign in with Google (Gmail) for Cloud PDFs';
-  gmailBtn.addEventListener('click', async () => {
-    const orig = gmailBtn.innerHTML;
-    gmailBtn.innerHTML = '⏳ Opening Google Sign-In window…';
-    try {
-      await driveSignIn();
-    } catch (e) {
-      console.warn('[Desktop OAuth] Sign-in error:', e);
-    } finally {
-      gmailBtn.innerHTML = orig;
-      window.__updateDesktopAuthBadge?.(S.driveUser);
-    }
-  });
-  engineBar.insertAdjacentElement('afterend', gmailBtn);
-
-  const openBtn = document.createElement('button');
-  openBtn.id = 'btn-open-local-pdf';
-  openBtn.className = 'desktop-open-local-btn';
-  openBtn.innerHTML = '📂 Open Local PDF from PC…';
-  openBtn.addEventListener('click', handleOpenLocalPdfClick);
-  gmailBtn.insertAdjacentElement('afterend', openBtn);
-
-  engineBar.addEventListener('click', showDesktopStatusModal);
+  const driveBar = document.getElementById('drive-bar');
+  if (driveBar) {
+    const gmailBtn = document.createElement('button');
+    gmailBtn.id = 'btn-desktop-gmail-login';
+    gmailBtn.className = 'desktop-gmail-login-btn';
+    gmailBtn.innerHTML = '🔑 Sign in with Google (Gmail) for Cloud PDFs';
+    gmailBtn.addEventListener('click', async () => {
+      const orig = gmailBtn.innerHTML;
+      gmailBtn.innerHTML = '⏳ Opening Google Sign-In window…';
+      try {
+        await driveSignIn();
+      } catch (e) {
+        console.warn('[Desktop OAuth] Sign-in error:', e);
+      } finally {
+        gmailBtn.innerHTML = orig;
+        window.__updateDesktopAuthBadge?.(S.driveUser);
+      }
+    });
+    driveBar.insertAdjacentElement('afterend', gmailBtn);
+  }
 
   window.__updateDesktopAuthBadge = (driveUser) => {
     const btn = document.getElementById('btn-desktop-gmail-login');
     if (!btn) return;
-    if (driveUser) {
-      btn.style.display = 'none';
-    } else {
-      btn.style.display = 'flex';
-    }
+    btn.style.display = driveUser ? 'none' : 'flex';
   };
   window.__updateDesktopAuthBadge(S.driveUser);
 
+  let _disappearTimer = null;
   window.__updateDesktopEngineBadge = ({ activeCanvases, totalPages }) => {
+    const bar = document.getElementById('desktop-engine-bar');
     const ramLbl = document.getElementById('desktop-ram-lbl');
-    if (ramLbl) {
-      if (totalPages && activeCanvases >= totalPages) {
-        ramLbl.textContent = `🔒 Vaulted: ${activeCanvases}/${totalPages} pgs`;
+    const engineLbl = document.getElementById('desktop-engine-lbl');
+    const pulse = bar?.querySelector('.desktop-engine-pulse');
+    if (!bar) return;
+
+    if (!totalPages || totalPages <= 0) {
+      clearTimeout(_disappearTimer);
+      bar.classList.remove('visible');
+      bar.style.display = 'none';
+      return;
+    }
+
+    if (activeCanvases >= totalPages) {
+      // Document is fully vaulted — display confirmation briefly, then disappear
+      if (ramLbl) {
+        ramLbl.textContent = `Vaulted ${totalPages}/${totalPages} pgs`;
         ramLbl.style.color = '#4ade80';
-      } else {
-        ramLbl.textContent = totalPages
-          ? `Loaded: ${activeCanvases}/${totalPages} pgs`
-          : `Loaded: ${activeCanvases} pgs`;
-        ramLbl.style.color = 'var(--muted)';
+      }
+      if (engineLbl) {
+        engineLbl.textContent = '🔒 Fully Vaulted';
+        engineLbl.style.color = '#4ade80';
+      }
+      if (pulse) pulse.textContent = '✅';
+
+      clearTimeout(_disappearTimer);
+      _disappearTimer = setTimeout(() => {
+        bar.classList.remove('visible');
+        setTimeout(() => {
+          if (!bar.classList.contains('visible')) {
+            bar.style.display = 'none';
+          }
+        }, 400);
+      }, 1400);
+    } else {
+      // Actively vaulting pages
+      clearTimeout(_disappearTimer);
+      bar.style.display = 'flex';
+      void bar.offsetWidth; // Force reflow for CSS transition
+      bar.classList.add('visible');
+
+      const pct = Math.round((activeCanvases / totalPages) * 100);
+      if (engineLbl) {
+        engineLbl.textContent = '⚡ PDFium';
+        engineLbl.style.color = '#60a5fa';
+      }
+      if (pulse) pulse.textContent = '⚡';
+      if (ramLbl) {
+        ramLbl.textContent = `Vaulting: ${activeCanvases}/${totalPages} (${pct}%)`;
+        ramLbl.style.color = '#cbd5e1';
       }
     }
   };
-
-  // Drag and drop any local PDF onto the window
-  window.addEventListener('dragover', e => {
-    if (e.dataTransfer?.types?.includes('Files')) {
-      e.preventDefault();
-    }
-  });
-  window.addEventListener('drop', async e => {
-    const file = Array.from(e.dataTransfer?.files || []).find(f => f.name.toLowerCase().endsWith('.pdf'));
-    if (!file) return;
-    e.preventDefault();
-    const buf = await file.arrayBuffer();
-    await openLocalPdfFromBytes(file.name, new Uint8Array(buf), null);
-  });
 
   // Smooth Ctrl + Mouse Wheel / Trackpad Pinch Zoom in PDF Viewer
   const scrollEl = document.getElementById('canvas-scroll');
@@ -483,7 +453,6 @@ async function showDesktopStatusModal() {
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
         ${!S.driveUser ? `<button id="dsm-gmail-login" style="padding:8px 14px;background:#ca8a04;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">🔑 Sign in with Google (Gmail)</button>` : ''}
-        <button id="dsm-open-local" style="padding:8px 14px;background:#2563eb;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">📂 Open Local PDF…</button>
         <button id="dsm-ok" style="padding:8px 14px;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:12px;cursor:pointer;">Close</button>
       </div>
     </div>
@@ -494,30 +463,16 @@ async function showDesktopStatusModal() {
     modal.style.display = 'none';
     try { await driveSignIn(); } catch {}
   });
-  modal.querySelector('#dsm-open-local')?.addEventListener('click', () => {
-    modal.style.display = 'none';
-    handleOpenLocalPdfClick();
-  });
 }
 
 async function initDesktopBridge() {
   injectDesktopUI();
-  const lbl = document.getElementById('desktop-engine-lbl');
   if (invoke) {
     try {
-      const status = await invoke('desktop_system_status');
-      _engineInfo = status;
-      if (lbl) {
-        lbl.textContent = status.pdfiumLoaded
-          ? `⚡ PDFium C++ · 🛡️ ${status.sqliteNotes} notes`
-          : `⚡ Desktop · 🛡️ ${status.sqliteNotes} notes`;
-      }
+      _engineInfo = await invoke('desktop_system_status');
     } catch (e) {
       console.warn('[Desktop Bridge] status error:', e);
-      if (lbl) lbl.textContent = '⚡ Desktop Mode';
     }
-  } else {
-    if (lbl) lbl.textContent = '⚡ Virtualized Viewer';
   }
 }
 

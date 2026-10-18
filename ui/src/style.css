@@ -1232,34 +1232,63 @@ kbd { background: var(--navy); border: 1px solid var(--navy-b); border-radius: 4
   contain: layout style paint;
 }
 .desktop-engine-bar {
-  display: flex;
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1200;
+  display: none;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  margin: 6px 12px;
-  padding: 6px 10px;
-  background: rgba(20, 30, 50, 0.85);
-  border: 1px solid var(--navy-b);
-  border-radius: 6px;
-  font-size: 11px;
-  color: var(--text);
+  gap: 8px;
+  padding: 7px 14px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 20px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(10px);
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 11.5px;
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(10px) scale(0.97);
+  transition: opacity 0.35s ease, transform 0.35s ease, background 0.2s ease, border-color 0.2s ease;
+  user-select: none;
 }
-.desktop-open-local-btn {
+.desktop-engine-bar.visible {
+  display: flex;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.desktop-engine-bar:hover {
+  background: rgba(26, 38, 64, 0.98);
+  border-color: rgba(96, 165, 250, 0.7);
+}
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.75; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.18); filter: drop-shadow(0 0 6px #60a5fa); }
+}
+.desktop-engine-pulse {
+  display: inline-block;
+  font-size: 12px;
+  animation: pulseGlow 1.5s ease-in-out infinite;
+}
+.desktop-gmail-login-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   margin: 6px 12px 2px 12px;
   padding: 7px 10px;
-  background: linear-gradient(135deg, #1e3a8a, #2563eb);
-  border: 1px solid #3b82f6;
+  background: linear-gradient(135deg, rgba(234,179,8,0.18), rgba(202,138,4,0.28));
+  border: 1px solid #eab308;
   border-radius: 6px;
-  color: #fff;
+  color: #fde047;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: filter 0.15s;
 }
-.desktop-open-local-btn:hover {
-  filter: brightness(1.12);
+.desktop-gmail-login-btn:hover {
+  filter: brightness(1.15);
 }
