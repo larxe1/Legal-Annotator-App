@@ -1,0 +1,7 @@
+{
+  "version": "1.1.0",
+  "build": 2,
+  "updatedAt": "2026-10-18T11:29:00+08:00",
+  "notes": "Added built-in GitHub auto-updater, single-file portable .exe with embedded PDFium, and lower-right vaulting pill",
+  "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
+}

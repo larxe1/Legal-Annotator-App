@@ -314,6 +314,17 @@ function injectDesktopUI() {
   document.body.appendChild(engineBar);
   engineBar.addEventListener('click', showDesktopStatusModal);
 
+  const settingsBtn = document.getElementById('btn-settings');
+  if (settingsBtn && !document.getElementById('btn-desktop-update')) {
+    const updBtn = document.createElement('button');
+    updBtn.id = 'btn-desktop-update';
+    updBtn.title = 'Desktop Engine Status & Check for App Updates';
+    updBtn.style.cssText = 'background:none;border:1px solid var(--navy-b);color:#60a5fa;border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;transition:all .15s;';
+    updBtn.innerHTML = '⚡';
+    updBtn.addEventListener('click', showDesktopStatusModal);
+    settingsBtn.insertAdjacentElement('beforebegin', updBtn);
+  }
+
   // Prominent Gmail / Google Drive Sign-In button if not connected
   const driveBar = document.getElementById('drive-bar');
   if (driveBar) {
@@ -421,6 +432,79 @@ function injectDesktopUI() {
   }
 }
 
+let _updateInfo = null;
+
+function showUpdateBanner(info) {
+  _updateInfo = info;
+  let pill = document.getElementById('desktop-update-pill');
+  if (!pill) {
+    pill = document.createElement('div');
+    pill.id = 'desktop-update-pill';
+    pill.style.cssText = [
+      'position:fixed',
+      'bottom:58px',
+      'right:20px',
+      'z-index:1250',
+      'display:flex',
+      'align-items:center',
+      'gap:10px',
+      'padding:9px 16px',
+      'background:linear-gradient(135deg, rgba(16,185,129,0.95), rgba(5,150,105,0.95))',
+      'border:1px solid #6ee7b7',
+      'border-radius:22px',
+      'box-shadow:0 8px 28px rgba(0,0,0,0.55)',
+      'color:#ffffff',
+      'font-family:Inter,system-ui,sans-serif',
+      'font-size:12px',
+      'font-weight:600',
+      'cursor:pointer',
+      'user-select:none',
+      'transition:transform 0.2s ease, filter 0.2s ease',
+    ].join(';');
+    document.body.appendChild(pill);
+  }
+  pill.style.display = 'flex';
+  pill.title = info.notes || 'Click to download latest Legal Annotator.exe from GitHub and restart';
+  pill.innerHTML = `
+    <span>🔄 Update Available (Build #${info.remoteBuild}) — <u>Click to Update &amp; Restart</u></span>
+    <button id="desktop-update-dismiss" title="Dismiss" style="background:none;border:none;color:#d1fae5;font-size:13px;cursor:pointer;padding:0 2px;">✕</button>
+  `;
+  pill.querySelector('#desktop-update-dismiss')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    pill.style.display = 'none';
+  });
+  pill.onclick = async () => {
+    if (pill.dataset.updating === '1') return;
+    pill.dataset.updating = '1';
+    pill.style.cursor = 'wait';
+    pill.innerHTML = `<span>⏳ Downloading update from GitHub (~32 MB)… Please wait</span>`;
+    try {
+      await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null });
+      pill.innerHTML = `<span>✅ Update installed! Restarting app…</span>`;
+    } catch (err) {
+      pill.dataset.updating = '0';
+      pill.style.cursor = 'pointer';
+      pill.style.background = 'linear-gradient(135deg, #b91c1c, #991b1b)';
+      pill.innerHTML = `<span>⚠️ Update failed: ${err} (Click to retry)</span>`;
+    }
+  };
+}
+
+async function checkAndNotifyGitHubUpdate(manual = false) {
+  if (!invoke) return null;
+  try {
+    const info = await invoke('desktop_check_github_update');
+    _updateInfo = info;
+    if (info?.hasUpdate) {
+      showUpdateBanner(info);
+    }
+    return info;
+  } catch (e) {
+    if (manual) console.warn('[Desktop Auto-Update] Check error:', e);
+    return null;
+  }
+}
+
 async function showDesktopStatusModal() {
   if (invoke) {
     try {
@@ -435,24 +519,28 @@ async function showDesktopStatusModal() {
     document.body.appendChild(modal);
   }
   modal.style.display = 'flex';
+  const buildLbl = _updateInfo?.localBuild ? `v${_updateInfo.localVersion || '1.1.0'} (Build #${_updateInfo.localBuild})` : 'v1.1.0';
   modal.innerHTML = `
     <div style="background:#131c31;border:1px solid #2e3f5c;border-radius:12px;padding:22px 26px;max-width:480px;width:92%;color:#e8e4db;box-shadow:0 16px 48px rgba(0,0,0,0.65);font-family:'Inter',sans-serif;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-        <div style="font-size:16px;font-weight:700;color:#60a5fa;">⚡ Standalone Desktop Engine & Notes Shield</div>
+        <div style="font-size:16px;font-weight:700;color:#60a5fa;">⚡ Standalone Desktop Engine &amp; Auto-Updater</div>
         <button id="dsm-close" style="background:none;border:none;color:#94a3b8;font-size:18px;cursor:pointer;">✕</button>
       </div>
       <div style="font-size:12px;line-height:1.7;color:#cbd5e1;background:#0c1322;border:1px solid #1e293b;border-radius:8px;padding:12px 14px;margin-bottom:14px;">
+        <div><strong>Installed Build:</strong> <span style="color:#93c5fd">${buildLbl}</span></div>
         <div><strong>PDF Engine:</strong> <span style="color:#4ade80">${_engineInfo.engine || 'Native PDFium (x64)'}</span></div>
-        <div><strong>PDFium DLL:</strong> ${_engineInfo.pdfiumLoaded ? '✅ Loaded natively in Rust (Fast PNG + HiDPI)' : '⚠️ Fallback mode'}</div>
+        <div><strong>PDFium DLL:</strong> ${_engineInfo.pdfiumLoaded ? '✅ Embedded &amp; Loaded natively in Rust' : '⚠️ Fallback mode'}</div>
         <div><strong>Google Drive (Gmail):</strong> ${S.driveUser ? `✅ Connected (${S.driveUser})` : '⚠️ Not signed in yet'}</div>
-        <div><strong>Native Disk PDF Cache:</strong> ✅ <strong>${_engineInfo.cachedPdfs ?? 0}</strong> PDFs cached on D: drive</div>
-        <div><strong>Permanent Page Vault:</strong> ✅ Rendered pages &amp; text layers stay permanently loaded (Session DOM Vault + Disk Page Vault on D:)</div>
-        <div><strong>Offline Fonts:</strong> ✅ Bundled locally (Libre Baskerville & Inter .woff2)</div>
-        <div><strong>Local SQLite Mirror:</strong> ✅ <strong>${_engineInfo.sqliteNotes ?? 0}</strong> PDF notes/digests & <strong>${_engineInfo.sqliteAnnNotes ?? 0}</strong> annotation notes mirrored on disk</div>
-        <div><strong>Notes Formatting Gate:</strong> ✅ 100% SHA-256 byte-exact (Zero conversion)</div>
+        <div><strong>Native Disk PDF Cache:</strong> ✅ <strong>${_engineInfo.cachedPdfs ?? 0}</strong> PDFs cached locally</div>
+        <div><strong>Permanent Page Vault:</strong> ✅ Rendered pages &amp; text layers stay permanently vaulted</div>
+        <div><strong>Local SQLite Mirror:</strong> ✅ <strong>${_engineInfo.sqliteNotes ?? 0}</strong> PDF notes/digests &amp; <strong>${_engineInfo.sqliteAnnNotes ?? 0}</strong> annotation notes mirrored</div>
+        <div id="dsm-update-status" style="margin-top:6px;padding-top:6px;border-top:1px solid #1e293b;color:#a7f3d0;">
+          ${_updateInfo?.hasUpdate ? `🔄 <strong>New GitHub Update Available: Build #${_updateInfo.remoteBuild}</strong>` : '✅ GitHub Auto-Updater active (checks on startup)'}
+        </div>
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
         ${!S.driveUser ? `<button id="dsm-gmail-login" style="padding:8px 14px;background:#ca8a04;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">🔑 Sign in with Google (Gmail)</button>` : ''}
+        <button id="dsm-check-update" style="padding:8px 14px;background:#059669;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">🔄 Check for Updates</button>
         <button id="dsm-ok" style="padding:8px 14px;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:12px;cursor:pointer;">Close</button>
       </div>
     </div>
@@ -463,7 +551,35 @@ async function showDesktopStatusModal() {
     modal.style.display = 'none';
     try { await driveSignIn(); } catch {}
   });
+  modal.querySelector('#dsm-check-update')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const statusEl = modal.querySelector('#dsm-update-status');
+    btn.disabled = true;
+    btn.textContent = '⏳ Checking GitHub…';
+    const info = await checkAndNotifyGitHubUpdate(true);
+    if (info?.hasUpdate) {
+      if (statusEl) {
+        statusEl.innerHTML = `🔄 <strong>Update Found (Build #${info.remoteBuild})!</strong> Downloading &amp; restarting…`;
+      }
+      btn.textContent = '⬇️ Installing Update…';
+      try {
+        await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null });
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = '🔄 Retry Update';
+        if (statusEl) statusEl.innerHTML = `<span style="color:#fca5a5;">⚠️ Update failed: ${err}</span>`;
+      }
+    } else {
+      btn.disabled = false;
+      btn.textContent = '✅ Up to Date';
+      if (statusEl) {
+        statusEl.innerHTML = `✅ You are on the latest build (Build #${info?.localBuild ?? 2}).`;
+      }
+    }
+  });
 }
+
+window.openDesktopEngineStatus = showDesktopStatusModal;
 
 async function initDesktopBridge() {
   injectDesktopUI();
@@ -473,6 +589,10 @@ async function initDesktopBridge() {
     } catch (e) {
       console.warn('[Desktop Bridge] status error:', e);
     }
+    // Automatically check GitHub for updates 2.5s after launch
+    setTimeout(() => {
+      checkAndNotifyGitHubUpdate(false);
+    }, 2500);
   }
 }
 

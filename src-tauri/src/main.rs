@@ -1468,7 +1468,169 @@ async fn desktop_sqlite_load_outbox(state: tauri::State<'_, AppState>) -> Result
     serde_json::to_string(&out).map_err(|e| e.to_string())
 }
 
+const EMBEDDED_VERSION_JSON: &str = include_str!("../../version.json");
+
+#[tauri::command]
+async fn desktop_check_github_update() -> Result<serde_json::Value, String> {
+    let local_val: serde_json::Value =
+        serde_json::from_str(EMBEDDED_VERSION_JSON).unwrap_or_else(|_| serde_json::json!({}));
+    let local_build = local_val.get("build").and_then(|v| v.as_u64()).unwrap_or(1);
+    let local_version = local_val
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("1.0.0")
+        .to_string();
+
+    let url = format!(
+        "https://raw.githubusercontent.com/larxe1/Legal-Annotator-App/main/version.json?t={}",
+        now_ms()
+    );
+
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+    cmd.args(["-fsSL", "--max-time", "10", &url]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+    let output = cmd.output().map_err(|e| format!("curl error: {e}"))?;
+    if !output.status.success() {
+        return Ok(serde_json::json!({
+            "hasUpdate": false,
+            "localBuild": local_build,
+            "localVersion": local_version,
+            "error": String::from_utf8_lossy(&output.stderr).to_string()
+        }));
+    }
+
+    let remote_str = String::from_utf8_lossy(&output.stdout);
+    let remote_val: serde_json::Value =
+        serde_json::from_str(&remote_str).map_err(|e| format!("invalid remote version.json: {e}"))?;
+    let remote_build = remote_val.get("build").and_then(|v| v.as_u64()).unwrap_or(0);
+    let remote_version = remote_val
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("1.0.0")
+        .to_string();
+    let notes = remote_val
+        .get("notes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let updated_at = remote_val
+        .get("updatedAt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let download_url = remote_val
+        .get("downloadUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe")
+        .to_string();
+
+    Ok(serde_json::json!({
+        "hasUpdate": remote_build > local_build,
+        "localBuild": local_build,
+        "localVersion": local_version,
+        "remoteBuild": remote_build,
+        "remoteVersion": remote_version,
+        "notes": notes,
+        "updatedAt": updated_at,
+        "downloadUrl": download_url
+    }))
+}
+
+#[tauri::command]
+async fn desktop_apply_github_update(download_url: Option<String>) -> Result<String, String> {
+    let url = download_url.unwrap_or_else(|| {
+        "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe".to_string()
+    });
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let new_exe = current_exe.with_extension("new.exe");
+    let old_exe = current_exe.with_extension("old.exe");
+
+    let _ = fs::remove_file(&new_exe);
+
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let new_exe_str = new_exe.to_string_lossy().to_string();
+    let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+    cmd.args([
+        "-L",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "240",
+        "-o",
+        &new_exe_str,
+        &url,
+    ]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+    let output = cmd.output().map_err(|e| format!("Failed to start download: {e}"))?;
+    if !output.status.success() {
+        let _ = fs::remove_file(&new_exe);
+        return Err(format!(
+            "Download failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    // Verify downloaded file is a valid Windows PE binary (> 10 MB and starts with 'MZ')
+    let meta = fs::metadata(&new_exe).map_err(|e| format!("Missing downloaded file: {e}"))?;
+    if meta.len() < 10_000_000 {
+        let _ = fs::remove_file(&new_exe);
+        return Err(format!(
+            "Downloaded file is too small ({} bytes), aborting update for safety.",
+            meta.len()
+        ));
+    }
+    let header = fs::read(&new_exe).map_err(|e| e.to_string())?;
+    if header.len() < 2 || &header[0..2] != b"MZ" {
+        let _ = fs::remove_file(&new_exe);
+        return Err("Downloaded file is not a valid Windows executable.".to_string());
+    }
+    drop(header);
+
+    // Swap executable in-place on Windows: rename running .exe -> .old.exe, then .new.exe -> .exe
+    let _ = fs::remove_file(&old_exe);
+    if let Err(rename_err) = fs::rename(&current_exe, &old_exe) {
+        let _ = fs::remove_file(&new_exe);
+        return Err(format!("Could not rename running executable: {rename_err}"));
+    }
+    if let Err(swap_err) = fs::rename(&new_exe, &current_exe) {
+        // Rollback if swap failed
+        let _ = fs::rename(&old_exe, &current_exe);
+        return Err(format!("Could not activate new executable: {swap_err}"));
+    }
+
+    // Spawn the newly updated executable and exit current process
+    let launch_exe = current_exe.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        let _ = std::process::Command::new(&launch_exe).spawn();
+        std::process::exit(0);
+    });
+
+    Ok("Update installed! Restarting Legal Annotator…".to_string())
+}
+
 fn main() {
+    // Clean up any leftover .old.exe from a previous self-update
+    if let Ok(cur_exe) = std::env::current_exe() {
+        let old_exe = cur_exe.with_extension("old.exe");
+        if old_exe.exists() {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1200));
+                let _ = fs::remove_file(old_exe);
+            });
+        }
+    }
+
     let data_dir = resolve_data_dir();
     let sqlite_path = data_dir.join("notes_mirror.sqlite");
     let pdf_cache_dir = data_dir.join("pdf_cache");
@@ -1525,6 +1687,8 @@ fn main() {
             desktop_sqlite_load_notepad_history,
             desktop_sqlite_save_outbox,
             desktop_sqlite_load_outbox,
+            desktop_check_github_update,
+            desktop_apply_github_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Legal Annotator Desktop");
