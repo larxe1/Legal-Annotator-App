@@ -382,8 +382,12 @@ export function updateSelectionUI() {
 
 // ── Unified Drag & Drop Logic ──
 async function handleReorder(targetId, targetType, draggedIds, insertAfter = false) {
-  const pdfIds = draggedIds.filter(id => id.startsWith('pdf:')).map(id => id.replace('pdf:', ''));
-  const foldIds = draggedIds.filter(id => !id.startsWith('pdf:'));
+  const pdfIds = draggedIds
+    .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
+    .filter(id => S.pdfs.some(p => p.id === id) || id.startsWith('pdf_'));
+  const foldIds = draggedIds
+    .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
+    .filter(id => !pdfIds.includes(id));
   
   let parentId = null;
   let subjectId = null;
@@ -454,7 +458,7 @@ async function handleReorder(targetId, targetType, draggedIds, insertAfter = fal
       }
       dbReorderFolder(s.id, i).catch(()=>{});
     } else {
-      if (s.obj.folder_id !== parentId) {
+      if (parentId && s.obj.folder_id !== parentId) {
         dbMovePDF(s.id, parentId).catch(()=>{});
         s.obj.folder_id = parentId;
       }
@@ -465,8 +469,12 @@ async function handleReorder(targetId, targetType, draggedIds, insertAfter = fal
 }
 
 async function handleMoveInto(targetFolderId, draggedIds) {
-  const pdfIds = draggedIds.filter(id => id.startsWith('pdf:')).map(id => id.replace('pdf:', ''));
-  const foldIds = draggedIds.filter(id => !id.startsWith('pdf:'));
+  const pdfIds = draggedIds
+    .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
+    .filter(id => S.pdfs.some(p => p.id === id) || id.startsWith('pdf_'));
+  const foldIds = draggedIds
+    .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
+    .filter(id => !pdfIds.includes(id));
   
   snapshotMove();
   
@@ -503,7 +511,10 @@ async function handleMoveInto(targetFolderId, draggedIds) {
     }
   }
 
-  if (changed) renderLibrary();
+  if (changed) {
+    S.expandedFold[targetFolderId] = true;
+    renderLibrary();
+  }
 }
 
 
@@ -571,6 +582,7 @@ function buildSubjectEl(subj) {
 
   hd.addEventListener('dragover', e => {
     e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
     hd.classList.add('drag-over');
   });
   hd.addEventListener('dragleave', () => hd.classList.remove('drag-over'));
@@ -578,12 +590,14 @@ function buildSubjectEl(subj) {
     e.preventDefault();
     e.stopPropagation();
     hd.classList.remove('drag-over');
-    const rawData = e.dataTransfer.getData('text/plain');
+    const rawData = e.dataTransfer ? e.dataTransfer.getData('text/plain') : null;
     if (!rawData) return;
     let payload;
     try { payload = JSON.parse(rawData); } catch { payload = { type: 'single', id: rawData }; }
     const draggedIds = payload.type === 'multi' ? payload.ids : [payload.id];
-    const foldIds = draggedIds.filter(id => !id.startsWith('pdf:'));
+    const foldIds = draggedIds
+      .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
+      .filter(id => S.folders.some(f => f.id === id));
     
     snapshotMove();
     
@@ -724,8 +738,18 @@ function buildFolderEl(fold) {
       S.selectedIds.add(fold.id);
       updateSelectionUI();
     }
-    const dragPayload = JSON.stringify({ type: 'multi', ids: Array.from(S.selectedIds) });
-    e.dataTransfer.setData('text/plain', dragPayload);
+    const dragPayload = JSON.stringify({
+      type: 'multi',
+      ids: Array.from(S.selectedIds).map(id => {
+        if (id.startsWith('pdf:')) return id;
+        if (S.pdfs.some(p => p.id === id) || id.startsWith('pdf_')) return 'pdf:' + id;
+        return id;
+      })
+    });
+    if (e.dataTransfer) {
+      e.dataTransfer.setData('text/plain', dragPayload);
+      e.dataTransfer.effectAllowed = 'move';
+    }
     document.querySelectorAll('.li-selected').forEach(el => el.style.opacity = '0.5');
   });
   w.addEventListener('dragend', () => { 
@@ -735,6 +759,7 @@ function buildFolderEl(fold) {
   hd.addEventListener('dragover', e => {
     if (!S.selectedIds.has(fold.id)) {
       e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
       hd.classList.add('drag-over');
     }
   });
@@ -743,7 +768,7 @@ function buildFolderEl(fold) {
     e.preventDefault();
     e.stopPropagation();
     hd.classList.remove('drag-over');
-    const rawData = e.dataTransfer.getData('text/plain');
+    const rawData = e.dataTransfer ? e.dataTransfer.getData('text/plain') : null;
     if (!rawData) return;
     
     let payload;
@@ -751,6 +776,19 @@ function buildFolderEl(fold) {
     const draggedIds = payload.type === 'multi' ? payload.ids : [payload.id];
 
     if (draggedIds.includes(fold.id)) return;
+
+    const pdfIds = draggedIds
+      .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
+      .filter(id => S.pdfs.some(p => p.id === id) || id.startsWith('pdf_'));
+    const foldIds = draggedIds
+      .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
+      .filter(id => !pdfIds.includes(id));
+
+    // When dragging ONLY PDFs onto a folder, user's intent is ALWAYS to move into the folder
+    if (pdfIds.length > 0 && foldIds.length === 0) {
+      await handleMoveInto(fold.id, draggedIds);
+      return;
+    }
 
     // Check intent based on mouse Y coordinate
     const rect = hd.getBoundingClientRect();
@@ -763,6 +801,25 @@ function buildFolderEl(fold) {
     } else {
       await handleMoveInto(fold.id, draggedIds);
     }
+  });
+
+  ch.addEventListener('dragover', e => {
+    if (e.target === ch && !S.selectedIds.has(fold.id)) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    }
+  });
+  ch.addEventListener('drop', async e => {
+    if (e.target !== ch) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rawData = e.dataTransfer ? e.dataTransfer.getData('text/plain') : null;
+    if (!rawData) return;
+    let payload;
+    try { payload = JSON.parse(rawData); } catch { payload = { type: 'single', id: rawData }; }
+    const draggedIds = payload.type === 'multi' ? payload.ids : [payload.id];
+    if (draggedIds.includes(fold.id)) return;
+    await handleMoveInto(fold.id, draggedIds);
   });
 
   return w;
@@ -803,8 +860,18 @@ function buildPdfEl(pdf) {
       updateSelectionUI();
     }
     
-    const dragPayload = JSON.stringify({ type: 'multi', ids: Array.from(S.selectedIds).map(id => id.startsWith('pdf_') ? 'pdf:'+id : id) });
-    e.dataTransfer.setData('text/plain', dragPayload);
+    const dragPayload = JSON.stringify({
+      type: 'multi',
+      ids: Array.from(S.selectedIds).map(id => {
+        if (id.startsWith('pdf:')) return id;
+        if (S.pdfs.some(p => p.id === id) || id.startsWith('pdf_')) return 'pdf:' + id;
+        return id;
+      })
+    });
+    if (e.dataTransfer) {
+      e.dataTransfer.setData('text/plain', dragPayload);
+      e.dataTransfer.effectAllowed = 'move';
+    }
     
     document.querySelectorAll('.li-selected').forEach(el => el.style.opacity = '0.5');
   });
@@ -815,6 +882,7 @@ function buildPdfEl(pdf) {
   el.addEventListener('dragover', e => {
     e.preventDefault();
     e.stopPropagation(); // prevent folder from also highlighting
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
     el.classList.add('drag-over');
   });
   el.addEventListener('dragleave', e => {
@@ -825,7 +893,7 @@ function buildPdfEl(pdf) {
     e.stopPropagation();
     el.classList.remove('drag-over');
 
-    const rawData = e.dataTransfer.getData('text/plain');
+    const rawData = e.dataTransfer ? e.dataTransfer.getData('text/plain') : null;
     if (!rawData) return;
     
     let payload;
