@@ -15,37 +15,49 @@ let _healthCheckInterval = null;
 
 // ── Internal: request/refresh an access token ──
 // silent=true → no popup (works if user already granted + has active Google session)
+async function _applyAccessToken(accessToken) {
+  S.driveToken = accessToken;
+  safeStorageSet('driveToken', S.driveToken);
+  safeStorageSet('driveTokenExpiry', Date.now() + 3500000); // ~58 mins
+  if (!S.driveUser) {
+    try {
+      const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${S.driveToken}` }
+      });
+      const info = await r.json();
+      S.driveUser = info.email || 'Connected';
+      safeStorageSet('driveUser', S.driveUser);
+    } catch {
+      S.driveUser = 'Connected';
+      safeStorageSet('driveUser', S.driveUser);
+    }
+  }
+  S.driveFolderId = await ensureAppFolder();
+  safeStorageSet('driveFolderId', S.driveFolderId);
+  updateDriveBar();
+  _scheduleRefresh();
+  _startHealthCheck();
+}
+
 function _requestToken(silent = false) {
+  if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function') {
+    return window.__DESKTOP_GOOGLE_OAUTH__(CLIENT_ID, SCOPE, silent).then(async (resp) => {
+      if (!resp || !resp.access_token) throw new Error(resp?.error || 'Cancelled');
+      await _applyAccessToken(resp.access_token);
+    });
+  }
   return new Promise((resolve, reject) => {
     const client = google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
       scope: SCOPE,
       callback: async (resp) => {
         if (resp.error) { reject(resp); return; }
-        S.driveToken = resp.access_token;
-        safeStorageSet('driveToken', S.driveToken);
-        safeStorageSet('driveTokenExpiry', Date.now() + 3500000); // ~58 mins
-        // Get user info (only needed on first sign-in)
-        if (!S.driveUser) {
-          try {
-            const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-              headers: { Authorization: `Bearer ${S.driveToken}` }
-            });
-            const info = await r.json();
-            S.driveUser = info.email || 'Connected';
-            safeStorageSet('driveUser', S.driveUser);
-          } catch {
-            S.driveUser = 'Connected';
-            safeStorageSet('driveUser', S.driveUser);
-          }
+        try {
+          await _applyAccessToken(resp.access_token);
+          resolve();
+        } catch (e) {
+          reject(e);
         }
-        // Ensure our app folder exists
-        S.driveFolderId = await ensureAppFolder();
-        safeStorageSet('driveFolderId', S.driveFolderId);
-        updateDriveBar();
-        _scheduleRefresh();   // schedule the next silent refresh
-        _startHealthCheck(); // begin periodic token health checks
-        resolve();
       },
     });
     // prompt: '' = silent (no UI shown if already authorised)
@@ -189,7 +201,12 @@ export async function driveSignIn() {
 }
 
 export function driveSignOut() {
-  if (S.driveToken) google.accounts.oauth2.revoke(S.driveToken);
+  if (S.driveToken && typeof google !== 'undefined' && google.accounts?.oauth2?.revoke) {
+    try { google.accounts.oauth2.revoke(S.driveToken); } catch {}
+  }
+  if (typeof window.__DESKTOP_GOOGLE_SIGNOUT__ === 'function') {
+    try { window.__DESKTOP_GOOGLE_SIGNOUT__(); } catch {}
+  }
   if (_tokenRefreshTimer) clearTimeout(_tokenRefreshTimer);
   _stopHealthCheck();
   S.driveToken = null;
@@ -211,17 +228,20 @@ function updateDriveBar() {
     btnEl.textContent  = 'Sign out';
     btnEl.onclick = driveSignOut;
   } else {
-    userEl.textContent = 'Not connected';
-    btnEl.textContent  = 'Sign in';
+    userEl.textContent = 'Google Drive (Gmail)';
+    btnEl.textContent  = '🔑 Sign in (Gmail)';
     btnEl.onclick = async () => {
       try {
         await driveSignIn();
         toast('Google Drive connected!');
         driveOrganizeAll({ silent: true }).catch(() => {});
       } catch {
-        toast('Drive sign-in failed');
+        toast('Drive sign-in cancelled or failed');
       }
     };
+  }
+  if (typeof window.__updateDesktopAuthBadge === 'function') {
+    window.__updateDesktopAuthBadge(S.driveUser);
   }
 }
 
@@ -1001,6 +1021,9 @@ export function initDriveBar() {
   } else {
     // Never signed in — render button, onclick already set by updateDriveBar()
     updateDriveBar();
+    if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function') {
+      _requestToken(true).catch(() => {});
+    }
   }
   // NOTE: Do NOT add an addEventListener here — updateDriveBar() already sets btnEl.onclick.
   // Two event bindings on the same button cause duplicate OAuth requests which browsers block.

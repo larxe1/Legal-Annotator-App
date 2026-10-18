@@ -3,6 +3,7 @@
 // ═════════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
 import { openPDFFromLibrary } from './viewer.js';
+import { driveSignIn } from './drive.js';
 
 const invoke = window.__TAURI_INTERNALS__?.invoke
   ? (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args)
@@ -19,6 +20,38 @@ function arrayBufferToBase64(buffer) {
     parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunk)));
   }
   return btoa(parts.join(''));
+}
+
+// ── Native Tauri Google (Gmail) OAuth Bridge ──────────────────────────────
+if (invoke) {
+  window.__DESKTOP_GOOGLE_OAUTH__ = async (_clientId, _scope, silent = false) => {
+    const startRes = await invoke('desktop_start_google_oauth', { silent: !!silent });
+    if (startRes?.status === 'success' && startRes?.accessToken) {
+      return { access_token: startRes.accessToken };
+    }
+    if (silent) {
+      throw new Error('Silent refresh requires interactive login');
+    }
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 180_000) {
+      await new Promise(r => setTimeout(r, 300));
+      const poll = await invoke('desktop_poll_google_oauth');
+      if (poll?.status === 'success' && poll?.accessToken) {
+        return { access_token: poll.accessToken };
+      }
+      if (poll?.status === 'closed' || poll?.status === 'idle') {
+        throw new Error('Google sign-in window closed');
+      }
+    }
+    throw new Error('Google sign-in timed out');
+  };
+
+  window.__DESKTOP_GOOGLE_SIGNOUT__ = async () => {
+    try {
+      await invoke('desktop_clear_google_oauth');
+    } catch {}
+  };
 }
 
 window.__DESKTOP_PDFIUM__ = {
@@ -131,14 +164,45 @@ function injectDesktopUI() {
   `;
   syncBar.insertAdjacentElement('afterend', engineBar);
 
+  // Prominent Gmail / Google Drive Sign-In button if not connected
+  const gmailBtn = document.createElement('button');
+  gmailBtn.id = 'btn-desktop-gmail-login';
+  gmailBtn.className = 'desktop-open-local-btn';
+  gmailBtn.style.cssText = 'background:linear-gradient(135deg, rgba(234,179,8,0.18), rgba(202,138,4,0.28));border-color:#eab308;color:#fde047;margin-bottom:4px;';
+  gmailBtn.innerHTML = '🔑 Sign in with Google (Gmail) for Cloud PDFs';
+  gmailBtn.addEventListener('click', async () => {
+    const orig = gmailBtn.innerHTML;
+    gmailBtn.innerHTML = '⏳ Opening Google Sign-In window…';
+    try {
+      await driveSignIn();
+    } catch (e) {
+      console.warn('[Desktop OAuth] Sign-in error:', e);
+    } finally {
+      gmailBtn.innerHTML = orig;
+      window.__updateDesktopAuthBadge?.(S.driveUser);
+    }
+  });
+  engineBar.insertAdjacentElement('afterend', gmailBtn);
+
   const openBtn = document.createElement('button');
   openBtn.id = 'btn-open-local-pdf';
   openBtn.className = 'desktop-open-local-btn';
   openBtn.innerHTML = '📂 Open Local PDF from PC…';
   openBtn.addEventListener('click', handleOpenLocalPdfClick);
-  engineBar.insertAdjacentElement('afterend', openBtn);
+  gmailBtn.insertAdjacentElement('afterend', openBtn);
 
   engineBar.addEventListener('click', showDesktopStatusModal);
+
+  window.__updateDesktopAuthBadge = (driveUser) => {
+    const btn = document.getElementById('btn-desktop-gmail-login');
+    if (!btn) return;
+    if (driveUser) {
+      btn.style.display = 'none';
+    } else {
+      btn.style.display = 'flex';
+    }
+  };
+  window.__updateDesktopAuthBadge(S.driveUser);
 
   window.__updateDesktopEngineBadge = ({ activeCanvases, cachedPreviews, totalPages }) => {
     const ramLbl = document.getElementById('desktop-ram-lbl');
@@ -187,12 +251,14 @@ async function showDesktopStatusModal() {
       <div style="font-size:12px;line-height:1.7;color:#cbd5e1;background:#0c1322;border:1px solid #1e293b;border-radius:8px;padding:12px 14px;margin-bottom:14px;">
         <div><strong>PDF Engine:</strong> <span style="color:#4ade80">${_engineInfo.engine || 'Native PDFium (x64)'}</span></div>
         <div><strong>PDFium DLL:</strong> ${_engineInfo.pdfiumLoaded ? '✅ Loaded natively in Rust' : '⚠️ Fallback mode'}</div>
+        <div><strong>Google Drive (Gmail):</strong> ${S.driveUser ? `✅ Connected (${S.driveUser})` : '⚠️ Not signed in yet'}</div>
         <div><strong>Memory Protection:</strong> ✅ Windowed Canvas Eviction (max ±5 active pages in GPU RAM) + CSS <code>content-visibility: auto</code></div>
         <div><strong>Offline Fonts:</strong> ✅ Bundled locally (Libre Baskerville & Inter .woff2)</div>
         <div><strong>Local SQLite Mirror:</strong> ✅ <strong>${_engineInfo.sqliteNotes ?? 0}</strong> PDF notes/digests & <strong>${_engineInfo.sqliteAnnNotes ?? 0}</strong> annotation notes mirrored on disk</div>
         <div><strong>Notes Formatting Gate:</strong> ✅ 100% SHA-256 byte-exact (Zero conversion)</div>
       </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
+        ${!S.driveUser ? `<button id="dsm-gmail-login" style="padding:8px 14px;background:#ca8a04;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">🔑 Sign in with Google (Gmail)</button>` : ''}
         <button id="dsm-open-local" style="padding:8px 14px;background:#2563eb;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">📂 Open Local PDF…</button>
         <button id="dsm-ok" style="padding:8px 14px;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:12px;cursor:pointer;">Close</button>
       </div>
@@ -200,6 +266,10 @@ async function showDesktopStatusModal() {
   `;
   modal.querySelector('#dsm-close')?.addEventListener('click', () => { modal.style.display = 'none'; });
   modal.querySelector('#dsm-ok')?.addEventListener('click', () => { modal.style.display = 'none'; });
+  modal.querySelector('#dsm-gmail-login')?.addEventListener('click', async () => {
+    modal.style.display = 'none';
+    try { await driveSignIn(); } catch {}
+  });
   modal.querySelector('#dsm-open-local')?.addEventListener('click', () => {
     modal.style.display = 'none';
     handleOpenLocalPdfClick();

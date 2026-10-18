@@ -11,8 +11,10 @@ use std::{
     ffi::{c_char, c_int, c_void, CString},
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 struct RawPdfDoc {
     handle: usize,
@@ -32,6 +34,16 @@ unsafe impl Send for PdfiumHolder {}
 struct AppState {
     pdfium: Mutex<PdfiumHolder>,
     sqlite_path: PathBuf,
+    oauth_path: PathBuf,
+    oauth_token: Arc<Mutex<Option<String>>>,
+    oauth_status: Arc<Mutex<String>>,
+}
+
+#[derive(Serialize)]
+struct OAuthPollResponse {
+    status: String,
+    #[serde(rename = "accessToken")]
+    access_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -475,13 +487,285 @@ fn pdfium_pick_local_pdf() -> Result<Option<PickedPdfResponse>, String> {
     }))
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn percent_decode_simple(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push(((h << 4) | l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn extract_ya29_token(s: &str) -> Option<String> {
+    let decoded = percent_decode_simple(s);
+    for candidate in [s, decoded.as_str()] {
+        if let Some(idx) = candidate.find("ya29.") {
+            let rest = &candidate[idx..];
+            let token: String = rest
+                .chars()
+                .take_while(|c| {
+                    c.is_ascii_alphanumeric() || *c == '_' || *c == '-' || *c == '.'
+                })
+                .collect();
+            if token.len() > 20 {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+fn load_saved_oauth_token(oauth_path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(oauth_path).ok()?;
+    let json = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    let token = json.get("access_token")?.as_str()?.to_string();
+    let saved_at = json.get("saved_at_ms")?.as_u64()?;
+    if now_ms().saturating_sub(saved_at) < 52 * 60 * 1000 && token.starts_with("ya29.") {
+        Some(token)
+    } else {
+        None
+    }
+}
+
+fn save_oauth_token(oauth_path: &Path, token: &str) {
+    if let Some(parent) = oauth_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let payload = serde_json::json!({
+        "access_token": token,
+        "saved_at_ms": now_ms(),
+    });
+    if let Ok(s) = serde_json::to_string_pretty(&payload) {
+        let _ = fs::write(oauth_path, s);
+    }
+}
+
+const OAUTH_INIT_SCRIPT: &str = r#"
+(function() {
+  function reportToken(tok) {
+    if (!tok || window.__TAURI_TOKEN_SENT__) return;
+    window.__TAURI_TOKEN_SENT__ = true;
+    window.location.replace('http://127.0.0.1:19876/__tauri_oauth?token=' + encodeURIComponent(tok));
+  }
+  function inspectPayload(val) {
+    try {
+      var s = typeof val === 'string' ? val : JSON.stringify(val);
+      if (!s) return false;
+      var m = s.match(/ya29\.[A-Za-z0-9_\-\.]+/);
+      if (m && m[0] && m[0].length > 20) {
+        reportToken(m[0]);
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+  var fakeOpener = {
+    postMessage: function(msg, origin) {
+      inspectPayload(msg);
+    },
+    closed: false,
+    location: { href: 'https://notetaking-app.pages.dev/' }
+  };
+  try {
+    fakeOpener.frames = new Proxy({}, {
+      get: function() { return fakeOpener; }
+    });
+  } catch (e) {}
+  try {
+    Object.defineProperty(window, 'opener', {
+      get: function() { return fakeOpener; },
+      configurable: true
+    });
+  } catch (e) {}
+  window.close = function() {
+    try {
+      inspectPayload(window.location.href);
+      if (document.documentElement) {
+        inspectPayload(document.documentElement.innerHTML);
+      }
+    } catch (e) {}
+  };
+  setInterval(function() {
+    try {
+      inspectPayload(window.location.href);
+      if (document.documentElement) {
+        inspectPayload(document.documentElement.innerHTML);
+      }
+    } catch (e) {}
+  }, 150);
+})();
+"#;
+
+#[tauri::command]
+fn desktop_start_google_oauth(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    silent: Option<bool>,
+) -> Result<OAuthPollResponse, String> {
+    if silent.unwrap_or(false) {
+        if let Some(saved) = load_saved_oauth_token(&state.oauth_path) {
+            if let Ok(mut g) = state.oauth_token.lock() {
+                *g = Some(saved.clone());
+            }
+            if let Ok(mut st) = state.oauth_status.lock() {
+                *st = "success".into();
+            }
+            return Ok(OAuthPollResponse {
+                status: "success".into(),
+                access_token: Some(saved),
+            });
+        }
+        return Ok(OAuthPollResponse {
+            status: "needs_interactive".into(),
+            access_token: None,
+        });
+    }
+
+    if let Ok(mut g) = state.oauth_token.lock() {
+        *g = None;
+    }
+    if let Ok(mut st) = state.oauth_status.lock() {
+        *st = "pending".into();
+    }
+
+    if let Some(existing) = app.get_webview_window("google-auth") {
+        let _ = existing.destroy();
+    }
+
+    let auth_url_str = "https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=3&client_id=572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20email%20profile&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fnotetaking-app.pages.dev%3Fid%3Dauth123456&prompt=select_account&response_type=token&include_granted_scopes=true";
+    let parsed_url = tauri::Url::parse(auth_url_str).map_err(|e| e.to_string())?;
+
+    let token_arc = Arc::clone(&state.oauth_token);
+    let status_arc = Arc::clone(&state.oauth_status);
+    let oauth_path = state.oauth_path.clone();
+    let app_for_nav = app.clone();
+
+    WebviewWindowBuilder::new(&app, "google-auth", WebviewUrl::External(parsed_url))
+        .title("Sign in with Google (Gmail) — Legal Annotator")
+        .inner_size(520.0, 680.0)
+        .center()
+        .always_on_top(true)
+        .initialization_script(OAUTH_INIT_SCRIPT)
+        .on_navigation(move |url| {
+            let url_str = url.as_str();
+            if let Some(tok) = extract_ya29_token(url_str) {
+                save_oauth_token(&oauth_path, &tok);
+                if let Ok(mut g) = token_arc.lock() {
+                    *g = Some(tok);
+                }
+                if let Ok(mut st) = status_arc.lock() {
+                    *st = "success".into();
+                }
+                let app_clone = app_for_nav.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(60));
+                    if let Some(w) = app_clone.get_webview_window("google-auth") {
+                        let _ = w.destroy();
+                    }
+                });
+                return false;
+            }
+            if url_str.starts_with("http://127.0.0.1:19876/")
+                || url_str.starts_with("storagerelay://")
+            {
+                return false;
+            }
+            true
+        })
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(OAuthPollResponse {
+        status: "pending".into(),
+        access_token: None,
+    })
+}
+
+#[tauri::command]
+fn desktop_poll_google_oauth(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> OAuthPollResponse {
+    let tok_opt = state.oauth_token.lock().ok().and_then(|g| g.clone());
+    if let Some(tok) = tok_opt {
+        if let Some(w) = app.get_webview_window("google-auth") {
+            let _ = w.destroy();
+        }
+        return OAuthPollResponse {
+            status: "success".into(),
+            access_token: Some(tok),
+        };
+    }
+
+    let mut status = state
+        .oauth_status
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_else(|| "idle".into());
+
+    if status == "pending" && app.get_webview_window("google-auth").is_none() {
+        status = "closed".into();
+        if let Ok(mut st) = state.oauth_status.lock() {
+            *st = "closed".into();
+        }
+    }
+
+    OAuthPollResponse {
+        status,
+        access_token: None,
+    }
+}
+
+#[tauri::command]
+fn desktop_clear_google_oauth(state: tauri::State<'_, AppState>) -> bool {
+    if let Ok(mut g) = state.oauth_token.lock() {
+        *g = None;
+    }
+    if let Ok(mut st) = state.oauth_status.lock() {
+        *st = "idle".into();
+    }
+    let _ = fs::remove_file(&state.oauth_path);
+    true
+}
+
 fn main() {
     let sqlite_path = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\notes_mirror.sqlite");
+    let oauth_path = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\google_oauth.json");
     let _ = init_sqlite_mirror(&sqlite_path);
+
+    let initial_tok = load_saved_oauth_token(&oauth_path);
+    let initial_status = if initial_tok.is_some() {
+        "success".to_string()
+    } else {
+        "idle".to_string()
+    };
 
     let app_state = AppState {
         pdfium: Mutex::new(PdfiumHolder::new()),
         sqlite_path,
+        oauth_path,
+        oauth_token: Arc::new(Mutex::new(initial_tok)),
+        oauth_status: Arc::new(Mutex::new(initial_status)),
     };
 
     tauri::Builder::default()
@@ -492,6 +776,9 @@ fn main() {
             pdfium_open_bytes,
             pdfium_render_page,
             pdfium_pick_local_pdf,
+            desktop_start_google_oauth,
+            desktop_poll_google_oauth,
+            desktop_clear_google_oauth,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Legal Annotator Desktop");
