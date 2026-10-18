@@ -8,6 +8,7 @@ config.js
 tools/fidelity/snapshot/
 tools/fidelity/report/
 data/
+LegalAnnotatorData/
 
 # Build output & large binaries
 node_modules/

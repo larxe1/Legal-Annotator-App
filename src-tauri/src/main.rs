@@ -79,7 +79,32 @@ struct PickedPdfResponse {
     base64: String,
 }
 
-fn find_pdfium_dll() -> Option<PathBuf> {
+const EMBEDDED_PDFIUM_DLL: &[u8] = include_bytes!("../bin/pdfium.dll");
+
+fn resolve_data_dir() -> PathBuf {
+    let dev_d_drive = PathBuf::from(r"D:\Code\legal-annotator-desktop\data");
+    if dev_d_drive.exists() {
+        return dev_d_drive;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let portable_dir = dir.join("LegalAnnotatorData");
+            if fs::create_dir_all(&portable_dir).is_ok() {
+                return portable_dir;
+            }
+        }
+    }
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let app_dir = PathBuf::from(local_app_data).join("LegalAnnotatorDesktop").join("data");
+        let _ = fs::create_dir_all(&app_dir);
+        return app_dir;
+    }
+    let fallback = PathBuf::from("LegalAnnotatorData");
+    let _ = fs::create_dir_all(&fallback);
+    fallback
+}
+
+fn find_pdfium_dll(data_dir: &Path) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -92,19 +117,33 @@ fn find_pdfium_dll() -> Option<PathBuf> {
             }
         }
     }
+    candidates.push(data_dir.join("bin").join("pdfium.dll"));
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("src-tauri").join("bin").join("pdfium.dll"));
         candidates.push(cwd.join("bin").join("pdfium.dll"));
         candidates.push(cwd.join("pdfium.dll"));
     }
     candidates.push(PathBuf::from(r"D:\Code\legal-annotator-desktop\src-tauri\bin\pdfium.dll"));
-    candidates.into_iter().find(|p| p.exists())
+
+    if let Some(found) = candidates.into_iter().find(|p| p.exists()) {
+        return Some(found);
+    }
+
+    // Auto-extract embedded pdfium.dll so the .exe works as a single standalone portable file on any PC/laptop
+    let extracted_bin_dir = data_dir.join("bin");
+    if fs::create_dir_all(&extracted_bin_dir).is_ok() {
+        let dll_target = extracted_bin_dir.join("pdfium.dll");
+        if fs::write(&dll_target, EMBEDDED_PDFIUM_DLL).is_ok() {
+            return Some(dll_target);
+        }
+    }
+    None
 }
 
 impl PdfiumHolder {
-    fn new() -> Self {
+    fn new(data_dir: &Path) -> Self {
         let mut lib_opt = None;
-        if let Some(dll_path) = find_pdfium_dll() {
+        if let Some(dll_path) = find_pdfium_dll(data_dir) {
             unsafe {
                 if let Ok(lib) = Library::new(&dll_path) {
                     if let Ok(init_fn) = lib.get::<unsafe extern "C" fn()>(b"FPDF_InitLibrary\0") {
@@ -1430,10 +1469,11 @@ async fn desktop_sqlite_load_outbox(state: tauri::State<'_, AppState>) -> Result
 }
 
 fn main() {
-    let sqlite_path = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\notes_mirror.sqlite");
-    let pdf_cache_dir = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\pdf_cache");
-    let page_vault_dir = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\page_vault");
-    let oauth_path = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\google_oauth.json");
+    let data_dir = resolve_data_dir();
+    let sqlite_path = data_dir.join("notes_mirror.sqlite");
+    let pdf_cache_dir = data_dir.join("pdf_cache");
+    let page_vault_dir = data_dir.join("page_vault");
+    let oauth_path = data_dir.join("google_oauth.json");
     let _ = fs::create_dir_all(&pdf_cache_dir);
     let _ = fs::create_dir_all(&page_vault_dir);
     let _ = init_sqlite_mirror(&sqlite_path);
@@ -1446,7 +1486,7 @@ fn main() {
     };
 
     let app_state = AppState {
-        pdfium: Mutex::new(PdfiumHolder::new()),
+        pdfium: Mutex::new(PdfiumHolder::new(&data_dir)),
         sqlite_path,
         pdf_cache_dir,
         page_vault_dir,
