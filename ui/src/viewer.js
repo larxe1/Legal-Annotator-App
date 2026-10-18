@@ -222,59 +222,23 @@ function updateDesktopEngineStats() {
 }
 
 export function unrenderFarPages() {
-  if (!S.pdfDoc || !S.pages) return;
-  const cur = S.curPage || 1;
-  for (const p of Array.from(_renderedPages)) {
-    if (Math.abs(p - cur) > MAX_ACTIVE_RADIUS) {
-      const pg = S.pages[p];
-      if (!pg || !pg.rendered || pg.rendering) continue;
-      try {
-        if (pg.pdfCanvas && pg.pdfCanvas.width > 0 && !_pagePreviewCache.has(p)) {
-          _pagePreviewCache.set(p, pg.pdfCanvas.toDataURL('image/webp', 0.82));
-        }
-        if (pg.pdfCanvas) { pg.pdfCanvas.width = 0; pg.pdfCanvas.height = 0; }
-        if (pg.drawCanvas) { pg.drawCanvas.width = 0; pg.drawCanvas.height = 0; }
-      } catch {}
-      pg.rendered = false;
-      pg.pdfCanvas = null;
-      pg.drawCanvas = null;
-      pg.txtLayer = null;
-      pg.annOv = null;
-      pg.srchOv = null;
-      _boxDone.delete(p);
-      _drawDone.delete(p);
-      _textDone.delete(p);
-      _renderedPages.delete(p);
-      const preview = _pagePreviewCache.get(p);
-      if (pg.wrap) {
-        pg.wrap.classList.add('pg-cv-auto');
-        pg.wrap.innerHTML = preview
-          ? `<img class="pg-evicted-preview" src="${preview}" alt="Page ${p}" style="width:100%;height:100%;display:block;pointer-events:none;opacity:0.98">`
-          : `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:'Inter',sans-serif;letter-spacing:.05em">Page ${p}</div>`;
-      }
-    }
-  }
+  // Disabled: keep all rendered pages permanently loaded so scrolling never jumps or reloads
   updateDesktopEngineStats();
 }
 
 export function scheduleUnrenderFarPages() {
-  clearTimeout(_evictTimer);
-  _evictTimer = setTimeout(unrenderFarPages, 180);
+  updateDesktopEngineStats();
 }
 
-// Cooperative idle scheduler helper: uses requestIdleCallback if available, or polite 35ms timeout
+// Cooperative idle scheduler helper: uses polite timeout so scrolling stays 60fps while loading all pages
 function scheduleIdleWork(fn) {
-  if (typeof window.requestIdleCallback === 'function') {
-    return window.requestIdleCallback(() => fn(), { timeout: 120 });
-  }
-  return setTimeout(fn, 35);
+  return setTimeout(fn, 16);
 }
 
 let _bgTriggerFn = null;
 
 // Wake up background renderer when user stops scrolling
 onScrollIdle(() => {
-  scheduleUnrenderFarPages();
   if (_bgTriggerFn) {
     const fn = _bgTriggerFn;
     _bgTriggerFn = null;
@@ -294,10 +258,8 @@ export function startBackgroundDocRenderer(docId) {
     let nextP = null;
     let minDiff = Infinity;
 
-    // Desktop Memory-Bounded Strategy: only pre-render within ±3 pages of current reading position!
-    const lo = Math.max(1, cur - 3);
-    const hi = Math.min(S.totalPages, cur + 3);
-    for (let p = lo; p <= hi; p++) {
+    // Render all pages outward from current reading position (1..totalPages) and keep them loaded!
+    for (let p = 1; p <= S.totalPages; p++) {
       const pg = S.pages?.[p];
       if (pg && !pg.rendered && !pg.rendering) {
         const diff = Math.abs(p - cur);
@@ -309,11 +271,11 @@ export function startBackgroundDocRenderer(docId) {
     }
 
     if (nextP === null || _bgRenderGen !== myGen) {
-      scheduleUnrenderFarPages();
+      updateDesktopEngineStats();
       return;
     }
 
-    if (isUserScrolling() && Math.abs(nextP - cur) > 1) {
+    if (isUserScrolling() && Math.abs(nextP - cur) > 2) {
       _bgTriggerFn = () => {
         if (_bgRenderGen === myGen) scheduleIdleWork(renderNextUnrendered);
       };
@@ -480,9 +442,16 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       _pageObserver = null;
     }
 
-    // Get page 1 viewport for default aspect ratio
+    // Get page 1 viewport and page 2 (body page) viewport so cover-page size differences never cause layout shifts
     const p1 = await S.pdfDoc.getPage(1);
     const vp1 = p1.getViewport({ scale: S.scale });
+    let vpBody = vp1;
+    if (S.totalPages >= 2) {
+      try {
+        const p2 = await S.pdfDoc.getPage(2);
+        vpBody = p2.getViewport({ scale: S.scale });
+      } catch {}
+    }
 
     // Determine starting page:
     // Manual folder-specific default page OVERRIDES automatic last-read bookmark!
@@ -505,34 +474,19 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       startPage = savedStart ? Math.min(S.totalPages, Math.max(1, parseInt(savedStart))) : 1;
     }
 
-    // Instantly create lightweight placeholders for all pages
-    // Scrollbar and page navigation work immediately across all 700+ pages!
+    // Instantly create fixed-size placeholders for all pages (flex-shrink: 0 in CSS prevents any shrinking)
     for (let p = 1; p <= S.totalPages; p++) {
+      const vpInit = p === 1 ? vp1 : vpBody;
       const wrap = document.createElement('div');
-      // Only apply content-visibility: auto to off-screen pages outside initial viewport
-      const isOffscreen = Math.abs(p - startPage) > 2;
-      wrap.className = isOffscreen ? 'pg-wrap pg-cv-auto' : 'pg-wrap';
+      wrap.className = 'pg-wrap';
       wrap.dataset.page = p;
-      wrap.style.width = vp1.width + 'px';
-      wrap.style.height = vp1.height + 'px';
-      wrap.style.setProperty('--pg-w', vp1.width + 'px');
-      wrap.style.setProperty('--pg-h', vp1.height + 'px');
+      wrap.style.width = vpInit.width + 'px';
+      wrap.style.height = vpInit.height + 'px';
+      wrap.style.minHeight = vpInit.height + 'px';
+      wrap.style.flexShrink = '0';
       wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:'Inter',sans-serif;letter-spacing:.05em">Page ${p}</div>`;
       scroll.appendChild(wrap);
-      S.pages[p] = { wrap, rendered: false, rendering: false, viewport: vp1, textItems: [] };
-    }
-
-    if (!scroll.dataset.cvBound) {
-      scroll.dataset.cvBound = 'true';
-      scroll.addEventListener('contentvisibilityautostatechange', (event) => {
-        const target = event.target;
-        if (target && target.classList?.contains('pg-wrap')) {
-          const pNum = parseInt(target.dataset.page);
-          if (!event.skipped && pNum >= 1 && Math.abs(pNum - (S.curPage || 1)) <= MAX_ACTIVE_RADIUS) {
-            ensurePageRendered(pNum);
-          }
-        }
-      }, { capture: true });
+      S.pages[p] = { wrap, rendered: false, rendering: false, viewport: vpInit, textItems: [] };
     }
 
     S.curPage = startPage;
@@ -544,9 +498,6 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
 
     // ── INSTANT RESUME: jump to saved page before any rendering happens ──
     if (startPage > 1) {
-      const pageHeightWithGap = vp1.height + 24;
-      scroll.scrollTop = 28 + (startPage - 1) * pageHeightWithGap;
-
       const targetWrap = S.pages[startPage]?.wrap;
       if (targetWrap) {
         targetWrap.scrollIntoView({ behavior: 'auto', block: 'start' });
@@ -555,24 +506,27 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       scroll.scrollTop = 0;
     }
 
-    // IntersectionObserver renders pages as they scroll into view (with 1200px pre-render margin)
+    // IntersectionObserver renders pages that settle in/near viewport without queueing skipped intermediate pages during fast scrollbar drag
     _pageObserver = new IntersectionObserver((entries) => {
       for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
         const pNum = parseInt(entry.target.dataset.page);
-        if (entry.isIntersecting) {
-          ensurePageRendered(pNum);
-          if (pNum < S.totalPages && !S.pages[pNum + 1]?.rendered && !S.pages[pNum + 1]?.rendering) {
-            ensurePageRendered(pNum + 1);
+        setTimeout(() => {
+          if (!S.pages?.[pNum] || S.pages[pNum].rendered || S.pages[pNum].rendering) return;
+          if (Math.abs(pNum - (S.curPage || 1)) <= 4) {
+            ensurePageRendered(pNum);
+            if (pNum < S.totalPages && !S.pages[pNum + 1]?.rendered && !S.pages[pNum + 1]?.rendering) {
+              ensurePageRendered(pNum + 1);
+            }
+            if (pNum > 1 && !S.pages[pNum - 1]?.rendered && !S.pages[pNum - 1]?.rendering) {
+              ensurePageRendered(pNum - 1);
+            }
           }
-          if (pNum > 1 && !S.pages[pNum - 1]?.rendered && !S.pages[pNum - 1]?.rendering) {
-            ensurePageRendered(pNum - 1);
-          }
-        }
+        }, 45);
       }
-      scheduleUnrenderFarPages();
     }, {
       root: scroll,
-      rootMargin: '1200px 0px 1200px 0px',
+      rootMargin: '800px 0px 800px 0px',
     });
 
     for (let p = 1; p <= S.totalPages; p++) {
@@ -627,7 +581,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     // Track recent PDFs
     pushRecent(pdfFile);
 
-    // Start bounded lookahead renderer (only ±3 pages around current reading position)
+    // Start background renderer to load all pages outward from current position
     startBackgroundDocRenderer(pdfFile.id);
 
     // Smart syllabus pre-fetch: silently cache next PDF in folder for 0ms transition
@@ -673,17 +627,24 @@ export async function reRenderAll() {
   if (!S.pdfDoc) return;
   const p1 = await S.pdfDoc.getPage(1);
   const vp1 = p1.getViewport({ scale: S.scale });
+  let vpBody = vp1;
+  if (S.totalPages >= 2) {
+    try {
+      const p2 = await S.pdfDoc.getPage(2);
+      vpBody = p2.getViewport({ scale: S.scale });
+    } catch {}
+  }
 
   _pagePreviewCache.clear();
 
   // Update sizes on all page wrappers
   for (let p = 1; p <= S.totalPages; p++) {
+    const vpInit = p === 1 ? vp1 : vpBody;
     const pg = S.pages[p];
     if (pg?.wrap) {
-      pg.wrap.style.width = vp1.width + 'px';
-      pg.wrap.style.height = vp1.height + 'px';
-      pg.wrap.style.setProperty('--pg-w', vp1.width + 'px');
-      pg.wrap.style.setProperty('--pg-h', vp1.height + 'px');
+      pg.wrap.style.width = vpInit.width + 'px';
+      pg.wrap.style.height = vpInit.height + 'px';
+      pg.wrap.style.minHeight = vpInit.height + 'px';
       if (pg.rendered) {
         if (pg.pdfCanvas) { pg.pdfCanvas.width = 0; pg.pdfCanvas.height = 0; }
         if (pg.drawCanvas) { pg.drawCanvas.width = 0; pg.drawCanvas.height = 0; }
@@ -708,12 +669,13 @@ export async function reRenderAll() {
 // ── Render a single page on-demand ──
 export async function ensurePageRendered(pageNum, container = null) {
   if (!S.pdfDoc) return;
+  const scroll = container || document.getElementById('canvas-scroll');
   if (!S.pages[pageNum]) {
-    const scroll = container || document.getElementById('canvas-scroll');
     if (!scroll) return;
     const wrap = document.createElement('div');
     wrap.className = 'pg-wrap';
     wrap.dataset.page = pageNum;
+    wrap.style.flexShrink = '0';
     scroll.appendChild(wrap);
     S.pages[pageNum] = { wrap, rendered: false, rendering: false, viewport: null, textItems: [] };
   }
@@ -727,16 +689,27 @@ export async function ensurePageRendered(pageNum, container = null) {
     pgState.viewport = vp;
 
     const wrap = pgState.wrap;
-    wrap.classList.remove('pg-cv-auto');
-    wrap.style.width  = vp.width  + 'px';
-    wrap.style.height = vp.height + 'px';
-    wrap.style.setProperty('--pg-w', vp.width + 'px');
-    wrap.style.setProperty('--pg-h', vp.height + 'px');
+    const oldH = parseFloat(wrap.style.height) || wrap.offsetHeight || vp.height;
+    const deltaH = vp.height - oldH;
+
+    wrap.style.width     = vp.width  + 'px';
+    wrap.style.height    = vp.height + 'px';
+    wrap.style.minHeight = vp.height + 'px';
+    wrap.style.flexShrink = '0';
+
+    // If a page above the current scroll position has a different height than the placeholder,
+    // immediately compensate scrollTop by deltaH so the visible page never jumps!
+    if (scroll && Math.abs(deltaH) > 0.5 && wrap.offsetTop < scroll.scrollTop) {
+      scroll.scrollTop += deltaH;
+    }
+
     wrap.innerHTML = ''; // remove placeholder
 
     const pdfCanvas = document.createElement('canvas');
     pdfCanvas.width  = vp.width;
     pdfCanvas.height = vp.height;
+    pdfCanvas.style.width  = vp.width + 'px';
+    pdfCanvas.style.height = vp.height + 'px';
 
     const drawCanvas = document.createElement('canvas');
     drawCanvas.width  = vp.width;

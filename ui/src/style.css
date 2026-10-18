@@ -1220,15 +1220,16 @@ kbd { background: var(--navy); border: 1px solid var(--navy-b); border-radius: 4
 }
 
 
-/* ── Standalone Desktop Virtualization & Containment (Modern Web Guidance) ── */
-.pg-wrap.pg-cv-auto {
-  content-visibility: auto;
-  contain-intrinsic-size: auto var(--pg-w, 800px) auto var(--pg-h, 1100px);
+/* ── Standalone Desktop Layout Lock & Containment (Zero Scroll Jump) ── */
+#canvas-scroll,
+#canvas-scroll-b {
+  overflow-anchor: none !important;
 }
-@supports not (content-visibility: auto) {
-  .pg-wrap.pg-cv-auto {
-    contain: layout style paint;
-  }
+.pg-wrap,
+.pg-wrap.pg-cv-auto {
+  flex-shrink: 0 !important;
+  overflow-anchor: none !important;
+  contain: layout style paint;
 }
 .desktop-engine-bar {
   display: flex;

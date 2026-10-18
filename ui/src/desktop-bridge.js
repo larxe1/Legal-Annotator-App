@@ -100,9 +100,8 @@ window.__DESKTOP_PDFIUM__ = {
 
   async renderPageToCanvas(docId, pageNum, canvas, widthPx, heightPx) {
     if (!invoke || !_openNativeDocs.has(String(docId))) return false;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const targetW = Math.max(100, Math.round(widthPx * dpr));
-    const targetH = Math.max(100, Math.round(heightPx * dpr));
+    const targetW = Math.max(100, Math.round(widthPx));
+    const targetH = Math.max(100, Math.round(heightPx));
     const dataUrl = await invoke('pdfium_render_page', {
       docId: String(docId),
       pageNum: Number(pageNum),
@@ -114,12 +113,6 @@ window.__DESKTOP_PDFIUM__ = {
     await new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
-        if (canvas.width !== targetW || canvas.height !== targetH) {
-          canvas.width = targetW;
-          canvas.height = targetH;
-          canvas.style.width = widthPx + 'px';
-          canvas.style.height = heightPx + 'px';
-        }
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -191,7 +184,7 @@ function injectDesktopUI() {
   engineBar.title = 'Click to view Standalone Desktop Engine & Notes Fidelity status';
   engineBar.innerHTML = `
     <span id="desktop-engine-lbl" style="color:#60a5fa;font-weight:600;">⚡ Initializing Engine…</span>
-    <span id="desktop-ram-lbl" style="color:var(--muted);font-family:monospace;">RAM: 0 pgs</span>
+    <span id="desktop-ram-lbl" style="color:var(--muted);font-family:monospace;">Loaded: 0 pgs</span>
   `;
   syncBar.insertAdjacentElement('afterend', engineBar);
 
@@ -235,12 +228,12 @@ function injectDesktopUI() {
   };
   window.__updateDesktopAuthBadge(S.driveUser);
 
-  window.__updateDesktopEngineBadge = ({ activeCanvases, cachedPreviews, totalPages }) => {
+  window.__updateDesktopEngineBadge = ({ activeCanvases, totalPages }) => {
     const ramLbl = document.getElementById('desktop-ram-lbl');
     if (ramLbl) {
       ramLbl.textContent = totalPages
-        ? `RAM: ${activeCanvases}/${totalPages} pgs (${cachedPreviews} cached)`
-        : `RAM: ${activeCanvases} pgs`;
+        ? `Loaded: ${activeCanvases}/${totalPages} pgs`
+        : `Loaded: ${activeCanvases} pgs`;
     }
   };
 
