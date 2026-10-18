@@ -15,11 +15,20 @@ import { safeStorageSet, safeStorageGet } from './storage.js';
 export async function createAnnotation(pageNum, rects, text, mode_) {
   if (!S.curPDF) return;
   const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
+  const invRatio = 1.5 / (S.scale || 1.5);
+  const normalizedRects = Math.abs(invRatio - 1) > 0.001
+    ? rects.map(r => ({
+        x: Math.round(r.x * invRatio * 100) / 100,
+        y: Math.round(r.y * invRatio * 100) / 100,
+        w: Math.round(r.w * invRatio * 100) / 100,
+        h: Math.round(r.h * invRatio * 100) / 100,
+      }))
+    : rects;
   const ann = {
     id: 'ann_' + Date.now(),
     pdf_file_id: trueId,
     page: pageNum,
-    rects,
+    rects: normalizedRects,
     highlighted_text: text,
     hex_color: S.activeColor,
     highlight_mode: mode_,
@@ -27,8 +36,8 @@ export async function createAnnotation(pageNum, rects, text, mode_) {
   };
   try {
     autosave('saving');
-    await dbCreateAnnotation(ann);
     S.annotations.push(ann);
+    await dbCreateAnnotation(ann);
     // Update badge count
     S.annCounts[trueId] = (S.annCounts[trueId] || 0) + 1;
     updateAnnBadge(trueId);
@@ -93,10 +102,11 @@ export function drawAnnotation(ann) {
   grp.style.opacity = '0.4';
   grp.style.mixBlendMode = 'multiply';
 
-  for (const r of ann.rects) {
+  const ratio = (S.scale || 1.5) / 1.5;
+  for (const r of (ann.rects || [])) {
     const d = document.createElement('div');
     d.className = 'hr';
-    d.style.cssText = `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${ann.hex_color};`;
+    d.style.cssText = `left:${r.x * ratio}px;top:${r.y * ratio}px;width:${r.w * ratio}px;height:${r.h * ratio}px;background:${ann.hex_color};`;
     grp.appendChild(d);
   }
   grp.addEventListener('click', e => { e.stopPropagation(); openAnnPanel(ann); });

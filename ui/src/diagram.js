@@ -155,10 +155,10 @@ export async function initDiagramStudio() {
 async function ensureMermaid() {
   if (_mermaidInitialized) return true;
   if (typeof mermaid === 'undefined') {
-    // Dynamically inject if not yet loaded
+    // Load local vendor bundle first (offline-first)
     await new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js';
+      script.src = './vendor/mermaid.min.js';
       script.onload = resolve;
       script.onerror = reject;
       document.head.appendChild(script);

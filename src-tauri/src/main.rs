@@ -38,6 +38,7 @@ struct AppState {
     pdfium: Mutex<PdfiumHolder>,
     sqlite_path: PathBuf,
     pdf_cache_dir: PathBuf,
+    page_vault_dir: PathBuf,
     oauth_path: PathBuf,
     oauth_token: Arc<Mutex<Option<String>>>,
     oauth_status: Arc<Mutex<String>>,
@@ -319,10 +320,64 @@ fn init_sqlite_mirror(db_path: &Path) -> Result<(usize, usize), String> {
             id TEXT PRIMARY KEY,
             annotation_id TEXT NOT NULL,
             note_html TEXT NOT NULL,
-            sha256_html TEXT NOT NULL
-        );",
+            sha256_html TEXT NOT NULL,
+            order_index INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS annotations_mirror (
+            id TEXT PRIMARY KEY,
+            pdf_file_id TEXT NOT NULL,
+            page INTEGER NOT NULL,
+            rects_json TEXT NOT NULL,
+            highlighted_text TEXT NOT NULL,
+            hex_color TEXT NOT NULL,
+            highlight_mode TEXT NOT NULL,
+            created_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS drawings_mirror (
+            id TEXT PRIMARY KEY,
+            pdf_file_id TEXT NOT NULL,
+            page INTEGER NOT NULL,
+            strokes_json TEXT NOT NULL,
+            updated_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS bookmarks_mirror (
+            id TEXT PRIMARY KEY,
+            pdf_file_id TEXT NOT NULL,
+            page INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            level INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS folder_notes_mirror (
+            folder_id TEXT PRIMARY KEY,
+            notes_html TEXT NOT NULL,
+            sha256_html TEXT NOT NULL,
+            updated_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS notepad_history_mirror (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pdf_id TEXT NOT NULL,
+            ts INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            sha256_content TEXT NOT NULL,
+            sha256_digest TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS outbox_mirror (
+            qid TEXT PRIMARY KEY,
+            seq INTEGER NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ann_pdf ON annotations_mirror(pdf_file_id);
+        CREATE INDEX IF NOT EXISTS idx_ann_notes_ann ON annotation_notes_mirror(annotation_id);
+        CREATE INDEX IF NOT EXISTS idx_draw_pdf ON drawings_mirror(pdf_file_id);
+        CREATE INDEX IF NOT EXISTS idx_bm_pdf ON bookmarks_mirror(pdf_file_id);
+        CREATE INDEX IF NOT EXISTS idx_np_hist_pdf ON notepad_history_mirror(pdf_id, ts);",
     )
     .map_err(|e| e.to_string())?;
+    let _ = conn.execute(
+        "ALTER TABLE annotation_notes_mirror ADD COLUMN order_index INTEGER DEFAULT 0",
+        [],
+    );
 
     let existing_count: usize = conn
         .query_row("SELECT COUNT(*) FROM pdf_notes_mirror", [], |r| r.get(0))
@@ -476,8 +531,31 @@ async fn pdfium_render_page(
     width_px: u32,
     height_px: u32,
 ) -> Result<String, String> {
-    let mut guard = state.pdfium.lock().map_err(|e| e.to_string())?;
-    guard.render_page_png_data_url(&doc_id, page_num, width_px, height_px)
+    let safe_doc = sanitize_cache_id(&doc_id);
+    let doc_vault = state.page_vault_dir.join(&safe_doc);
+    let png_path = doc_vault.join(format!("p_{}_{}x{}.png", page_num, width_px, height_px));
+
+    // 1. Check permanent disk page vault first (lock-free parallel read!)
+    if let Ok(bytes) = fs::read(&png_path) {
+        if bytes.len() > 64 {
+            return Ok(format!("data:image/png;base64,{}", BASE64.encode(&bytes)));
+        }
+    }
+
+    // 2. Render via PDFium and persist permanently to page_vault_dir on D: drive
+    let data_url = {
+        let mut guard = state.pdfium.lock().map_err(|e| e.to_string())?;
+        guard.render_page_png_data_url(&doc_id, page_num, width_px, height_px)?
+    };
+
+    if let Some(b64_part) = data_url.strip_prefix("data:image/png;base64,") {
+        if let Ok(raw_png) = BASE64.decode(b64_part.as_bytes()) {
+            let _ = fs::create_dir_all(&doc_vault);
+            let _ = fs::write(&png_path, &raw_png);
+        }
+    }
+
+    Ok(data_url)
 }
 
 #[tauri::command]
@@ -831,11 +909,533 @@ async fn desktop_cache_read_pdf(
     Ok(Some(BASE64.encode(&bytes)))
 }
 
+#[tauri::command]
+async fn desktop_vault_get_page_text(
+    state: tauri::State<'_, AppState>,
+    doc_id: String,
+    page_num: u32,
+    scale_key: String,
+) -> Result<Option<String>, String> {
+    let safe_doc = sanitize_cache_id(&doc_id);
+    let safe_scale = sanitize_cache_id(&scale_key);
+    if safe_doc.is_empty() {
+        return Ok(None);
+    }
+    let path = state
+        .page_vault_dir
+        .join(&safe_doc)
+        .join(format!("txt_{}_{}.json", page_num, safe_scale));
+    if let Ok(raw) = fs::read_to_string(&path) {
+        if !raw.is_empty() {
+            return Ok(Some(raw));
+        }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+async fn desktop_vault_save_page_text(
+    state: tauri::State<'_, AppState>,
+    doc_id: String,
+    page_num: u32,
+    scale_key: String,
+    json: String,
+) -> Result<bool, String> {
+    let safe_doc = sanitize_cache_id(&doc_id);
+    let safe_scale = sanitize_cache_id(&scale_key);
+    if safe_doc.is_empty() {
+        return Ok(false);
+    }
+    let dir = state.page_vault_dir.join(&safe_doc);
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join(format!("txt_{}_{}.json", page_num, safe_scale));
+    let _ = fs::write(&path, json.as_bytes());
+    Ok(true)
+}
+
+#[tauri::command]
+async fn desktop_sqlite_sync_annotations(
+    state: tauri::State<'_, AppState>,
+    pdf_file_id: String,
+    annotations_json: String,
+) -> Result<bool, String> {
+    if pdf_file_id.is_empty() {
+        return Ok(false);
+    }
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&annotations_json).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let _ = tx.execute(
+        "DELETE FROM annotations_mirror WHERE pdf_file_id = ?1",
+        params![&pdf_file_id],
+    );
+    for ann in &arr {
+        let id = ann.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        let page = ann.get("page").and_then(|v| v.as_i64()).unwrap_or(1);
+        let rects_json = ann
+            .get("rects")
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "[]".into());
+        let highlighted_text = ann
+            .get("highlighted_text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let hex_color = ann
+            .get("hex_color")
+            .and_then(|v| v.as_str())
+            .unwrap_or("#c9a84c");
+        let highlight_mode = ann
+            .get("highlight_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("text");
+        let created_at = ann
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let _ = tx.execute(
+            "INSERT OR REPLACE INTO annotations_mirror (id, pdf_file_id, page, rects_json, highlighted_text, hex_color, highlight_mode, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, &pdf_file_id, page, rects_json, highlighted_text, hex_color, highlight_mode, created_at],
+        );
+
+        let _ = tx.execute(
+            "DELETE FROM annotation_notes_mirror WHERE annotation_id = ?1",
+            params![id],
+        );
+        if let Some(notes) = ann.get("notes").and_then(|v| v.as_array()) {
+            for (idx, note) in notes.iter().enumerate() {
+                let nid = note.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                if nid.is_empty() {
+                    continue;
+                }
+                let note_html = note
+                    .get("note_html")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let order_index = note
+                    .get("order_index")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(idx as i64);
+                let _ = tx.execute(
+                    "INSERT OR REPLACE INTO annotation_notes_mirror (id, annotation_id, note_html, sha256_html, order_index) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![nid, id, note_html, sha256_hex(note_html), order_index],
+                );
+            }
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn desktop_sqlite_load_annotations(
+    state: tauri::State<'_, AppState>,
+    pdf_file_id: String,
+) -> Result<String, String> {
+    if pdf_file_id.is_empty() {
+        return Ok("[]".into());
+    }
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, pdf_file_id, page, rects_json, highlighted_text, hex_color, highlight_mode, created_at
+             FROM annotations_mirror WHERE pdf_file_id = ?1 ORDER BY rowid ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![&pdf_file_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for row_res in rows {
+        let (id, pfid, page, rects_json, highlighted_text, hex_color, highlight_mode, created_at) =
+            row_res.map_err(|e| e.to_string())?;
+        let rects: serde_json::Value =
+            serde_json::from_str(&rects_json).unwrap_or_else(|_| serde_json::json!([]));
+
+        let mut note_stmt = conn
+            .prepare(
+                "SELECT id, annotation_id, note_html, order_index
+                 FROM annotation_notes_mirror WHERE annotation_id = ?1 ORDER BY order_index ASC, rowid ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let note_rows = note_stmt
+            .query_map(params![&id], |nr| {
+                Ok(serde_json::json!({
+                    "id": nr.get::<_, String>(0)?,
+                    "annotation_id": nr.get::<_, String>(1)?,
+                    "note_html": nr.get::<_, String>(2)?,
+                    "order_index": nr.get::<_, i64>(3).unwrap_or(0),
+                }))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut notes = Vec::new();
+        for n in note_rows.flatten() {
+            notes.push(n);
+        }
+
+        out.push(serde_json::json!({
+            "id": id,
+            "pdf_file_id": pfid,
+            "page": page,
+            "rects": rects,
+            "highlighted_text": highlighted_text,
+            "hex_color": hex_color,
+            "highlight_mode": highlight_mode,
+            "created_at": created_at,
+            "notes": notes,
+        }));
+    }
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn desktop_sqlite_sync_drawings(
+    state: tauri::State<'_, AppState>,
+    pdf_file_id: String,
+    draw_map_json: String,
+) -> Result<bool, String> {
+    if pdf_file_id.is_empty() {
+        return Ok(false);
+    }
+    let map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&draw_map_json).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let _ = tx.execute(
+        "DELETE FROM drawings_mirror WHERE pdf_file_id = ?1",
+        params![&pdf_file_id],
+    );
+    for (page_str, strokes_val) in map {
+        if let Ok(page_num) = page_str.parse::<i64>() {
+            let id = format!("draw_{}_{}", pdf_file_id, page_num);
+            let strokes_json = strokes_val.to_string();
+            let _ = tx.execute(
+                "INSERT OR REPLACE INTO drawings_mirror (id, pdf_file_id, page, strokes_json, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, &pdf_file_id, page_num, strokes_json, now_ms().to_string()],
+            );
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn desktop_sqlite_load_drawings(
+    state: tauri::State<'_, AppState>,
+    pdf_file_id: String,
+) -> Result<String, String> {
+    if pdf_file_id.is_empty() {
+        return Ok("{}".into());
+    }
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT page, strokes_json FROM drawings_mirror WHERE pdf_file_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![&pdf_file_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = serde_json::Map::new();
+    for (page, strokes_json) in rows.flatten() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&strokes_json) {
+            out.insert(page.to_string(), val);
+        }
+    }
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn desktop_sqlite_sync_bookmarks(
+    state: tauri::State<'_, AppState>,
+    pdf_file_id: String,
+    bookmarks_json: String,
+) -> Result<bool, String> {
+    if pdf_file_id.is_empty() {
+        return Ok(false);
+    }
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&bookmarks_json).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let _ = tx.execute(
+        "DELETE FROM bookmarks_mirror WHERE pdf_file_id = ?1",
+        params![&pdf_file_id],
+    );
+    for (idx, bm) in arr.iter().enumerate() {
+        let id = bm
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("bm_{}_{}", pdf_file_id, idx));
+        let page = bm.get("page").and_then(|v| v.as_i64()).unwrap_or(1);
+        let title = bm
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let level = bm.get("level").and_then(|v| v.as_i64()).unwrap_or(0);
+        let _ = tx.execute(
+            "INSERT OR REPLACE INTO bookmarks_mirror (id, pdf_file_id, page, title, level) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, &pdf_file_id, page, title, level],
+        );
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn desktop_sqlite_load_bookmarks(
+    state: tauri::State<'_, AppState>,
+    pdf_file_id: String,
+) -> Result<String, String> {
+    if pdf_file_id.is_empty() {
+        return Ok("[]".into());
+    }
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, pdf_file_id, page, title, level FROM bookmarks_mirror WHERE pdf_file_id = ?1 ORDER BY page ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![&pdf_file_id], |r| {
+            Ok(serde_json::json!({
+                "id": r.get::<_, String>(0)?,
+                "pdf_file_id": r.get::<_, String>(1)?,
+                "page": r.get::<_, i64>(2)?,
+                "title": r.get::<_, String>(3)?,
+                "level": r.get::<_, i64>(4).unwrap_or(0),
+            }))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for b in rows.flatten() {
+        out.push(b);
+    }
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn desktop_sqlite_upsert_pdf_note(
+    state: tauri::State<'_, AppState>,
+    pdf_id: String,
+    content: String,
+    digest: String,
+) -> Result<bool, String> {
+    if pdf_id.is_empty() {
+        return Ok(false);
+    }
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO pdf_notes_mirror (pdf_id, content, digest, sha256_content, sha256_digest) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![&pdf_id, &content, &digest, sha256_hex(&content), sha256_hex(&digest)],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn desktop_sqlite_load_pdf_note(
+    state: tauri::State<'_, AppState>,
+    pdf_id: String,
+) -> Result<Option<String>, String> {
+    if pdf_id.is_empty() {
+        return Ok(None);
+    }
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let res = conn.query_row(
+        "SELECT content, digest FROM pdf_notes_mirror WHERE pdf_id = ?1",
+        params![&pdf_id],
+        |r| {
+            Ok(serde_json::json!({
+                "content": r.get::<_, String>(0)?,
+                "digest": r.get::<_, String>(1)?,
+            }))
+        },
+    );
+    match res {
+        Ok(val) => Ok(Some(val.to_string())),
+        Err(_) => Ok(None),
+    }
+}
+
+#[tauri::command]
+async fn desktop_sqlite_save_folder_note(
+    state: tauri::State<'_, AppState>,
+    folder_id: String,
+    notes_html: String,
+) -> Result<bool, String> {
+    if folder_id.is_empty() {
+        return Ok(false);
+    }
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO folder_notes_mirror (folder_id, notes_html, sha256_html, updated_at) VALUES (?1, ?2, ?3, ?4)",
+        params![&folder_id, &notes_html, sha256_hex(&notes_html), now_ms().to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn desktop_sqlite_load_folder_note(
+    state: tauri::State<'_, AppState>,
+    folder_id: String,
+) -> Result<Option<String>, String> {
+    if folder_id.is_empty() {
+        return Ok(None);
+    }
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let res = conn.query_row(
+        "SELECT notes_html FROM folder_notes_mirror WHERE folder_id = ?1",
+        params![&folder_id],
+        |r| r.get::<_, String>(0),
+    );
+    match res {
+        Ok(val) => Ok(Some(val)),
+        Err(_) => Ok(None),
+    }
+}
+
+#[tauri::command]
+async fn desktop_sqlite_save_notepad_history(
+    state: tauri::State<'_, AppState>,
+    pdf_id: String,
+    ts: i64,
+    content: String,
+    digest: String,
+) -> Result<bool, String> {
+    if pdf_id.is_empty() || (content.is_empty() && digest.is_empty()) {
+        return Ok(false);
+    }
+    let sha_c = sha256_hex(&content);
+    let sha_d = sha256_hex(&digest);
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+
+    // Skip if identical to latest snapshot for this PDF
+    let latest_same: bool = conn
+        .query_row(
+            "SELECT sha256_content, sha256_digest FROM notepad_history_mirror WHERE pdf_id = ?1 ORDER BY ts DESC, id DESC LIMIT 1",
+            params![&pdf_id],
+            |r| {
+                let c: String = r.get(0)?;
+                let d: String = r.get(1)?;
+                Ok(c == sha_c && d == sha_d)
+            },
+        )
+        .unwrap_or(false);
+    if latest_same {
+        return Ok(true);
+    }
+
+    conn.execute(
+        "INSERT INTO notepad_history_mirror (pdf_id, ts, content, digest, sha256_content, sha256_digest) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![&pdf_id, ts, &content, &digest, &sha_c, &sha_d],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Keep latest 50 snapshots per PDF
+    let _ = conn.execute(
+        "DELETE FROM notepad_history_mirror WHERE pdf_id = ?1 AND id NOT IN (SELECT id FROM notepad_history_mirror WHERE pdf_id = ?1 ORDER BY ts DESC, id DESC LIMIT 50)",
+        params![&pdf_id],
+    );
+    Ok(true)
+}
+
+#[tauri::command]
+async fn desktop_sqlite_load_notepad_history(
+    state: tauri::State<'_, AppState>,
+    pdf_id: String,
+) -> Result<String, String> {
+    if pdf_id.is_empty() {
+        return Ok("[]".into());
+    }
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT ts, content, digest FROM notepad_history_mirror WHERE pdf_id = ?1 ORDER BY ts ASC, id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![&pdf_id], |r| {
+            Ok(serde_json::json!({
+                "t": r.get::<_, i64>(0)?,
+                "content": r.get::<_, String>(1)?,
+                "digest": r.get::<_, String>(2)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for item in rows.flatten() {
+        out.push(item);
+    }
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn desktop_sqlite_save_outbox(
+    state: tauri::State<'_, AppState>,
+    queue_json: String,
+) -> Result<bool, String> {
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&queue_json).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let _ = tx.execute("DELETE FROM outbox_mirror", []);
+    for (idx, item) in arr.iter().enumerate() {
+        let qid = item
+            .get("qid")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("q_{}_{}", now_ms(), idx));
+        let payload_str = item.to_string();
+        let _ = tx.execute(
+            "INSERT OR REPLACE INTO outbox_mirror (qid, seq, payload_json) VALUES (?1, ?2, ?3)",
+            params![qid, idx as i64, payload_str],
+        );
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn desktop_sqlite_load_outbox(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let conn = Connection::open(&state.sqlite_path).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT payload_json FROM outbox_mirror ORDER BY seq ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for raw in rows.flatten() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+            out.push(val);
+        }
+    }
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
 fn main() {
     let sqlite_path = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\notes_mirror.sqlite");
     let pdf_cache_dir = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\pdf_cache");
+    let page_vault_dir = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\page_vault");
     let oauth_path = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\google_oauth.json");
     let _ = fs::create_dir_all(&pdf_cache_dir);
+    let _ = fs::create_dir_all(&page_vault_dir);
     let _ = init_sqlite_mirror(&sqlite_path);
 
     let initial_tok = load_saved_oauth_token(&oauth_path);
@@ -849,6 +1449,7 @@ fn main() {
         pdfium: Mutex::new(PdfiumHolder::new()),
         sqlite_path,
         pdf_cache_dir,
+        page_vault_dir,
         oauth_path,
         oauth_token: Arc::new(Mutex::new(initial_tok)),
         oauth_status: Arc::new(Mutex::new(initial_status)),
@@ -868,6 +1469,22 @@ fn main() {
             desktop_cache_get_path,
             desktop_cache_save_pdf,
             desktop_cache_read_pdf,
+            desktop_vault_get_page_text,
+            desktop_vault_save_page_text,
+            desktop_sqlite_sync_annotations,
+            desktop_sqlite_load_annotations,
+            desktop_sqlite_sync_drawings,
+            desktop_sqlite_load_drawings,
+            desktop_sqlite_sync_bookmarks,
+            desktop_sqlite_load_bookmarks,
+            desktop_sqlite_upsert_pdf_note,
+            desktop_sqlite_load_pdf_note,
+            desktop_sqlite_save_folder_note,
+            desktop_sqlite_load_folder_note,
+            desktop_sqlite_save_notepad_history,
+            desktop_sqlite_load_notepad_history,
+            desktop_sqlite_save_outbox,
+            desktop_sqlite_load_outbox,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Legal Annotator Desktop");

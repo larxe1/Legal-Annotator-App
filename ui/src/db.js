@@ -53,8 +53,12 @@ export async function dbLoad(retries = 3) {
     S.pdfs       = p.data || [];
     S.colorCats  = c.data || [];
     
-    // Sanitize circular references caused by drag-and-drop bug
+    // Sanitize circular references caused by drag-and-drop bug & mirror folder notes to SQLite
     for (const folder of S.folders) {
+      if (folder.notes) {
+        safeStorageSet('local_folder_notes_' + folder.id, folder.notes);
+        window.__DESKTOP_SQLITE__?.saveFolderNote?.(folder.id, folder.notes);
+      }
       if (!folder.parent_folder_id) continue;
       let curr = folder.parent_folder_id;
       let isCycle = false;
@@ -289,6 +293,7 @@ export async function dbReorderFolder(id, sort_order) {
 
 export async function dbUpdateFolderNotes(id, notes) {
   safeStorageSet('local_folder_notes_' + id, notes ?? '');
+  window.__DESKTOP_SQLITE__?.saveFolderNote?.(id, notes ?? '');
   await safeDbWrite(db, 'folders', 'update', { notes }, { id });
   const fold = S.folders.find(f => f.id === id);
   if (fold) fold.notes = notes;
@@ -419,32 +424,58 @@ export async function dbDelPDF(id) {
   scheduleDriveOrganize(800);
 }
 
+// ── Helper: Mirror current PDF annotations to localStorage + Native SQLite ──
+function _mirrorCurrentAnnotations(pfid = null) {
+  const targetId = pfid || S.curPDF?.linked_pdf_id || S.curPDF?.id;
+  if (!targetId) return;
+  safeStorageSet('local_anns_' + targetId, JSON.stringify(S.annotations));
+  window.__DESKTOP_SQLITE__?.syncAnnotations?.(targetId, S.annotations);
+}
+
 // ── Annotations ──
 export async function dbLoadAnnotations(pfid) {
-  try {
-    const { data: anns } = await db
-      .from('annotations').select('*')
-      .eq('pdf_file_id', pfid).order('created_at');
-    const ids = (anns || []).map(a => a.id);
-    let notes = [];
-    if (ids.length) {
-      const { data: nd } = await db
-        .from('annotation_notes').select('*')
-        .in('annotation_id', ids).order('order_index');
-      notes = nd || [];
-    }
-    S.annotations = (anns || []).map(a => ({
-      ...a,
-      notes: notes.filter(n => n.annotation_id === a.id),
-    }));
-    safeStorageSet('local_anns_' + pfid, JSON.stringify(S.annotations));
-  } catch {
+  const isLocalOnly = String(pfid).startsWith('local_') || S.curPDF?._isLocalOnly;
+  if (!isLocalOnly) {
     try {
-      S.annotations = JSON.parse(safeStorageGet('local_anns_' + pfid, '[]') || '[]');
-      console.log(`[DB] Restored annotations for ${pfid} from local cache`);
-    } catch {
-      S.annotations = [];
+      const { data: anns, error: annErr } = await db
+        .from('annotations').select('*')
+        .eq('pdf_file_id', pfid).order('created_at');
+      if (annErr) throw annErr;
+      const ids = (anns || []).map(a => a.id);
+      let notes = [];
+      if (ids.length) {
+        const { data: nd } = await db
+          .from('annotation_notes').select('*')
+          .in('annotation_id', ids).order('order_index');
+        notes = nd || [];
+      }
+      S.annotations = (anns || []).map(a => ({
+        ...a,
+        notes: notes.filter(n => n.annotation_id === a.id),
+      }));
+      _mirrorCurrentAnnotations(pfid);
+      return;
+    } catch (e) {
+      console.warn(`[DB] Cloud annotation load fallback for ${pfid}:`, e);
     }
+  }
+
+  // Fallback / Local-Only PDF: Restore from Native SQLite Mirror first, then localStorage
+  if (window.__DESKTOP_SQLITE__?.loadAnnotations) {
+    const sqliteAnns = await window.__DESKTOP_SQLITE__.loadAnnotations(pfid);
+    if (Array.isArray(sqliteAnns) && sqliteAnns.length > 0) {
+      S.annotations = sqliteAnns;
+      safeStorageSet('local_anns_' + pfid, JSON.stringify(S.annotations));
+      return;
+    }
+  }
+  try {
+    S.annotations = JSON.parse(safeStorageGet('local_anns_' + pfid, '[]') || '[]');
+    if (S.annotations.length) {
+      window.__DESKTOP_SQLITE__?.syncAnnotations?.(pfid, S.annotations);
+    }
+  } catch {
+    S.annotations = [];
   }
 }
 
@@ -458,69 +489,100 @@ export async function dbCreateAnnotation(ann) {
     hex_color: ann.hex_color,
     highlight_mode: ann.highlight_mode,
   };
-  await safeDbWrite(db, 'annotations', 'upsert', annRec);
-  safeStorageSet('local_anns_' + ann.pdf_file_id, JSON.stringify(S.annotations));
+  const nextList = [...S.annotations.filter(a => a.id !== ann.id), ann];
+  safeStorageSet('local_anns_' + ann.pdf_file_id, JSON.stringify(nextList));
+  window.__DESKTOP_SQLITE__?.syncAnnotations?.(ann.pdf_file_id, nextList);
+  if (!String(ann.pdf_file_id).startsWith('local_') && !S.curPDF?._isLocalOnly) {
+    await safeDbWrite(db, 'annotations', 'upsert', annRec);
+  }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED', pdfId: ann.pdf_file_id });
 }
 
 export async function dbUpdateAnnColor(id, hex_color) {
-  await safeDbWrite(db, 'annotations', 'update', { hex_color }, { id });
+  _mirrorCurrentAnnotations();
+  if (!S.curPDF?._isLocalOnly) {
+    await safeDbWrite(db, 'annotations', 'update', { hex_color }, { id });
+  }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED' });
 }
 
 export async function dbDelAnnotation(id) {
-  await safeDbWrite(db, 'annotation_notes', 'delete', null, { annotation_id: id });
-  await safeDbWrite(db, 'annotations', 'delete', null, { id });
   S.annotations = S.annotations.filter(a => a.id !== id);
-  if (S.currentPdfId) {
-    safeStorageSet('local_anns_' + S.currentPdfId, JSON.stringify(S.annotations));
+  _mirrorCurrentAnnotations();
+  if (!S.curPDF?._isLocalOnly) {
+    await safeDbWrite(db, 'annotation_notes', 'delete', null, { annotation_id: id });
+    await safeDbWrite(db, 'annotations', 'delete', null, { id });
   }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED' });
 }
 
 // ── Custom Bookmarks (TOC) ──
 export async function dbLoadBookmarks(pfid) {
-  try {
-    const { data } = await db.from('pdf_bookmarks').select('*').eq('pdf_file_id', pfid).order('page');
-    S.bookmarks = data || [];
-    safeStorageSet('local_bms_' + pfid, JSON.stringify(S.bookmarks));
-  } catch {
+  const isLocalOnly = String(pfid).startsWith('local_') || S.curPDF?._isLocalOnly;
+  if (!isLocalOnly) {
     try {
-      S.bookmarks = JSON.parse(safeStorageGet('local_bms_' + pfid, '[]') || '[]');
-    } catch {
-      S.bookmarks = [];
+      const { data, error } = await db.from('pdf_bookmarks').select('*').eq('pdf_file_id', pfid).order('page');
+      if (error) throw error;
+      S.bookmarks = data || [];
+      safeStorageSet('local_bms_' + pfid, JSON.stringify(S.bookmarks));
+      window.__DESKTOP_SQLITE__?.syncBookmarks?.(pfid, S.bookmarks);
+      return;
+    } catch {}
+  }
+
+  if (window.__DESKTOP_SQLITE__?.loadBookmarks) {
+    const sqliteBms = await window.__DESKTOP_SQLITE__.loadBookmarks(pfid);
+    if (Array.isArray(sqliteBms) && sqliteBms.length > 0) {
+      S.bookmarks = sqliteBms;
+      safeStorageSet('local_bms_' + pfid, JSON.stringify(S.bookmarks));
+      return;
     }
+  }
+  try {
+    S.bookmarks = JSON.parse(safeStorageGet('local_bms_' + pfid, '[]') || '[]');
+    if (S.bookmarks.length) window.__DESKTOP_SQLITE__?.syncBookmarks?.(pfid, S.bookmarks);
+  } catch {
+    S.bookmarks = [];
   }
 }
 
 export async function dbCreateBookmark(pfid, page, title, level = 0) {
   const id = 'bm_' + Date.now();
   const bm = { id, pdf_file_id: pfid, page, title, level };
-  await safeDbWrite(db, 'pdf_bookmarks', 'upsert', bm);
   S.bookmarks.push(bm);
   S.bookmarks.sort((a, b) => a.page - b.page);
   safeStorageSet('local_bms_' + pfid, JSON.stringify(S.bookmarks));
+  window.__DESKTOP_SQLITE__?.syncBookmarks?.(pfid, S.bookmarks);
+  if (!String(pfid).startsWith('local_') && !S.curPDF?._isLocalOnly) {
+    await safeDbWrite(db, 'pdf_bookmarks', 'upsert', bm);
+  }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED', pdfId: pfid });
   return bm;
 }
 
 export async function dbDelBookmark(id) {
-  await safeDbWrite(db, 'pdf_bookmarks', 'delete', null, { id });
+  const trueId = S.curPDF?.linked_pdf_id || S.curPDF?.id;
   S.bookmarks = S.bookmarks.filter(b => b.id !== id);
-  if (S.currentPdfId) {
-    safeStorageSet('local_bms_' + S.currentPdfId, JSON.stringify(S.bookmarks));
+  if (trueId) {
+    safeStorageSet('local_bms_' + trueId, JSON.stringify(S.bookmarks));
+    window.__DESKTOP_SQLITE__?.syncBookmarks?.(trueId, S.bookmarks);
+  }
+  if (!S.curPDF?._isLocalOnly) {
+    await safeDbWrite(db, 'pdf_bookmarks', 'delete', null, { id });
   }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED' });
 }
 
 export async function dbClearAllBookmarks(pfid) {
-  // Delete all bookmarks for this PDF one-by-one (safeDbWrite handles offline queuing)
   const toDelete = [...S.bookmarks];
-  for (const bm of toDelete) {
-    await safeDbWrite(db, 'pdf_bookmarks', 'delete', null, { id: bm.id });
-  }
   S.bookmarks = [];
   safeStorageSet('local_bms_' + pfid, '[]');
+  window.__DESKTOP_SQLITE__?.syncBookmarks?.(pfid, []);
+  if (!String(pfid).startsWith('local_') && !S.curPDF?._isLocalOnly) {
+    for (const bm of toDelete) {
+      await safeDbWrite(db, 'pdf_bookmarks', 'delete', null, { id: bm.id });
+    }
+  }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED', pdfId: pfid });
 }
 
@@ -528,34 +590,58 @@ export async function dbClearAllBookmarks(pfid) {
 export async function dbCreateNote(annotation_id, note_html, order_index) {
   const id = 'note_' + Date.now();
   const noteRec = { id, annotation_id, note_html, order_index };
-  await safeDbWrite(db, 'annotation_notes', 'upsert', noteRec);
+  if (!S.curPDF?._isLocalOnly) {
+    await safeDbWrite(db, 'annotation_notes', 'upsert', noteRec);
+  }
+  setTimeout(() => _mirrorCurrentAnnotations(), 0);
   broadcastSync({ type: 'ANNOTATIONS_CHANGED' });
   return noteRec;
 }
 
 export async function dbUpdateNote(id, note_html) {
-  await safeDbWrite(db, 'annotation_notes', 'update', { note_html }, { id });
+  _mirrorCurrentAnnotations();
+  if (!S.curPDF?._isLocalOnly) {
+    await safeDbWrite(db, 'annotation_notes', 'update', { note_html }, { id });
+  }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED' });
 }
 
 export async function dbDelNote(id) {
-  await safeDbWrite(db, 'annotation_notes', 'delete', null, { id });
+  _mirrorCurrentAnnotations();
+  if (!S.curPDF?._isLocalOnly) {
+    await safeDbWrite(db, 'annotation_notes', 'delete', null, { id });
+  }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED' });
 }
 
 // ── Drawings ──
 export async function dbLoadDrawings(pfid) {
-  try {
-    const { data } = await db.from('drawings').select('*').eq('pdf_file_id', pfid);
-    S.drawData = {};
-    for (const d of data || []) S.drawData[d.page] = d.strokes || [];
-    safeStorageSet('local_draws_' + pfid, JSON.stringify(S.drawData));
-  } catch {
+  const isLocalOnly = String(pfid).startsWith('local_') || S.curPDF?._isLocalOnly;
+  if (!isLocalOnly) {
     try {
-      S.drawData = JSON.parse(safeStorageGet('local_draws_' + pfid, '{}') || '{}');
-    } catch {
+      const { data, error } = await db.from('drawings').select('*').eq('pdf_file_id', pfid);
+      if (error) throw error;
       S.drawData = {};
+      for (const d of data || []) S.drawData[d.page] = d.strokes || [];
+      safeStorageSet('local_draws_' + pfid, JSON.stringify(S.drawData));
+      window.__DESKTOP_SQLITE__?.syncDrawings?.(pfid, S.drawData);
+      return;
+    } catch {}
+  }
+
+  if (window.__DESKTOP_SQLITE__?.loadDrawings) {
+    const sqliteDraws = await window.__DESKTOP_SQLITE__.loadDrawings(pfid);
+    if (sqliteDraws && typeof sqliteDraws === 'object' && Object.keys(sqliteDraws).length > 0) {
+      S.drawData = sqliteDraws;
+      safeStorageSet('local_draws_' + pfid, JSON.stringify(S.drawData));
+      return;
     }
+  }
+  try {
+    S.drawData = JSON.parse(safeStorageGet('local_draws_' + pfid, '{}') || '{}');
+    if (Object.keys(S.drawData).length) window.__DESKTOP_SQLITE__?.syncDrawings?.(pfid, S.drawData);
+  } catch {
+    S.drawData = {};
   }
 }
 
@@ -565,8 +651,11 @@ export async function dbSaveDrawings(pfid, page, strokes) {
     id, pdf_file_id: pfid, page, strokes,
     updated_at: new Date().toISOString(),
   };
-  await safeDbWrite(db, 'drawings', 'upsert', drawObj);
   safeStorageSet('local_draws_' + pfid, JSON.stringify(S.drawData));
+  window.__DESKTOP_SQLITE__?.syncDrawings?.(pfid, S.drawData);
+  if (!String(pfid).startsWith('local_') && !S.curPDF?._isLocalOnly) {
+    await safeDbWrite(db, 'drawings', 'upsert', drawObj);
+  }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED', pdfId: pfid });
 }
 
@@ -715,13 +804,29 @@ export async function dbLoadNotepad(pdf_id) {
     }
   }
 
-  // Only update local cache if we have content or if local was already empty
+  // Fallback to Native SQLite Mirror if still empty
+  if (!content && !digest && window.__DESKTOP_SQLITE__?.loadPdfNote) {
+    try {
+      const sq = await window.__DESKTOP_SQLITE__.loadPdfNote(truePdfId);
+      if (sq && (sq.content || sq.digest)) {
+        content = sq.content || '';
+        digest = sq.digest || '';
+        source = 'sqlite';
+        logNotepadDiagnostic(truePdfId, 'LOAD', 'INFO', 'INFO_SQLITE_RESTORE', `Restored from Native SQLite Mirror (Notes: ${content.length} chars, Digest: ${digest.length} chars)`);
+      }
+    } catch {}
+  }
+
+  // Only update local cache & SQLite mirror if we have content or if local was already empty
   if (content || digest || (!localC && !localD)) {
     safeStorageSet('local_notepad_' + truePdfId, content);
     safeStorageSet('local_digest_' + truePdfId, digest);
     if (truePdfId !== pdf_id) {
       safeStorageSet('local_notepad_' + pdf_id, content);
       safeStorageSet('local_digest_' + pdf_id, digest);
+    }
+    if (content || digest) {
+      window.__DESKTOP_SQLITE__?.upsertPdfNote?.(truePdfId, content, digest);
     }
   }
 
@@ -880,6 +985,15 @@ export async function dbSaveNotepad(pdf_id, content, digest) {
     payload.digest = safeD;
     safeStorageSet('local_digest_' + truePdfId, safeD);
     if (truePdfId !== pdf_id) safeStorageSet('local_digest_' + pdf_id, safeD);
+  }
+
+  const mirrorC = payload.content !== undefined ? payload.content : (safeStorageGet('local_notepad_' + truePdfId, '') || '');
+  const mirrorD = payload.digest !== undefined ? payload.digest : (safeStorageGet('local_digest_' + truePdfId, '') || '');
+  window.__DESKTOP_SQLITE__?.upsertPdfNote?.(truePdfId, mirrorC, mirrorD);
+
+  if (String(truePdfId).startsWith('local_') || S.curPDF?._isLocalOnly) {
+    broadcastSync({ type: 'NOTEPAD_CHANGED', pdfId: truePdfId, content: mirrorC, digest: mirrorD });
+    return { saved: true, code: '200_LOCAL_SQLITE' };
   }
 
   const cLen = payload.content?.length || 0;

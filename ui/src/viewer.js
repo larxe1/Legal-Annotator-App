@@ -32,6 +32,7 @@ export async function flushFolderDoc() {
       const f = S.folders.find(x => x.id === prevId);
       if (f) f.notes = text;
       safeStorageSet('local_folder_notes_' + prevId, text);
+      window.__DESKTOP_SQLITE__?.saveFolderNote?.(prevId, text);
       
       try {
         const { dbUpdateFolderNotes } = await import('./db.js');
@@ -75,8 +76,13 @@ export async function openFolderDoc(fold) {
   document.getElementById('folder-doc-title').textContent = liveFold.name;
   const ed = document.getElementById('folder-doc-editor');
   const localNotes = safeStorageGet('local_folder_notes_' + liveFold.id, '') || '';
-  const initialNotes = liveFold.notes || localNotes || '';
+  let sqliteNotes = '';
+  if (!liveFold.notes && !localNotes && window.__DESKTOP_SQLITE__?.loadFolderNote) {
+    sqliteNotes = (await window.__DESKTOP_SQLITE__.loadFolderNote(liveFold.id)) || '';
+  }
+  const initialNotes = liveFold.notes || localNotes || sqliteNotes || '';
   if (initialNotes && !liveFold.notes) liveFold.notes = initialNotes;
+  if (initialNotes) window.__DESKTOP_SQLITE__?.saveFolderNote?.(liveFold.id, initialNotes);
   ed.innerHTML = initialNotes;
   _currentFolderDocId = liveFold.id;
 
@@ -92,12 +98,15 @@ export async function openFolderDoc(fold) {
       const { autosave } = await import('./ui.js');
       autosave('saving');
 
-      // Update in-memory state and localStorage immediately so folder switching never loses keystrokes
+      // Update in-memory state, localStorage, and Native SQLite immediately so folder switching never loses keystrokes
       const currentId = _currentFolderDocId;
       const currentText = ed.innerHTML;
       const f = S.folders.find(x => x.id === currentId);
       if (f) f.notes = currentText;
-      if (currentId) safeStorageSet('local_folder_notes_' + currentId, currentText);
+      if (currentId) {
+        safeStorageSet('local_folder_notes_' + currentId, currentText);
+        window.__DESKTOP_SQLITE__?.saveFolderNote?.(currentId, currentText);
+      }
 
       clearTimeout(_folderDocDebounce);
       _folderDocDebounce = setTimeout(async () => {
@@ -202,14 +211,75 @@ export async function openFolderDoc(fold) {
   }
 }
 
-// ── Virtualized Page Rendering Observer & Memory-Managed Document Renderer ──
+// ── Permanent Page Vault (In-Memory Session DOM Vault + Disk Page Vault) ──
 let _pageObserver = null;
 let _renderedPages = new Set();
 let _bgRenderGen = 0;
-let _activeBlobUrl = null; // kept alive for the full PDF session; revoked on next PDF open
+let _activeBlobUrl = null;
 let _evictTimer = null;
-const _pagePreviewCache = new Map(); // pageNum -> dataURL preview for zero-blank evicted pages
-const MAX_ACTIVE_RADIUS = 5; // keep curPage ± 5 live canvases; evict distant GPU buffers
+const _pagePreviewCache = new Map();
+let _mountedDocId = null; // trueId currently mounted inside #canvas-scroll
+const _pdfSessionVault = new Map(); // trueId -> { pdfDoc, totalPages, scale, pages, renderedPages, boxDone, drawDone, textDone, curPage, scrollTop, fragment }
+
+function saveMountedPdfToSessionVault() {
+  const scroll = document.getElementById('canvas-scroll');
+  if (!_mountedDocId || !S.pdfDoc || !scroll) return;
+  if (_pageObserver) {
+    _pageObserver.disconnect();
+    _pageObserver = null;
+  }
+  const frag = document.createDocumentFragment();
+  while (scroll.firstChild) {
+    frag.appendChild(scroll.firstChild);
+  }
+  _pdfSessionVault.set(_mountedDocId, {
+    pdfDoc: S.pdfDoc,
+    totalPages: S.totalPages,
+    scale: S.scale,
+    pages: S.pages,
+    renderedPages: new Set(_renderedPages),
+    boxDone: new Set(_boxDone),
+    drawDone: new Set(_drawDone),
+    textDone: new Set(_textDone),
+    curPage: S.curPage || 1,
+    scrollTop: scroll.scrollTop || 0,
+    fragment: frag,
+  });
+  _mountedDocId = null;
+}
+
+function attachPageObserver(scroll) {
+  if (_pageObserver) {
+    _pageObserver.disconnect();
+  }
+  _pageObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const pNum = parseInt(entry.target.dataset.page);
+      setTimeout(() => {
+        if (!S.pages?.[pNum] || S.pages[pNum].rendered || S.pages[pNum].rendering) return;
+        if (Math.abs(pNum - (S.curPage || 1)) <= 4) {
+          ensurePageRendered(pNum);
+          if (pNum < S.totalPages && !S.pages[pNum + 1]?.rendered && !S.pages[pNum + 1]?.rendering) {
+            ensurePageRendered(pNum + 1);
+          }
+          if (pNum > 1 && !S.pages[pNum - 1]?.rendered && !S.pages[pNum - 1]?.rendering) {
+            ensurePageRendered(pNum - 1);
+          }
+        }
+      }, 30);
+    }
+  }, {
+    root: scroll,
+    rootMargin: '800px 0px 800px 0px',
+  });
+
+  for (let p = 1; p <= S.totalPages; p++) {
+    if (S.pages[p]?.wrap && !S.pages[p].rendered) {
+      _pageObserver.observe(S.pages[p].wrap);
+    }
+  }
+}
 
 function updateDesktopEngineStats() {
   if (typeof window.__updateDesktopEngineBadge === 'function') {
@@ -232,7 +302,7 @@ export function scheduleUnrenderFarPages() {
 
 // Cooperative idle scheduler helper: uses polite timeout so scrolling stays 60fps while loading all pages
 function scheduleIdleWork(fn) {
-  return setTimeout(fn, 16);
+  return setTimeout(fn, 8);
 }
 
 let _bgTriggerFn = null;
@@ -248,56 +318,55 @@ onScrollIdle(() => {
 
 export function startBackgroundDocRenderer(docId) {
   const myGen = ++_bgRenderGen;
+  const BATCH_CONCURRENCY = 4;
 
-  const renderNextUnrendered = async () => {
+  const renderNextBatch = async () => {
     if (!S.pdfDoc || _bgRenderGen !== myGen) {
       return;
     }
 
     const cur = S.curPage || 1;
-    let nextP = null;
-    let minDiff = Infinity;
+    const candidates = [];
 
-    // Render all pages outward from current reading position (1..totalPages) and keep them loaded!
+    // Find all unrendered pages sorted by distance from current reading position
     for (let p = 1; p <= S.totalPages; p++) {
       const pg = S.pages?.[p];
       if (pg && !pg.rendered && !pg.rendering) {
-        const diff = Math.abs(p - cur);
-        if (diff < minDiff) {
-          minDiff = diff;
-          nextP = p;
-        }
+        candidates.push({ p, diff: Math.abs(p - cur) });
       }
     }
 
-    if (nextP === null || _bgRenderGen !== myGen) {
+    if (!candidates.length || _bgRenderGen !== myGen) {
       updateDesktopEngineStats();
       return;
     }
 
-    if (isUserScrolling() && Math.abs(nextP - cur) > 2) {
+    candidates.sort((a, b) => a.diff - b.diff);
+    const batch = candidates.slice(0, BATCH_CONCURRENCY).map(c => c.p);
+
+    if (isUserScrolling() && candidates[0].diff > 2) {
       _bgTriggerFn = () => {
-        if (_bgRenderGen === myGen) scheduleIdleWork(renderNextUnrendered);
+        if (_bgRenderGen === myGen) scheduleIdleWork(renderNextBatch);
       };
       return;
     }
 
     try {
-      await ensurePageRendered(nextP);
+      await Promise.all(batch.map(pNum => ensurePageRendered(pNum)));
     } catch (e) {
-      console.warn(`[Background Render] Page ${nextP} error:`, e);
+      console.warn('[Background Render] Batch error:', e);
     }
 
     if (_bgRenderGen === myGen) {
-      scheduleIdleWork(renderNextUnrendered);
+      scheduleIdleWork(renderNextBatch);
     }
   };
 
   _bgTriggerFn = () => {
-    if (_bgRenderGen === myGen) scheduleIdleWork(renderNextUnrendered);
+    if (_bgRenderGen === myGen) scheduleIdleWork(renderNextBatch);
   };
 
-  scheduleIdleWork(renderNextUnrendered);
+  scheduleIdleWork(renderNextBatch);
 }
 
 // ── Smart Syllabus Pre-Fetching of Next PDF in Sequence ──
@@ -346,11 +415,8 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
   await flushFolderDoc();
   _currentFolderDocId = null;
 
-  // Destroy previous PDF.js document immediately to free RAM/GPU memory
-  if (S.pdfDoc) {
-    try { S.pdfDoc.destroy(); } catch {}
-    S.pdfDoc = null;
-  }
+  const trueId = pdfFile.linked_pdf_id || pdfFile.id;
+  const scroll = document.getElementById('canvas-scroll');
 
   S.curPDF = pdfFile;
   updateActivePDF();
@@ -361,10 +427,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
   const { clearSearchHighlights } = await import('./search.js');
   clearSearchHighlights();
 
-  const trueId = pdfFile.linked_pdf_id || pdfFile.id;
-
-  // Fire notepadOnPDFChange without blocking — it just flushes local state
-  // and loads notes from Supabase in the background; the PDF fetch can start immediately
+  // Fire notepadOnPDFChange without blocking
   import('./notepad.js').then(m => m.notepadOnPDFChange(trueId)).catch(() => {});
 
   // Instantly clear memory of previous PDF's data so ghost highlights never bleed over
@@ -386,10 +449,113 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
   document.getElementById('folder-doc-viewer').style.display = 'none';
   document.getElementById('content-area').style.display = 'flex';
 
-  const scroll = document.getElementById('canvas-scroll');
+  // ── FAST PATH 1: Already mounted in #canvas-scroll (e.g. returning from Folder Doc or clicking same PDF) ──
+  if (_mountedDocId === trueId && S.pdfDoc && S.totalPages > 0 && Object.keys(S.pages || {}).length === S.totalPages) {
+    const manualDefault = safeStorageGet('default_page_' + pdfFile.id)
+      || (pdfFile.folder_id ? safeStorageGet('default_page_f_' + pdfFile.folder_id + '_' + trueId) : null);
+    if (manualDefault && parseInt(manualDefault) >= 1) {
+      const targetP = Math.min(S.totalPages, parseInt(manualDefault));
+      if (targetP !== S.curPage) jumpToPage(targetP, false);
+    }
+    const { redrawAllAnnotations } = await import('./annotate.js');
+    const { redrawAllDrawings }    = await import('./draw.js');
+    redrawAllAnnotations();
+    redrawAllDrawings();
+    renderColorDots();
+    pushRecent(pdfFile);
+    updateDesktopEngineStats();
+    if (_renderedPages.size < S.totalPages) {
+      startBackgroundDocRenderer(trueId);
+    }
+    Promise.all([
+      dbLoadBookmarks(trueId),
+      dbLoadAnnotations(trueId),
+      dbLoadDrawings(trueId),
+    ]).then(() => {
+      if (S.curPDF && (S.curPDF.linked_pdf_id || S.curPDF.id) === trueId) {
+        redrawAllAnnotations();
+        redrawAllDrawings();
+        renderColorDots();
+      }
+    }).catch(() => {});
+    syncOK('Ready');
+    return;
+  }
+
+  // Save currently mounted PDF (if any) into the Session DOM Vault instead of destroying it!
+  if (_mountedDocId && _mountedDocId !== trueId && S.pdfDoc) {
+    saveMountedPdfToSessionVault();
+  }
+
+  // ── FAST PATH 2: Restore from In-Memory Session DOM Vault (0ms instant restore of all 300 pages!) ──
+  if (_pdfSessionVault.has(trueId)) {
+    const vaulted = _pdfSessionVault.get(trueId);
+    _pdfSessionVault.delete(trueId);
+
+    S.pdfDoc = vaulted.pdfDoc;
+    S.totalPages = vaulted.totalPages;
+    S.scale = vaulted.scale;
+    S.pages = vaulted.pages;
+    S.curPage = vaulted.curPage || 1;
+
+    _renderedPages = new Set(vaulted.renderedPages);
+    _boxDone.clear(); vaulted.boxDone.forEach(x => _boxDone.add(x));
+    _drawDone.clear(); vaulted.drawDone.forEach(x => _drawDone.add(x));
+    _textDone.clear(); vaulted.textDone.forEach(x => _textDone.add(x));
+
+    scroll.innerHTML = '';
+    scroll.appendChild(vaulted.fragment);
+    _mountedDocId = trueId;
+
+    document.getElementById('pg-total').textContent = S.totalPages;
+    document.getElementById('pg-input').max = S.totalPages;
+    document.getElementById('pg-input').value = S.curPage;
+
+    setIsJumping(true);
+    const manualDefault = safeStorageGet('default_page_' + pdfFile.id)
+      || (pdfFile.folder_id ? safeStorageGet('default_page_f_' + pdfFile.folder_id + '_' + trueId) : null);
+    if (manualDefault && parseInt(manualDefault) >= 1) {
+      const targetP = Math.min(S.totalPages, parseInt(manualDefault));
+      S.curPage = targetP;
+      document.getElementById('pg-input').value = targetP;
+      S.pages[targetP]?.wrap?.scrollIntoView({ behavior: 'auto', block: 'start' });
+    } else {
+      scroll.scrollTop = vaulted.scrollTop || 0;
+    }
+    setTimeout(() => setIsJumping(false), 250);
+
+    attachPageObserver(scroll);
+
+    const { redrawAllAnnotations } = await import('./annotate.js');
+    const { redrawAllDrawings }    = await import('./draw.js');
+    redrawAllAnnotations();
+    redrawAllDrawings();
+    renderColorDots();
+    pushRecent(pdfFile);
+    updateDesktopEngineStats();
+
+    if (_renderedPages.size < S.totalPages) {
+      startBackgroundDocRenderer(trueId);
+    }
+
+    Promise.all([
+      dbLoadBookmarks(trueId),
+      dbLoadAnnotations(trueId),
+      dbLoadDrawings(trueId),
+    ]).then(() => {
+      if (S.curPDF && (S.curPDF.linked_pdf_id || S.curPDF.id) === trueId) {
+        redrawAllAnnotations();
+        redrawAllDrawings();
+        renderColorDots();
+      }
+    }).catch(() => {});
+    syncOK('Ready');
+    return;
+  }
+
   scroll.innerHTML = `<div class="spin-w"><div class="spinner"></div>${retries < 5 ? 'Retrying PDF...' : 'Loading PDF…'}</div>`;
 
-  // Start PDF fetch and Supabase database queries in parallel
+  // Start PDF fetch and Supabase/SQLite database queries in parallel
   const targetDriveId = pdfFile.drive_file_id || S.pdfs.find(p => p.id === pdfFile.linked_pdf_id)?.drive_file_id;
   const pdfFetchPromise = pdfFile._localBlob
     ? Promise.resolve(pdfFile._localBlob)
@@ -402,15 +568,13 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
           }
         }
       }, pdfFile.name);
-  const dbDataPromise = pdfFile._isLocalOnly
-    ? Promise.resolve([[], [], {}, null, null])
-    : Promise.all([
-        dbLoadBookmarks(trueId),
-        dbLoadAnnotations(trueId),
-        dbLoadDrawings(trueId),
-        dbGetSetting('default_page_' + pdfFile.id).catch(() => null),
-        dbGetSetting('read_pos_' + trueId).catch(() => null),
-      ]);
+  const dbDataPromise = Promise.all([
+    dbLoadBookmarks(trueId),
+    dbLoadAnnotations(trueId),
+    dbLoadDrawings(trueId),
+    pdfFile._isLocalOnly ? Promise.resolve(null) : dbGetSetting('default_page_' + pdfFile.id).catch(() => null),
+    pdfFile._isLocalOnly ? Promise.resolve(null) : dbGetSetting('read_pos_' + trueId).catch(() => null),
+  ]);
 
   try {
     const blob = await pdfFetchPromise;
@@ -425,6 +589,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     }
     S.pdfDoc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
     S.totalPages = S.pdfDoc.numPages;
+    _mountedDocId = trueId;
     document.getElementById('pg-total').textContent = S.totalPages;
     document.getElementById('pg-input').value = 1;
     document.getElementById('pg-input').max   = S.totalPages;
@@ -436,11 +601,6 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     _textDone.clear();
     _renderedPages.clear();
     _pagePreviewCache.clear();
-
-    if (_pageObserver) {
-      _pageObserver.disconnect();
-      _pageObserver = null;
-    }
 
     // Get page 1 viewport and page 2 (body page) viewport so cover-page size differences never cause layout shifts
     const p1 = await S.pdfDoc.getPage(1);
@@ -506,32 +666,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       scroll.scrollTop = 0;
     }
 
-    // IntersectionObserver renders pages that settle in/near viewport without queueing skipped intermediate pages during fast scrollbar drag
-    _pageObserver = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
-        const pNum = parseInt(entry.target.dataset.page);
-        setTimeout(() => {
-          if (!S.pages?.[pNum] || S.pages[pNum].rendered || S.pages[pNum].rendering) return;
-          if (Math.abs(pNum - (S.curPage || 1)) <= 4) {
-            ensurePageRendered(pNum);
-            if (pNum < S.totalPages && !S.pages[pNum + 1]?.rendered && !S.pages[pNum + 1]?.rendering) {
-              ensurePageRendered(pNum + 1);
-            }
-            if (pNum > 1 && !S.pages[pNum - 1]?.rendered && !S.pages[pNum - 1]?.rendering) {
-              ensurePageRendered(pNum - 1);
-            }
-          }
-        }, 45);
-      }
-    }, {
-      root: scroll,
-      rootMargin: '800px 0px 800px 0px',
-    });
-
-    for (let p = 1; p <= S.totalPages; p++) {
-      _pageObserver.observe(S.pages[p].wrap);
-    }
+    attachPageObserver(scroll);
 
     // Eagerly render just the target page so it appears as fast as possible
     await ensurePageRendered(startPage);
@@ -582,7 +717,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     pushRecent(pdfFile);
 
     // Start background renderer to load all pages outward from current position
-    startBackgroundDocRenderer(pdfFile.id);
+    startBackgroundDocRenderer(trueId);
 
     // Smart syllabus pre-fetch: silently cache next PDF in folder for 0ms transition
     scheduleNextPdfPrefetch(pdfFile);
@@ -663,10 +798,10 @@ export async function reRenderAll() {
   await ensurePageRendered(S.curPage);
   if (S.curPage > 1) ensurePageRendered(S.curPage - 1);
   if (S.curPage < S.totalPages) ensurePageRendered(S.curPage + 1);
-  startBackgroundDocRenderer(S.curPDF?.id || 'zoom');
+  startBackgroundDocRenderer(_mountedDocId || S.curPDF?.id || 'zoom');
 }
 
-// ── Render a single page on-demand ──
+// ── Render a single page on-demand (Permanent Disk Page Vault + Native PDFium) ──
 export async function ensurePageRendered(pageNum, container = null) {
   if (!S.pdfDoc) return;
   const scroll = container || document.getElementById('canvas-scroll');
@@ -684,22 +819,37 @@ export async function ensurePageRendered(pageNum, container = null) {
   pgState.rendering = true;
 
   try {
-    const page = await S.pdfDoc.getPage(pageNum);
-    const vp = page.getViewport({ scale: S.scale });
+    const trueId = _mountedDocId || S.curPDF?.linked_pdf_id || S.curPDF?.id;
+    const scaleKey = String(Math.round(S.scale * 100));
+
+    // 1. Check Permanent Disk Page Vault for pre-extracted text & dimensions (skips S.pdfDoc.getPage & getTextContent!)
+    let cachedText = null;
+    if (trueId && window.__DESKTOP_PDFIUM__?.getPageText) {
+      cachedText = await window.__DESKTOP_PDFIUM__.getPageText(trueId, pageNum, scaleKey);
+    }
+
+    let page = null;
+    let vp = null;
+    if (cachedText && cachedText.w && cachedText.h && Array.isArray(cachedText.spans)) {
+      vp = { width: cachedText.w, height: cachedText.h, scale: S.scale };
+    } else {
+      page = await S.pdfDoc.getPage(pageNum);
+      vp = page.getViewport({ scale: S.scale });
+    }
     pgState.viewport = vp;
 
     const wrap = pgState.wrap;
     const oldH = parseFloat(wrap.style.height) || wrap.offsetHeight || vp.height;
     const deltaH = vp.height - oldH;
 
-    wrap.style.width     = vp.width  + 'px';
-    wrap.style.height    = vp.height + 'px';
-    wrap.style.minHeight = vp.height + 'px';
+    wrap.style.width      = vp.width  + 'px';
+    wrap.style.height     = vp.height + 'px';
+    wrap.style.minHeight  = vp.height + 'px';
     wrap.style.flexShrink = '0';
 
     // If a page above the current scroll position has a different height than the placeholder,
     // immediately compensate scrollTop by deltaH so the visible page never jumps!
-    if (scroll && Math.abs(deltaH) > 0.5 && wrap.offsetTop < scroll.scrollTop) {
+    if (scroll && scroll.offsetParent !== null && Math.abs(deltaH) > 0.5 && wrap.offsetTop < scroll.scrollTop) {
       scroll.scrollTop += deltaH;
     }
 
@@ -736,8 +886,7 @@ export async function ensurePageRendered(pageNum, container = null) {
 
     wrap.append(pdfCanvas, annOv, srchOv, txtLayer, drawCanvas);
 
-    // Render PDF page canvas: use Native C++ PDFium engine in Tauri when active, fallback to PDF.js
-    const trueId = S.curPDF?.linked_pdf_id || S.curPDF?.id;
+    // 2. Render PDF page canvas: loads straight from Permanent Disk Page Vault (or renders via Native C++ PDFium and saves to vault)
     let renderedByNativePdfium = false;
     if (trueId && window.__DESKTOP_PDFIUM__?.renderPageToCanvas) {
       try {
@@ -753,29 +902,72 @@ export async function ensurePageRendered(pageNum, container = null) {
       }
     }
     if (!renderedByNativePdfium) {
+      if (!page) {
+        page = await S.pdfDoc.getPage(pageNum);
+        vp = page.getViewport({ scale: S.scale });
+      }
       await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: vp }).promise;
     }
 
-    // Build text layer.
-    const tc = await page.getTextContent();
-    const textItems = [];
-    for (const item of tc.items) {
-      if (!item.str || !item.transform) continue;
-      const span = document.createElement('span');
-      const tx   = pdfjsLib.Util.transform(vp.transform, item.transform);
-      const fh   = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-      const angle = Math.atan2(tx[1], tx[0]);
-      span.textContent = item.str;
-      span.style.cssText = `left:${tx[4]}px;top:${tx[5] - fh * 0.8}px;font-size:${fh}px;font-family:${item.fontName || 'sans-serif'}`;
-      if (angle !== 0) span.style.transform = `rotate(${angle}rad)`;
-      txtLayer.appendChild(span);
-      textItems.push({
-        str: item.str,
-        x: item.transform[4] * S.scale,
-        y: vp.height - item.transform[5] * S.scale,
-        w: (item.width  || 0) * S.scale,
-        h: (item.height || fh) * S.scale,
-      });
+    // 3. Build text layer (from Disk Page Vault if cached, otherwise extract once and save to Disk Page Vault)
+    let textItems = [];
+    if (cachedText && Array.isArray(cachedText.spans)) {
+      const txtFrag = document.createDocumentFragment();
+      for (const sp of cachedText.spans) {
+        const span = document.createElement('span');
+        span.textContent = sp.s;
+        span.style.cssText = `left:${sp.l}px;top:${sp.t}px;font-size:${sp.fs}px;font-family:${sp.ff || 'sans-serif'}`;
+        if (sp.a) span.style.transform = `rotate(${sp.a}rad)`;
+        txtFrag.appendChild(span);
+      }
+      txtLayer.appendChild(txtFrag);
+      textItems = cachedText.textItems || [];
+    } else {
+      if (!page) {
+        page = await S.pdfDoc.getPage(pageNum);
+        vp = page.getViewport({ scale: S.scale });
+      }
+      const tc = await page.getTextContent();
+      const spansToVault = [];
+      const txtFrag = document.createDocumentFragment();
+      for (const item of tc.items) {
+        if (!item.str || !item.transform) continue;
+        const span = document.createElement('span');
+        const tx   = pdfjsLib.Util.transform(vp.transform, item.transform);
+        const fh   = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+        const angle = Math.atan2(tx[1], tx[0]);
+        const leftPx = tx[4];
+        const topPx = tx[5] - fh * 0.8;
+        const fontFam = item.fontName || 'sans-serif';
+        span.textContent = item.str;
+        span.style.cssText = `left:${leftPx}px;top:${topPx}px;font-size:${fh}px;font-family:${fontFam}`;
+        if (angle !== 0) span.style.transform = `rotate(${angle}rad)`;
+        txtFrag.appendChild(span);
+        spansToVault.push({
+          s: item.str,
+          l: Math.round(leftPx * 100) / 100,
+          t: Math.round(topPx * 100) / 100,
+          fs: Math.round(fh * 100) / 100,
+          ff: fontFam,
+          a: angle ? Math.round(angle * 10000) / 10000 : 0,
+        });
+        textItems.push({
+          str: item.str,
+          x: item.transform[4] * S.scale,
+          y: vp.height - item.transform[5] * S.scale,
+          w: (item.width  || 0) * S.scale,
+          h: (item.height || fh) * S.scale,
+        });
+      }
+      txtLayer.appendChild(txtFrag);
+      if (trueId && window.__DESKTOP_PDFIUM__?.savePageText) {
+        window.__DESKTOP_PDFIUM__.savePageText(trueId, pageNum, scaleKey, {
+          w: vp.width,
+          h: vp.height,
+          spans: spansToVault,
+          textItems,
+        });
+      }
     }
 
     pgState.pdfCanvas = pdfCanvas;
@@ -827,58 +1019,164 @@ export const renderPage = ensurePageRendered;
 // ── Render a single page into an arbitrary container (for dual-view pane B) ──
 // Uses its own paneState object instead of global S so it doesn't clobber pane A.
 export async function renderPageInto(pageNum, container, pdfDocObj, paneState) {
-  const page = await pdfDocObj.getPage(pageNum);
-  const scale = paneState.scale || S.scale;
-  const vp = page.getViewport({ scale });
-
-  const wrap = document.createElement('div');
-  wrap.className = 'pg-wrap';
-  wrap.dataset.page = pageNum;
-  wrap.style.width  = vp.width  + 'px';
-  wrap.style.height = vp.height + 'px';
-
-  const pdfCanvas  = document.createElement('canvas');
-  pdfCanvas.width  = vp.width;
-  pdfCanvas.height = vp.height;
-
-  // Minimal layers for read-only viewing
-  const drawCanvas  = document.createElement('canvas');
-  drawCanvas.width  = vp.width;
-  drawCanvas.height = vp.height;
-  drawCanvas.className = 'draw-canvas';
-
-  const txtLayer = document.createElement('div');
-  txtLayer.className = 'txt-layer'; // pointer-events disabled via CSS for pane-b
-  txtLayer.style.width  = vp.width  + 'px';
-  txtLayer.style.height = vp.height + 'px';
-
-  const annOv = document.createElement('div');
-  annOv.className = 'ann-ov';
-  annOv.dataset.page = pageNum;
-  annOv.style.width  = vp.width  + 'px';
-  annOv.style.height = vp.height + 'px';
-
-  wrap.append(pdfCanvas, annOv, txtLayer, drawCanvas);
-  container.appendChild(wrap);
-
-  await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: vp }).promise;
-
-  // Build text layer (same corrected ascender math as main viewer)
-  const tc = await page.getTextContent();
-  for (const item of tc.items) {
-    if (!item.str || !item.transform) continue;
-    const span = document.createElement('span');
-    const tx   = pdfjsLib.Util.transform(vp.transform, item.transform);
-    const fh   = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-    const angle = Math.atan2(tx[1], tx[0]);
-    span.textContent = item.str;
-    span.style.cssText = `left:${tx[4]}px;top:${tx[5] - fh * 0.8}px;font-size:${fh}px;font-family:${item.fontName || 'sans-serif'}`;
-    if (angle !== 0) span.style.transform = `rotate(${angle}rad)`;
-    txtLayer.appendChild(span);
-  }
-
   if (!paneState.pages) paneState.pages = {};
-  paneState.pages[pageNum] = { wrap, pdfCanvas, drawCanvas, txtLayer, annOv, viewport: vp };
+  const existing = paneState.pages[pageNum];
+  if (existing?.rendered || existing?.rendering) return;
+  if (existing) existing.rendering = true;
+
+  const scale = paneState.scale || S.scale;
+  const scaleKey = String(Math.round(scale * 100));
+  const trueId = paneState.pdfFile?.linked_pdf_id || paneState.pdfFile?.id || null;
+
+  try {
+    let cachedText = null;
+    if (trueId && window.__DESKTOP_PDFIUM__?.getPageText) {
+      cachedText = await window.__DESKTOP_PDFIUM__.getPageText(trueId, pageNum, scaleKey);
+    }
+
+    let page = null;
+    let vp = null;
+    if (cachedText && cachedText.w > 0 && cachedText.h > 0) {
+      vp = { width: cachedText.w, height: cachedText.h };
+    } else {
+      page = await pdfDocObj.getPage(pageNum);
+      vp = page.getViewport({ scale });
+    }
+
+    let wrap = existing?.wrap;
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.className = 'pg-wrap';
+      wrap.dataset.page = pageNum;
+      container.appendChild(wrap);
+    }
+    wrap.innerHTML = '';
+    wrap.style.width  = vp.width  + 'px';
+    wrap.style.height = vp.height + 'px';
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const pdfCanvas  = document.createElement('canvas');
+    pdfCanvas.width  = Math.round(vp.width * dpr);
+    pdfCanvas.height = Math.round(vp.height * dpr);
+    pdfCanvas.style.width  = vp.width  + 'px';
+    pdfCanvas.style.height = vp.height + 'px';
+
+    const drawCanvas  = document.createElement('canvas');
+    drawCanvas.width  = vp.width;
+    drawCanvas.height = vp.height;
+    drawCanvas.className = 'draw-canvas';
+
+    const txtLayer = document.createElement('div');
+    txtLayer.className = 'txt-layer';
+    txtLayer.style.width  = vp.width  + 'px';
+    txtLayer.style.height = vp.height + 'px';
+
+    const annOv = document.createElement('div');
+    annOv.className = 'ann-ov';
+    annOv.dataset.page = pageNum;
+    annOv.style.width  = vp.width  + 'px';
+    annOv.style.height = vp.height + 'px';
+
+    wrap.append(pdfCanvas, annOv, txtLayer, drawCanvas);
+
+    let renderedViaNative = false;
+    if (window.__DESKTOP_PDFIUM__ && trueId) {
+      try {
+        renderedViaNative = await window.__DESKTOP_PDFIUM__.renderPageToCanvas(
+          trueId,
+          pageNum,
+          pdfCanvas,
+          vp.width * dpr,
+          vp.height * dpr
+        );
+      } catch {
+        renderedViaNative = false;
+      }
+    }
+
+    if (!renderedViaNative) {
+      if (!page) {
+        page = await pdfDocObj.getPage(pageNum);
+        vp = page.getViewport({ scale });
+      }
+      pdfCanvas.width  = vp.width;
+      pdfCanvas.height = vp.height;
+      await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: vp }).promise;
+    }
+
+    if (cachedText && Array.isArray(cachedText.spans)) {
+      const frag = document.createDocumentFragment();
+      for (const sp of cachedText.spans) {
+        const span = document.createElement('span');
+        span.textContent = sp.s;
+        span.style.cssText = `left:${sp.l}px;top:${sp.t}px;font-size:${sp.fs}px;font-family:${sp.ff || 'sans-serif'}`;
+        if (sp.a) span.style.transform = `rotate(${sp.a}rad)`;
+        frag.appendChild(span);
+      }
+      txtLayer.appendChild(frag);
+    } else {
+      if (!page) {
+        page = await pdfDocObj.getPage(pageNum);
+        vp = page.getViewport({ scale });
+      }
+      const tc = await page.getTextContent();
+      const spansToVault = [];
+      const textItems = [];
+      const frag = document.createDocumentFragment();
+      for (const item of tc.items) {
+        if (!item.str || !item.transform) continue;
+        const span = document.createElement('span');
+        const tx   = pdfjsLib.Util.transform(vp.transform, item.transform);
+        const fh   = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+        const angle = Math.atan2(tx[1], tx[0]);
+        const leftPx = tx[4];
+        const topPx = tx[5] - fh * 0.8;
+        const fontFam = item.fontName || 'sans-serif';
+        span.textContent = item.str;
+        span.style.cssText = `left:${leftPx}px;top:${topPx}px;font-size:${fh}px;font-family:${fontFam}`;
+        if (angle !== 0) span.style.transform = `rotate(${angle}rad)`;
+        frag.appendChild(span);
+        spansToVault.push({
+          s: item.str,
+          l: Math.round(leftPx * 100) / 100,
+          t: Math.round(topPx * 100) / 100,
+          fs: Math.round(fh * 100) / 100,
+          ff: fontFam,
+          a: angle ? Math.round(angle * 10000) / 10000 : 0,
+        });
+        textItems.push({
+          str: item.str,
+          x: item.transform[4] * scale,
+          y: vp.height - item.transform[5] * scale,
+          w: (item.width  || 0) * scale,
+          h: (item.height || fh) * scale,
+        });
+      }
+      txtLayer.appendChild(frag);
+      if (trueId && window.__DESKTOP_PDFIUM__?.savePageText) {
+        window.__DESKTOP_PDFIUM__.savePageText(trueId, pageNum, scaleKey, {
+          w: vp.width,
+          h: vp.height,
+          spans: spansToVault,
+          textItems,
+        });
+      }
+    }
+
+    paneState.pages[pageNum] = {
+      wrap,
+      pdfCanvas,
+      drawCanvas,
+      txtLayer,
+      annOv,
+      viewport: vp,
+      rendered: true,
+      rendering: false,
+    };
+  } catch (err) {
+    console.warn(`[DualView] Failed to render page ${pageNum}:`, err);
+    if (paneState.pages[pageNum]) paneState.pages[pageNum].rendering = false;
+  }
 }
 
 // ── Mode ──

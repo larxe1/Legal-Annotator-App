@@ -16,48 +16,113 @@ export const PB = {
 };
 
 let _isDualView = false;
+let _paneBGen = 0;
 
 // Open a PDF in Pane B (reference/read-only)
 export async function openPDFInPaneB(pdfFile) {
-  if (PB.pdfFile?.id === pdfFile.id) { toast('Already open as reference.'); return; }
+  if (PB.pdfFile?.id === pdfFile.id && Object.keys(PB.pages).length > 0) {
+    toast('Already open as reference.');
+    return;
+  }
 
+  const myGen = ++_paneBGen;
   PB.pdfFile = pdfFile;
   PB.pages   = {};
 
   const scroll = document.getElementById('canvas-scroll-b');
-  scroll.innerHTML = '<div class=spin-w><div class=spinner></div>Loading reference...</div>';
+  scroll.innerHTML = '<div class="spin-w"><div class="spinner"></div>Loading reference...</div>';
 
   _enterDualView(pdfFile.name);
 
+  const trueId = pdfFile.linked_pdf_id || pdfFile.id;
   const targetDriveId = pdfFile.drive_file_id || S.pdfs.find(p => p.id === pdfFile.linked_pdf_id)?.drive_file_id;
-  if (!targetDriveId) {
-    scroll.innerHTML = '<div style=color:var(--red);padding:20px;font-size:13px>Could not find Google Drive file for this PDF.<br><br><button onclick=document.getElementById(\'btn-close-pane-b\').click() style=padding:6px 12px;background:var(--navy-l);border:1px solid var(--navy-b);color:var(--text);border-radius:6px;cursor:pointer>Close</button></div>';
+  if (!targetDriveId && !pdfFile._localBlob) {
+    scroll.innerHTML = '<div style="color:var(--red);padding:20px;font-size:13px">Could not find Google Drive file for this PDF.<br><br><button onclick="document.getElementById(\'btn-close-pane-b\').click()" style="padding:6px 12px;background:var(--navy-l);border:1px solid var(--navy-b);color:var(--text);border-radius:6px;cursor:pointer">Close</button></div>';
     return;
   }
 
   try {
-    const blob = await driveFetchPDF(targetDriveId, (pct, loadedMB, totalMB) => {
-      if (scroll) {
-        if (pct !== null) {
-          scroll.innerHTML = `<div class=spin-w><div class=spinner></div>Loading reference: ${pct}% (${loadedMB}/${totalMB} MB)</div>`;
-        } else {
-          scroll.innerHTML = `<div class=spin-w><div class=spinner></div>Loading reference: ${loadedMB} MB…</div>`;
+    let blob;
+    if (pdfFile._localBlob) {
+      blob = pdfFile._localBlob;
+    } else {
+      blob = await driveFetchPDF(targetDriveId, (pct, loadedMB, totalMB) => {
+        if (scroll && myGen === _paneBGen) {
+          if (pct !== null) {
+            scroll.innerHTML = `<div class="spin-w"><div class="spinner"></div>Loading reference: ${pct}% (${loadedMB}/${totalMB} MB)</div>`;
+          } else {
+            scroll.innerHTML = `<div class="spin-w"><div class="spinner"></div>Loading reference: ${loadedMB} MB…</div>`;
+          }
         }
-      }
-    }, pdfFile.name);
+      }, pdfFile.name);
+    }
+
+    if (myGen !== _paneBGen) return;
+
     const buf = await blob.arrayBuffer();
-    PB.pdfDoc     = await pdfjsLib.getDocument({ data: buf }).promise;
+    if (window.__DESKTOP_PDFIUM__ && trueId) {
+      await window.__DESKTOP_PDFIUM__.openPdf(trueId, buf, pdfFile._localPath || null).catch(() => {});
+    }
+
+    const blobUrl = URL.createObjectURL(new Blob([buf], { type: 'application/pdf' }));
+    PB.pdfDoc     = await pdfjsLib.getDocument({ url: blobUrl, disableAutoFetch: false, disableStream: false }).promise;
     PB.totalPages = PB.pdfDoc.numPages;
     PB.scale      = S.scale;
 
-    scroll.innerHTML = '';
-    for (let p = 1; p <= PB.totalPages; p++) {
-      await renderPageInto(p, scroll, PB.pdfDoc, PB);
+    if (myGen !== _paneBGen) return;
+
+    // Sample page 1 & page 2 dimensions so placeholders never jump on scroll
+    const firstPage = await PB.pdfDoc.getPage(1);
+    const vp1 = firstPage.getViewport({ scale: PB.scale });
+    let bodyVp = vp1;
+    if (PB.totalPages >= 2) {
+      try {
+        const secondPage = await PB.pdfDoc.getPage(2);
+        bodyVp = secondPage.getViewport({ scale: PB.scale });
+      } catch {}
     }
+
+    scroll.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    for (let p = 1; p <= PB.totalPages; p++) {
+      const defVp = p === 1 ? vp1 : bodyVp;
+      const wrap = document.createElement('div');
+      wrap.className = 'pg-wrap';
+      wrap.dataset.page = p;
+      wrap.style.width  = defVp.width  + 'px';
+      wrap.style.height = defVp.height + 'px';
+      wrap.innerHTML = `<div class="pg-placeholder" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;">Page ${p}</div>`;
+      frag.appendChild(wrap);
+      PB.pages[p] = { wrap, viewport: defVp, rendered: false, rendering: false };
+    }
+    scroll.appendChild(frag);
+
+    // Render pages 1..3 immediately
+    const initialBatch = [];
+    for (let p = 1; p <= Math.min(3, PB.totalPages); p++) {
+      initialBatch.push(renderPageInto(p, scroll, PB.pdfDoc, PB));
+    }
+    await Promise.all(initialBatch);
     syncOK('Reference loaded');
+
+    // Render remaining pages in 4-page parallel batches in background
+    (async () => {
+      const BATCH = 4;
+      for (let p = 4; p <= PB.totalPages; p += BATCH) {
+        if (myGen !== _paneBGen || !_isDualView) return;
+        const tasks = [];
+        for (let k = p; k < p + BATCH && k <= PB.totalPages; k++) {
+          if (!PB.pages[k]?.rendered && !PB.pages[k]?.rendering) {
+            tasks.push(renderPageInto(k, scroll, PB.pdfDoc, PB));
+          }
+        }
+        if (tasks.length) await Promise.all(tasks);
+        await new Promise(r => setTimeout(r, 8));
+      }
+    })();
   } catch (e) {
     console.error('[DualView] Failed to load reference PDF:', e);
-    scroll.innerHTML = '<div style=color:var(--red);padding:20px;font-size:13px>Could not load reference PDF.<br><br><button onclick=document.getElementById(\'btn-close-pane-b\').click() style=padding:6px 12px;background:var(--navy-l);border:1px solid var(--navy-b);color:var(--text);border-radius:6px;cursor:pointer>Close</button></div>';
+    scroll.innerHTML = '<div style="color:var(--red);padding:20px;font-size:13px">Could not load reference PDF.<br><br><button onclick="document.getElementById(\'btn-close-pane-b\').click()" style="padding:6px 12px;background:var(--navy-l);border:1px solid var(--navy-b);color:var(--text);border-radius:6px;cursor:pointer">Close</button></div>';
   }
 }
 
@@ -66,63 +131,20 @@ export async function swapPanes() {
   if (!_isDualView || !S.curPDF || !PB.pdfFile) return;
   toast('Swapping panes...');
 
-  const oldA_pdf    = S.curPDF;
-  const oldA_pdfDoc = S.pdfDoc;
-  const oldA_total  = S.totalPages;
-  const oldB_pdf    = PB.pdfFile;
-  const oldB_pdfDoc = PB.pdfDoc;
-  const oldB_total  = PB.totalPages;
+  const oldA_pdf = S.curPDF;
+  const oldB_pdf = PB.pdfFile;
 
   try {
     const { flushNotepadSave } = await import('./notepad.js');
     await flushNotepadSave();
   } catch {}
 
-  // -- Reload pane A with former pane B content --
-  S.curPDF     = oldB_pdf;
-  S.pdfDoc     = oldB_pdfDoc;
-  S.totalPages = oldB_total;
-  S.pages      = {};
-
-  const { updateActivePDF }      = await import('./viewer.js');
-  const { renderPage }           = await import('./viewer.js');
-  const { notepadOnPDFChange }   = await import('./notepad.js');
-  const { dbLoadAnnotations, dbLoadDrawings, dbLoadBookmarks } = await import('./db.js');
-  const { redrawAllAnnotations } = await import('./annotate.js');
-  const { redrawAllDrawings }    = await import('./draw.js');
-
-  updateActivePDF();
-  const trueId = oldB_pdf.linked_pdf_id || oldB_pdf.id;
-  await notepadOnPDFChange(trueId);
-
-  document.getElementById('pg-total').textContent = oldB_total;
-  document.getElementById('pg-input').value = 1;
-  document.getElementById('pg-input').max   = oldB_total;
-
-  const scrollA = document.getElementById('canvas-scroll');
-  scrollA.innerHTML = '<div class=spin-w><div class=spinner></div>Swapping...</div>';
-  scrollA.innerHTML = '';
-
-  for (let p = 1; p <= S.totalPages; p++) {
-    await renderPage(p, scrollA, oldB_pdf.id);
-  }
-  await dbLoadBookmarks(trueId);
-  await dbLoadAnnotations(trueId);
-  await dbLoadDrawings(trueId);
-  redrawAllAnnotations();
-  redrawAllDrawings();
-
-  // -- Reload pane B with former pane A content --
-  PB.pdfFile    = oldA_pdf;
-  PB.pdfDoc     = oldA_pdfDoc;
-  PB.totalPages = oldA_total;
-  PB.pages      = {};
-
-  const scrollB = document.getElementById('canvas-scroll-b');
-  scrollB.innerHTML = '';
-  for (let p = 1; p <= PB.totalPages; p++) {
-    await renderPageInto(p, scrollB, PB.pdfDoc, PB);
-  }
+  const { openPDFFromLibrary } = await import('./viewer.js');
+  PB.pdfFile = null; // Reset so openPDFInPaneB doesn't early-return
+  await Promise.all([
+    openPDFFromLibrary(oldB_pdf, 0),
+    openPDFInPaneB(oldA_pdf),
+  ]);
 
   document.getElementById('pane-a-name').textContent = oldB_pdf.name;
   document.getElementById('pane-b-name').textContent = oldA_pdf.name;

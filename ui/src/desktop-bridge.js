@@ -123,6 +123,178 @@ window.__DESKTOP_PDFIUM__ = {
     });
     return true;
   },
+
+  async getPageText(docId, pageNum, scaleKey) {
+    if (!invoke) return null;
+    try {
+      const raw = await invoke('desktop_vault_get_page_text', {
+        docId: String(docId),
+        pageNum: Number(pageNum),
+        scaleKey: String(scaleKey),
+      });
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  async savePageText(docId, pageNum, scaleKey, payload) {
+    if (!invoke) return false;
+    try {
+      return await invoke('desktop_vault_save_page_text', {
+        docId: String(docId),
+        pageNum: Number(pageNum),
+        scaleKey: String(scaleKey),
+        json: JSON.stringify(payload),
+      });
+    } catch {
+      return false;
+    }
+  },
+};
+
+window.__DESKTOP_SQLITE__ = {
+  async syncAnnotations(pdfFileId, annotations) {
+    if (!invoke || !pdfFileId) return false;
+    try {
+      return await invoke('desktop_sqlite_sync_annotations', {
+        pdfFileId: String(pdfFileId),
+        annotationsJson: JSON.stringify(annotations || []),
+      });
+    } catch {
+      return false;
+    }
+  },
+  async loadAnnotations(pdfFileId) {
+    if (!invoke || !pdfFileId) return null;
+    try {
+      const raw = await invoke('desktop_sqlite_load_annotations', { pdfFileId: String(pdfFileId) });
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+  async syncDrawings(pdfFileId, drawData) {
+    if (!invoke || !pdfFileId) return false;
+    try {
+      return await invoke('desktop_sqlite_sync_drawings', {
+        pdfFileId: String(pdfFileId),
+        drawMapJson: JSON.stringify(drawData || {}),
+      });
+    } catch {
+      return false;
+    }
+  },
+  async loadDrawings(pdfFileId) {
+    if (!invoke || !pdfFileId) return null;
+    try {
+      const raw = await invoke('desktop_sqlite_load_drawings', { pdfFileId: String(pdfFileId) });
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+  async syncBookmarks(pdfFileId, bookmarks) {
+    if (!invoke || !pdfFileId) return false;
+    try {
+      return await invoke('desktop_sqlite_sync_bookmarks', {
+        pdfFileId: String(pdfFileId),
+        bookmarksJson: JSON.stringify(bookmarks || []),
+      });
+    } catch {
+      return false;
+    }
+  },
+  async loadBookmarks(pdfFileId) {
+    if (!invoke || !pdfFileId) return null;
+    try {
+      const raw = await invoke('desktop_sqlite_load_bookmarks', { pdfFileId: String(pdfFileId) });
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+  async upsertPdfNote(pdfId, content, digest) {
+    if (!invoke || !pdfId) return false;
+    try {
+      return await invoke('desktop_sqlite_upsert_pdf_note', {
+        pdfId: String(pdfId),
+        content: String(content ?? ''),
+        digest: String(digest ?? ''),
+      });
+    } catch {
+      return false;
+    }
+  },
+  async loadPdfNote(pdfId) {
+    if (!invoke || !pdfId) return null;
+    try {
+      const raw = await invoke('desktop_sqlite_load_pdf_note', { pdfId: String(pdfId) });
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+  async saveFolderNote(folderId, notesHtml) {
+    if (!invoke || !folderId) return false;
+    try {
+      return await invoke('desktop_sqlite_save_folder_note', {
+        folderId: String(folderId),
+        notesHtml: String(notesHtml ?? ''),
+      });
+    } catch {
+      return false;
+    }
+  },
+  async loadFolderNote(folderId) {
+    if (!invoke || !folderId) return null;
+    try {
+      return await invoke('desktop_sqlite_load_folder_note', { folderId: String(folderId) });
+    } catch {
+      return null;
+    }
+  },
+  async saveNotepadHistory(pdfId, ts, content, digest) {
+    if (!invoke || !pdfId) return false;
+    try {
+      return await invoke('desktop_sqlite_save_notepad_history', {
+        pdfId: String(pdfId),
+        ts: Number(ts || Date.now()),
+        content: String(content ?? ''),
+        digest: String(digest ?? ''),
+      });
+    } catch {
+      return false;
+    }
+  },
+  async loadNotepadHistory(pdfId) {
+    if (!invoke || !pdfId) return [];
+    try {
+      const raw = await invoke('desktop_sqlite_load_notepad_history', { pdfId: String(pdfId) });
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  },
+  async saveOutbox(queue) {
+    if (!invoke) return false;
+    try {
+      return await invoke('desktop_sqlite_save_outbox', {
+        queueJson: JSON.stringify(queue || []),
+      });
+    } catch {
+      return false;
+    }
+  },
+  async loadOutbox() {
+    if (!invoke) return [];
+    try {
+      const raw = await invoke('desktop_sqlite_load_outbox');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  },
 };
 
 async function openLocalPdfFromBytes(name, bytesUint8, localPath = null) {
@@ -231,9 +403,15 @@ function injectDesktopUI() {
   window.__updateDesktopEngineBadge = ({ activeCanvases, totalPages }) => {
     const ramLbl = document.getElementById('desktop-ram-lbl');
     if (ramLbl) {
-      ramLbl.textContent = totalPages
-        ? `Loaded: ${activeCanvases}/${totalPages} pgs`
-        : `Loaded: ${activeCanvases} pgs`;
+      if (totalPages && activeCanvases >= totalPages) {
+        ramLbl.textContent = `🔒 Vaulted: ${activeCanvases}/${totalPages} pgs`;
+        ramLbl.style.color = '#4ade80';
+      } else {
+        ramLbl.textContent = totalPages
+          ? `Loaded: ${activeCanvases}/${totalPages} pgs`
+          : `Loaded: ${activeCanvases} pgs`;
+        ramLbl.style.color = 'var(--muted)';
+      }
     }
   };
 
@@ -264,7 +442,7 @@ function injectDesktopUI() {
       if (nextScale === S.scale) return;
       S.scale = nextScale;
       const zLbl = document.getElementById('zoom-lbl');
-      if (zLbl) zLbl.textContent = Math.round(S.scale * 100) + '%';
+      if (zLbl) zLbl.textContent = Math.round(S.scale / 1.5 * 100) + '%';
       clearTimeout(zoomDebounce);
       zoomDebounce = setTimeout(() => {
         reRenderAll();
@@ -298,7 +476,7 @@ async function showDesktopStatusModal() {
         <div><strong>PDFium DLL:</strong> ${_engineInfo.pdfiumLoaded ? '✅ Loaded natively in Rust (Fast PNG + HiDPI)' : '⚠️ Fallback mode'}</div>
         <div><strong>Google Drive (Gmail):</strong> ${S.driveUser ? `✅ Connected (${S.driveUser})` : '⚠️ Not signed in yet'}</div>
         <div><strong>Native Disk PDF Cache:</strong> ✅ <strong>${_engineInfo.cachedPdfs ?? 0}</strong> PDFs cached on D: drive</div>
-        <div><strong>Memory Protection:</strong> ✅ Windowed Canvas Eviction (max ±5 active pages in GPU RAM) + CSS <code>content-visibility: auto</code></div>
+        <div><strong>Permanent Page Vault:</strong> ✅ Rendered pages &amp; text layers stay permanently loaded (Session DOM Vault + Disk Page Vault on D:)</div>
         <div><strong>Offline Fonts:</strong> ✅ Bundled locally (Libre Baskerville & Inter .woff2)</div>
         <div><strong>Local SQLite Mirror:</strong> ✅ <strong>${_engineInfo.sqliteNotes ?? 0}</strong> PDF notes/digests & <strong>${_engineInfo.sqliteAnnNotes ?? 0}</strong> annotation notes mirrored on disk</div>
         <div><strong>Notes Formatting Gate:</strong> ✅ 100% SHA-256 byte-exact (Zero conversion)</div>

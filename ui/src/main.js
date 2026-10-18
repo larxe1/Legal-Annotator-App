@@ -169,8 +169,6 @@ async function init() {
       autosave('saving');
       const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
       await dbCreateBookmark(trueId, S.curPage, title);
-      S.bookmarks.push({ pdf_id: trueId, page: S.curPage, title });
-      S.bookmarks.sort((a, b) => a.page - b.page);
       inp.value = '';
       autosave('saved');
       // Re-render TOC

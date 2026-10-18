@@ -61,9 +61,18 @@ async function fetchPdfNotesAndDigest(pdf) {
     }
   }
 
-  // 3. Fallbacks from local storage
+  // 3. Fallbacks from local storage + Native SQLite Mirror
   if (!content) content = safeStorageGet('local_notepad_' + trueId, '') || '';
   if (!digest) digest = safeStorageGet('local_digest_' + trueId, '') || '';
+  if ((!content || !digest) && window.__DESKTOP_SQLITE__?.loadPdfNote) {
+    try {
+      const sq = await window.__DESKTOP_SQLITE__.loadPdfNote(trueId);
+      if (sq) {
+        if (!content && sq.content) content = sq.content;
+        if (!digest && sq.digest) digest = sq.digest;
+      }
+    } catch {}
+  }
 
   return { content, digest };
 }
@@ -171,7 +180,12 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = []) {
 
   // 3. Folder Notes
   let folderNotesHtml = '';
-  const folderNotes = folder.notes || safeStorageGet('local_folder_notes_' + folder.id, '') || '';
+  let folderNotes = folder.notes || safeStorageGet('local_folder_notes_' + folder.id, '') || '';
+  if (!folderNotes && window.__DESKTOP_SQLITE__?.loadFolderNote) {
+    try {
+      folderNotes = (await window.__DESKTOP_SQLITE__.loadFolderNote(folder.id)) || '';
+    } catch {}
+  }
   if (hasMeaningfulContent(folderNotes)) {
     hasAnyContent = true;
     folderNotesHtml += `
@@ -680,35 +694,40 @@ export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
 </body>
 </html>`;
 
-  // 1. Try opening dedicated print preview tab
-  const printWin = window.open('', '_blank');
+  // 1. In Tauri Desktop (or when popups are blocked), open interactive full-screen Export Preview Studio modal
+  const isTauriDesktop = !!window.__TAURI_INTERNALS__;
+  let printWin = !isTauriDesktop ? window.open('', '_blank') : null;
   if (printWin) {
     printWin.document.open();
     printWin.document.write(fullDocumentHtml);
     printWin.document.close();
     toast('PDF export window opened — select "Save as PDF" to save.');
   } else {
-    // 2. Fallback to hidden print iframe if popups are blocked
-    let iframe = document.getElementById('export-print-frame');
-    if (!iframe) {
-      iframe = document.createElement('iframe');
-      iframe.id = 'export-print-frame';
-      iframe.style.position = 'fixed';
-      iframe.style.right = '0';
-      iframe.style.bottom = '0';
-      iframe.style.width = '0';
-      iframe.style.height = '0';
-      iframe.style.border = '0';
-      document.body.appendChild(iframe);
+    let overlay = document.getElementById('desktop-export-preview-modal');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'desktop-export-preview-modal';
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:99998;background:rgba(12,19,34,0.92);display:flex;flex-direction:column;';
+      document.body.appendChild(overlay);
     }
+    overlay.innerHTML = '';
+    overlay.style.display = 'flex';
+
+    const iframe = document.createElement('iframe');
+    iframe.id = 'export-print-frame';
+    iframe.style.cssText = 'width:100%;height:100%;border:0;background:#f1f5f9;';
+    overlay.appendChild(iframe);
+
     const doc = iframe.contentWindow.document;
     doc.open();
     doc.write(fullDocumentHtml);
     doc.close();
-    setTimeout(() => {
-      iframe.contentWindow.focus();
-      iframe.contentWindow.print();
-      toast('Print prompt opened — choose "Save as PDF"');
-    }, 400);
+
+    // Wire window.close() inside the preview iframe to dismiss the overlay
+    iframe.contentWindow.close = () => {
+      overlay.style.display = 'none';
+      overlay.innerHTML = '';
+    };
+    toast('📄 PDF Export Preview opened — choose Compact/Standard or 1/2 Columns, then Save as PDF.');
   }
 }

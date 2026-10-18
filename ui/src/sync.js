@@ -2,7 +2,7 @@
 // SYNC — Real-time synchronization across tabs & devices
 // ═══════════════════════════════════════════════
 import { S } from './state.js';
-import { db, dbLoad, dbLoadAnnCounts, dbLoadAnnotations, dbLoadDrawings } from './db.js';
+import { db, dbLoad, dbLoadAnnCounts, dbLoadAnnotations, dbLoadDrawings, dbLoadBookmarks } from './db.js';
 
 let _channel = null;
 let _refreshTimer = null;
@@ -44,12 +44,18 @@ async function handleAnnotationsRefresh(pdfId) {
   clearTimeout(_annTimer);
   _annTimer = setTimeout(async () => {
     try {
-      await dbLoadAnnotations(trueId);
-      await dbLoadDrawings(trueId);
-      const { redrawAllAnnotations } = await import('./annotate.js');
+      await Promise.all([
+        dbLoadAnnotations(trueId),
+        dbLoadDrawings(trueId),
+        dbLoadBookmarks(trueId),
+      ]);
+      const { redrawAllAnnotations, renderAnnPanel } = await import('./annotate.js');
       const { redrawAllDrawings }    = await import('./draw.js');
       redrawAllAnnotations();
       redrawAllDrawings();
+      if (document.getElementById('ann-panel')?.classList.contains('open')) {
+        renderAnnPanel();
+      }
     } catch (err) {
       console.error('[Sync] Annotations refresh error', err);
     }
@@ -57,20 +63,26 @@ async function handleAnnotationsRefresh(pdfId) {
 }
 
 async function handleNotepadRefresh(pdfId) {
-  if (!S.curPDF) return;
-  const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
-  if (pdfId && pdfId !== trueId) return;
-
-  // Don't overwrite if notepad panel is not open
-  const panel = document.getElementById('notepad-panel');
-  if (!panel || !panel.classList.contains('open')) return;
+  const activeTrueId = S.curPDF ? (S.curPDF.linked_pdf_id || S.curPDF.id) : null;
+  const targetId = pdfId || activeTrueId;
+  if (!targetId) return;
 
   clearTimeout(_notepadTimer);
   _notepadTimer = setTimeout(async () => {
     try {
       const { dbLoadNotepad } = await import('./db.js');
       const { updateNotepadCacheFromRemote } = await import('./notepad.js');
-      const { content, digest } = await dbLoadNotepad(trueId);
+      const { content, digest } = await dbLoadNotepad(targetId);
+
+      // Keep in-memory notepad cache & SQLite mirror fresh even when panel is closed
+      updateNotepadCacheFromRemote(targetId, content, digest);
+      if (content || digest) {
+        window.__DESKTOP_SQLITE__?.upsertPdfNote?.(targetId, content || '', digest || '');
+      }
+
+      const panel = document.getElementById('notepad-panel');
+      if (!panel || !panel.classList.contains('open') || targetId !== activeTrueId) return;
+
       const editor = document.getElementById('np-editor');
       const digestEditor = document.getElementById('np-digest-editor');
       // ANTI-WIPE GUARD: Don't overwrite non-empty editor content with empty remote data.
@@ -83,8 +95,6 @@ async function handleNotepadRefresh(pdfId) {
       if (digestEditor && document.activeElement !== digestEditor && digest !== undefined) {
         digestEditor.innerHTML = digest || '';
       }
-      // Keep in-memory notepad cache fresh so PDF switching doesn't restore stale data
-      updateNotepadCacheFromRemote(trueId, content, digest);
     } catch (err) {
       console.error('[Sync] Notepad refresh error', err);
     }
@@ -132,7 +142,14 @@ export function initRealtimeSync() {
           const pdfId = payload.new?.pdf_file_id || payload.old?.pdf_file_id;
           handleAnnotationsRefresh(pdfId);
         })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'annotation_notes' }, () => {
+          handleAnnotationsRefresh(null);
+        })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'drawings' }, (payload) => {
+          const pdfId = payload.new?.pdf_file_id || payload.old?.pdf_file_id;
+          handleAnnotationsRefresh(pdfId);
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'pdf_bookmarks' }, (payload) => {
           const pdfId = payload.new?.pdf_file_id || payload.old?.pdf_file_id;
           handleAnnotationsRefresh(pdfId);
         })

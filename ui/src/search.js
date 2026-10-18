@@ -52,6 +52,15 @@ export function initSearch() {
   });
   document.getElementById('snext').addEventListener('click', () => nextSearchResult(1));
   document.getElementById('sprev').addEventListener('click', () => nextSearchResult(-1));
+
+  // Native Desktop Ctrl+F shortcut -> opens PDF & Annotation Search panel
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && S.curPDF) {
+      e.preventDefault();
+      openSearch();
+      document.getElementById('search-input')?.select();
+    }
+  });
 }
 
 function runSearch() {
@@ -70,15 +79,41 @@ let _searchQueryId = 0;
 
 export async function extractPageText(doc, pageNum) {
   if (S.pages[pageNum]?.textItems?.length) return S.pages[pageNum].textItems;
+
+  const trueId = S.curPDF?.linked_pdf_id || S.curPDF?.id || null;
+  const scaleKey = String(Math.round((S.scale || 1.5) * 100));
+
+  // 1. Check Disk Page Vault on D: drive first (instant lock-free JSON read)
+  if (trueId && window.__DESKTOP_PDFIUM__?.getPageText) {
+    const cached = await window.__DESKTOP_PDFIUM__.getPageText(trueId, pageNum, scaleKey);
+    if (cached && Array.isArray(cached.textItems) && cached.textItems.length) {
+      if (S.pages[pageNum]) S.pages[pageNum].textItems = cached.textItems;
+      return cached.textItems;
+    }
+  }
+
   try {
     const page = await doc.getPage(pageNum);
     const vp = page.getViewport({ scale: S.scale });
     const tc = await page.getTextContent();
     const textItems = [];
+    const spansToVault = [];
     for (const item of tc.items) {
       if (!item.str || !item.transform) continue;
       const tx = pdfjsLib.Util.transform(vp.transform, item.transform);
       const fh = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+      const angle = Math.atan2(tx[1], tx[0]);
+      const leftPx = tx[4];
+      const topPx = tx[5] - fh * 0.8;
+      const fontFam = item.fontName || 'sans-serif';
+      spansToVault.push({
+        s: item.str,
+        l: Math.round(leftPx * 100) / 100,
+        t: Math.round(topPx * 100) / 100,
+        fs: Math.round(fh * 100) / 100,
+        ff: fontFam,
+        a: angle ? Math.round(angle * 10000) / 10000 : 0,
+      });
       textItems.push({
         str: item.str,
         x: item.transform[4] * S.scale,
@@ -88,6 +123,14 @@ export async function extractPageText(doc, pageNum) {
       });
     }
     if (S.pages[pageNum]) S.pages[pageNum].textItems = textItems;
+    if (trueId && window.__DESKTOP_PDFIUM__?.savePageText) {
+      window.__DESKTOP_PDFIUM__.savePageText(trueId, pageNum, scaleKey, {
+        w: vp.width,
+        h: vp.height,
+        spans: spansToVault,
+        textItems,
+      });
+    }
     return textItems;
   } catch (err) {
     return [];
