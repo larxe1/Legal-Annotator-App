@@ -1,0 +1,21 @@
+# Secrets / local config
+config.js
+.env
+.env.*
+*.local
+
+# Personal data — notes snapshots must never be committed
+tools/fidelity/snapshot/
+tools/fidelity/report/
+
+# Build output
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
