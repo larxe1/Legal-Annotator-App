@@ -441,6 +441,46 @@ export async function changeZoom(delta) {
 // ── Copy Entire PDF Text to Clipboard ──
 let _isExtractingPdfText = false;
 
+// ── Exclude Commercial Footers (e.g., CD Technologies Asia, Inc. & cdasiaonline.com) ──
+const _FOOTER_EXCLUDE_PATTERNS = [
+  /(?:(?:copyright|©|\(c\))\s+)?(?:\d{4}\s+)?CD\s+Technologies\s+Asia(?:,?\s*Inc\.?)?(?:\s*(?:copyright|©|\(c\))?\s*\(?\d{4}\)?\.?)?/gi,
+  /(?:https?:\/\/)?(?:www\.)?cdasia(?:online)?\.com(?:\/[^\s]*)?/gi
+];
+
+export function stripExcludedFooters(text) {
+  if (!text) return '';
+  const lines = text.split('\n');
+  const resultLines = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const orig = lines[i];
+    let cleaned = orig;
+    let hadFooter = false;
+
+    for (const pat of _FOOTER_EXCLUDE_PATTERNS) {
+      pat.lastIndex = 0;
+      if (pat.test(cleaned)) {
+        hadFooter = true;
+        pat.lastIndex = 0;
+        cleaned = cleaned.replace(pat, '');
+      }
+    }
+
+    if (hadFooter) {
+      // If line only had footer or divider symbols remaining, omit it completely
+      if (/^[\s|•·\-/]*$/.test(cleaned)) {
+        continue;
+      }
+      cleaned = cleaned.replace(/[ \t]+/g, ' ').trim();
+      resultLines.push(cleaned);
+    } else {
+      resultLines.push(orig);
+    }
+  }
+
+  return resultLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function cleanPageTextContent(tc) {
   if (!tc || !tc.items || !tc.items.length) return '';
   let text = '';
@@ -480,7 +520,7 @@ function cleanPageTextContent(tc) {
     lastX = (x !== null && typeof item.width === 'number') ? (x + item.width) : x;
   }
 
-  return text.replace(/\n{3,}/g, '\n\n').trim();
+  return stripExcludedFooters(text);
 }
 
 async function copyTextToClipboard(text) {
@@ -580,6 +620,7 @@ export async function copyEntirePdfText() {
       }
       fullText = parts.join('\n\n').trim();
     }
+    fullText = stripExcludedFooters(fullText);
 
     const ok = await copyTextToClipboard(fullText);
     if (!ok) {
