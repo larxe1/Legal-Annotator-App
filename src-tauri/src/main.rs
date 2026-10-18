@@ -1,7 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
+use image::{
+    codecs::png::{CompressionType, FilterType, PngEncoder},
+    ExtendedColorType, ImageEncoder,
+};
 use libloading::{Library, Symbol};
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -34,6 +37,7 @@ unsafe impl Send for PdfiumHolder {}
 struct AppState {
     pdfium: Mutex<PdfiumHolder>,
     sqlite_path: PathBuf,
+    pdf_cache_dir: PathBuf,
     oauth_path: PathBuf,
     oauth_token: Arc<Mutex<Option<String>>>,
     oauth_status: Arc<Mutex<String>>,
@@ -56,6 +60,8 @@ struct SystemStatus {
     sqlite_notes: usize,
     #[serde(rename = "sqliteAnnNotes")]
     sqlite_ann_notes: usize,
+    #[serde(rename = "cachedPdfs")]
+    cached_pdfs: usize,
 }
 
 #[derive(Serialize)]
@@ -272,8 +278,9 @@ impl PdfiumHolder {
             bmp_destroy(bmp);
             close_page(page);
 
-            let mut out = Vec::new();
-            let encoder = PngEncoder::new(&mut out);
+            let mut out = Vec::with_capacity(wu * hu / 2);
+            let encoder =
+                PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter);
             encoder
                 .write_image(&rgb, wu as u32, hu as u32, ExtendedColorType::Rgb8)
                 .map_err(|e| e.to_string())?;
@@ -281,7 +288,7 @@ impl PdfiumHolder {
         };
 
         let data_url = format!("data:image/png;base64,{}", BASE64.encode(&png_bytes));
-        if self.page_cache.len() >= 14 {
+        if self.page_cache.len() >= 24 {
             self.page_cache.pop_front();
         }
         self.page_cache.push_back((cache_key, data_url.clone()));
@@ -410,6 +417,14 @@ async fn desktop_system_status(state: tauri::State<'_, AppState>) -> Result<Syst
         .unwrap_or(false);
     let (sqlite_notes, sqlite_ann_notes) =
         init_sqlite_mirror(&state.sqlite_path).unwrap_or((0, 0));
+    let cached_pdfs = fs::read_dir(&state.pdf_cache_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("pdf"))
+                .count()
+        })
+        .unwrap_or(0);
     Ok(SystemStatus {
         available: true,
         pdfium_loaded,
@@ -420,6 +435,7 @@ async fn desktop_system_status(state: tauri::State<'_, AppState>) -> Result<Syst
         },
         sqlite_notes,
         sqlite_ann_notes,
+        cached_pdfs,
     })
 }
 
@@ -736,7 +752,7 @@ async fn desktop_poll_google_oauth(
 }
 
 #[tauri::command]
-fn desktop_clear_google_oauth(state: tauri::State<'_, AppState>) -> bool {
+async fn desktop_clear_google_oauth(state: tauri::State<'_, AppState>) -> Result<bool, String> {
     if let Ok(mut g) = state.oauth_token.lock() {
         *g = None;
     }
@@ -744,12 +760,82 @@ fn desktop_clear_google_oauth(state: tauri::State<'_, AppState>) -> bool {
         *st = "idle".into();
     }
     let _ = fs::remove_file(&state.oauth_path);
-    true
+    Ok(true)
+}
+
+fn sanitize_cache_id(file_id: &str) -> String {
+    file_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn desktop_cache_get_path(
+    state: tauri::State<'_, AppState>,
+    file_id: String,
+) -> Result<Option<String>, String> {
+    let safe_id = sanitize_cache_id(&file_id);
+    if safe_id.is_empty() {
+        return Ok(None);
+    }
+    let path = state.pdf_cache_dir.join(format!("{}.pdf", safe_id));
+    if let Ok(meta) = fs::metadata(&path) {
+        if meta.len() > 100 {
+            return Ok(Some(path.to_string_lossy().to_string()));
+        }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+async fn desktop_cache_save_pdf(
+    state: tauri::State<'_, AppState>,
+    file_id: String,
+    base64: String,
+) -> Result<String, String> {
+    let safe_id = sanitize_cache_id(&file_id);
+    if safe_id.is_empty() {
+        return Err("Empty file_id".into());
+    }
+    let _ = fs::create_dir_all(&state.pdf_cache_dir);
+    let path = state.pdf_cache_dir.join(format!("{}.pdf", safe_id));
+    let bytes = BASE64.decode(base64.as_bytes()).map_err(|e| e.to_string())?;
+    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn desktop_cache_read_pdf(
+    state: tauri::State<'_, AppState>,
+    file_id: String,
+) -> Result<Option<String>, String> {
+    let safe_id = sanitize_cache_id(&file_id);
+    if safe_id.is_empty() {
+        return Ok(None);
+    }
+    let path = state.pdf_cache_dir.join(format!("{}.pdf", safe_id));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.len() <= 100 {
+        return Ok(None);
+    }
+    Ok(Some(BASE64.encode(&bytes)))
 }
 
 fn main() {
     let sqlite_path = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\notes_mirror.sqlite");
+    let pdf_cache_dir = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\pdf_cache");
     let oauth_path = PathBuf::from(r"D:\Code\legal-annotator-desktop\data\google_oauth.json");
+    let _ = fs::create_dir_all(&pdf_cache_dir);
     let _ = init_sqlite_mirror(&sqlite_path);
 
     let initial_tok = load_saved_oauth_token(&oauth_path);
@@ -762,6 +848,7 @@ fn main() {
     let app_state = AppState {
         pdfium: Mutex::new(PdfiumHolder::new()),
         sqlite_path,
+        pdf_cache_dir,
         oauth_path,
         oauth_token: Arc::new(Mutex::new(initial_tok)),
         oauth_status: Arc::new(Mutex::new(initial_status)),
@@ -778,6 +865,9 @@ fn main() {
             desktop_start_google_oauth,
             desktop_poll_google_oauth,
             desktop_clear_google_oauth,
+            desktop_cache_get_path,
+            desktop_cache_save_pdf,
+            desktop_cache_read_pdf,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Legal Annotator Desktop");

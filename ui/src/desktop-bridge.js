@@ -54,6 +54,8 @@ if (invoke) {
   };
 }
 
+import { reRenderAll } from './viewer.js';
+
 window.__DESKTOP_PDFIUM__ = {
   async openPdf(docId, arrayBuffer, localPath = null) {
     if (!invoke) return false;
@@ -63,9 +65,29 @@ window.__DESKTOP_PDFIUM__ = {
         if (res?.ok) _openNativeDocs.add(String(docId));
         return !!res?.ok;
       }
-      // For cloud/cached PDFs up to 80 MB, pass bytes to native PDFium cache in Rust
-      if (arrayBuffer && arrayBuffer.byteLength <= 80 * 1024 * 1024) {
+      // 1. Check if already cached on disk in D:\Code\legal-annotator-desktop\data\pdf_cache
+      const cachedPath = await invoke('desktop_cache_get_path', { fileId: String(docId) }).catch(() => null);
+      if (cachedPath) {
+        const res = await invoke('pdfium_open_path', { docId: String(docId), path: cachedPath });
+        if (res?.ok) {
+          _openNativeDocs.add(String(docId));
+          return true;
+        }
+      }
+      // 2. Otherwise persist once to disk cache and open directly from path via FPDF_LoadDocument
+      if (arrayBuffer && arrayBuffer.byteLength <= 150 * 1024 * 1024) {
         const b64 = arrayBufferToBase64(arrayBuffer);
+        const savedPath = await invoke('desktop_cache_save_pdf', {
+          fileId: String(docId),
+          base64: b64,
+        }).catch(() => null);
+        if (savedPath) {
+          const res = await invoke('pdfium_open_path', { docId: String(docId), path: savedPath });
+          if (res?.ok) {
+            _openNativeDocs.add(String(docId));
+            return true;
+          }
+        }
         const res = await invoke('pdfium_open_bytes', { docId: String(docId), base64: b64 });
         if (res?.ok) _openNativeDocs.add(String(docId));
         return !!res?.ok;
@@ -78,17 +100,26 @@ window.__DESKTOP_PDFIUM__ = {
 
   async renderPageToCanvas(docId, pageNum, canvas, widthPx, heightPx) {
     if (!invoke || !_openNativeDocs.has(String(docId))) return false;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const targetW = Math.max(100, Math.round(widthPx * dpr));
+    const targetH = Math.max(100, Math.round(heightPx * dpr));
     const dataUrl = await invoke('pdfium_render_page', {
       docId: String(docId),
       pageNum: Number(pageNum),
-      widthPx: Math.max(100, Math.round(widthPx)),
-      heightPx: Math.max(100, Math.round(heightPx)),
+      widthPx: targetW,
+      heightPx: targetH,
     });
     if (!dataUrl || typeof dataUrl !== 'string') return false;
 
     await new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
+        if (canvas.width !== targetW || canvas.height !== targetH) {
+          canvas.width = targetW;
+          canvas.height = targetH;
+          canvas.style.width = widthPx + 'px';
+          canvas.style.height = heightPx + 'px';
+        }
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -226,6 +257,27 @@ function injectDesktopUI() {
     const buf = await file.arrayBuffer();
     await openLocalPdfFromBytes(file.name, new Uint8Array(buf), null);
   });
+
+  // Smooth Ctrl + Mouse Wheel / Trackpad Pinch Zoom in PDF Viewer
+  const scrollEl = document.getElementById('canvas-scroll');
+  if (scrollEl && !scrollEl.dataset.desktopWheelZoom) {
+    scrollEl.dataset.desktopWheelZoom = 'true';
+    let zoomDebounce = null;
+    scrollEl.addEventListener('wheel', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || !S.pdfDoc) return;
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 0.12 : -0.12;
+      const nextScale = Math.min(3.0, Math.max(0.6, Math.round((S.scale + delta) * 100) / 100));
+      if (nextScale === S.scale) return;
+      S.scale = nextScale;
+      const zLbl = document.getElementById('zoom-lbl');
+      if (zLbl) zLbl.textContent = Math.round(S.scale * 100) + '%';
+      clearTimeout(zoomDebounce);
+      zoomDebounce = setTimeout(() => {
+        reRenderAll();
+      }, 110);
+    }, { passive: false });
+  }
 }
 
 async function showDesktopStatusModal() {
@@ -250,8 +302,9 @@ async function showDesktopStatusModal() {
       </div>
       <div style="font-size:12px;line-height:1.7;color:#cbd5e1;background:#0c1322;border:1px solid #1e293b;border-radius:8px;padding:12px 14px;margin-bottom:14px;">
         <div><strong>PDF Engine:</strong> <span style="color:#4ade80">${_engineInfo.engine || 'Native PDFium (x64)'}</span></div>
-        <div><strong>PDFium DLL:</strong> ${_engineInfo.pdfiumLoaded ? '✅ Loaded natively in Rust' : '⚠️ Fallback mode'}</div>
+        <div><strong>PDFium DLL:</strong> ${_engineInfo.pdfiumLoaded ? '✅ Loaded natively in Rust (Fast PNG + HiDPI)' : '⚠️ Fallback mode'}</div>
         <div><strong>Google Drive (Gmail):</strong> ${S.driveUser ? `✅ Connected (${S.driveUser})` : '⚠️ Not signed in yet'}</div>
+        <div><strong>Native Disk PDF Cache:</strong> ✅ <strong>${_engineInfo.cachedPdfs ?? 0}</strong> PDFs cached on D: drive</div>
         <div><strong>Memory Protection:</strong> ✅ Windowed Canvas Eviction (max ±5 active pages in GPU RAM) + CSS <code>content-visibility: auto</code></div>
         <div><strong>Offline Fonts:</strong> ✅ Bundled locally (Libre Baskerville & Inter .woff2)</div>
         <div><strong>Local SQLite Mirror:</strong> ✅ <strong>${_engineInfo.sqliteNotes ?? 0}</strong> PDF notes/digests & <strong>${_engineInfo.sqliteAnnNotes ?? 0}</strong> annotation notes mirrored on disk</div>

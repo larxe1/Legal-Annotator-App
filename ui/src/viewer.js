@@ -630,11 +630,6 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     // Start bounded lookahead renderer (only ±3 pages around current reading position)
     startBackgroundDocRenderer(pdfFile.id);
 
-    // Defer background text indexing so opening/scrolling gets 100% of CPU
-    setTimeout(() => {
-      import('./search.js').then(m => m.indexAllPagesText(S.pdfDoc)).catch(() => {});
-    }, 2200);
-
     // Smart syllabus pre-fetch: silently cache next PDF in folder for 0ms transition
     scheduleNextPdfPrefetch(pdfFile);
 

@@ -219,18 +219,39 @@ async function exportAllCachedToCustomDir(dirHandle) {
   }
 }
 
+const tauriInvoke = typeof window !== 'undefined' && window.__TAURI_INTERNALS__?.invoke
+  ? (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args)
+  : null;
+
+function arrayBufferToBase64Fast(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunk = 0x8000;
+  const parts = [];
+  for (let i = 0; i < bytes.length; i += chunk) {
+    parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunk)));
+  }
+  return btoa(parts.join(''));
+}
+
 export async function isPDFCached(fileId) {
   if (!fileId) return false;
   try {
     const db = await getDB();
-    if (!db) return false;
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.count(fileId);
-      req.onsuccess = () => resolve(req.result > 0);
-      req.onerror = () => resolve(false);
-    });
+    if (db) {
+      const inIdb = await new Promise((resolve) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.count(fileId);
+        req.onsuccess = () => resolve(req.result > 0);
+        req.onerror = () => resolve(false);
+      });
+      if (inIdb) return true;
+    }
+    if (tauriInvoke) {
+      const diskPath = await tauriInvoke('desktop_cache_get_path', { fileId: String(fileId) }).catch(() => null);
+      if (diskPath) return true;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -239,28 +260,38 @@ export async function isPDFCached(fileId) {
 export async function getCachedPDF(fileId) {
   try {
     const db = await getDB();
-    if (!db) return null;
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.get(fileId);
-      req.onsuccess = async () => {
-        const item = req.result;
-        if (!item) return resolve(null);
-        try {
-          // Return the Blob directly — caller uses URL.createObjectURL(), no conversion needed
-          if (item.blob) return resolve(item.blob);
-          if (item.buffer) {
-            // Legacy ArrayBuffer entries: wrap in Blob for consistency
-            return resolve(new Blob([item.buffer], { type: 'application/pdf' }));
+    if (db) {
+      const idbBlob = await new Promise((resolve) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.get(fileId);
+        req.onsuccess = async () => {
+          const item = req.result;
+          if (!item) return resolve(null);
+          try {
+            if (item.blob) return resolve(item.blob);
+            if (item.buffer) {
+              return resolve(new Blob([item.buffer], { type: 'application/pdf' }));
+            }
+            resolve(null);
+          } catch {
+            resolve(null);
           }
-          resolve(null);
-        } catch {
-          resolve(null);
-        }
-      };
-      req.onerror = () => resolve(null);
-    });
+        };
+        req.onerror = () => resolve(null);
+      });
+      if (idbBlob) return idbBlob;
+    }
+    if (tauriInvoke) {
+      const b64 = await tauriInvoke('desktop_cache_read_pdf', { fileId: String(fileId) }).catch(() => null);
+      if (b64) {
+        const binStr = atob(b64);
+        const bytes = new Uint8Array(binStr.length);
+        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+        return new Blob([bytes], { type: 'application/pdf' });
+      }
+    }
+    return null;
   } catch (err) {
     console.warn('[PDFCache] getCachedPDF failed', err);
     return null;
@@ -270,24 +301,34 @@ export async function getCachedPDF(fileId) {
 export async function setCachedPDF(fileId, data, name = '') {
   try {
     const db = await getDB();
-    if (!db || !data) return;
-    
+    if (!data) return;
+
     // Store as native Blob in IndexedDB (zero-copy streaming, avoids V8 clone memory spikes)
     const blob = (data instanceof Blob) ? data : new Blob([data], { type: 'application/pdf' });
     const size = blob.size;
 
     // 1. Always save in IndexedDB for fast random access
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    store.put({
-      id: fileId,
-      name: name,
-      size: size,
-      blob: blob,
-      saved_at: Date.now(),
-    });
+    if (db) {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.put({
+        id: fileId,
+        name: name,
+        size: size,
+        blob: blob,
+        saved_at: Date.now(),
+      });
+    }
 
-    // 2. Also save to Custom PC Folder if configured
+    // 2. Also persist to Native Desktop Disk Cache on D: drive if running in Tauri
+    if (tauriInvoke && fileId && size <= 150 * 1024 * 1024) {
+      blob.arrayBuffer().then(buf => {
+        const b64 = arrayBufferToBase64Fast(buf);
+        return tauriInvoke('desktop_cache_save_pdf', { fileId: String(fileId), base64: b64 });
+      }).catch(() => {});
+    }
+
+    // 3. Also save to Custom PC Folder if configured
     const dirHandle = await getStoredDirHandle();
     if (dirHandle) {
       const hasPerm = await verifyPermission(dirHandle, true);
