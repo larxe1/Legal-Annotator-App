@@ -82,19 +82,12 @@ async function init() {
 
   safeInit(initModals, 'Modals');
   
-  const welcomeHTML = document.getElementById('canvas-scroll')?.innerHTML;
+  // Brand title in sidebar
   document.getElementById('app-title')?.addEventListener('click', async () => {
-    try {
-      const { flushNotepadSave, notepadOnPDFChange } = await import('./notepad.js');
-      await flushNotepadSave();
-      await notepadOnPDFChange(null);
-    } catch {}
+    // If a PDF is currently open, clicking the app title should not dismiss it
+    if (S.curPDF) return;
 
-    S.curPDF = null;
-    const scroll = document.getElementById('canvas-scroll');
-    if (scroll && welcomeHTML) scroll.innerHTML = welcomeHTML;
-    
-    // Reset view to Welcome (content-area visible, folder-doc hidden)
+    // Reset view to Welcome if in folder-doc mode
     try {
       const { flushFolderDoc } = await import('./viewer.js');
       await flushFolderDoc();

@@ -221,9 +221,24 @@ const _pagePreviewCache = new Map();
 let _mountedDocId = null; // trueId currently mounted inside #canvas-scroll
 const _pdfSessionVault = new Map(); // trueId -> { pdfDoc, totalPages, scale, pages, renderedPages, boxDone, drawDone, textDone, curPage, scrollTop, fragment }
 
+let _welcomeHTML = null;
+
+export function getWelcomeHTML() {
+  if (!_welcomeHTML && typeof document !== 'undefined') {
+    const el = document.getElementById('welcome');
+    if (el) _welcomeHTML = el.outerHTML;
+  }
+  return _welcomeHTML || '<div id="welcome"></div>';
+}
+
 function saveMountedPdfToSessionVault() {
   const scroll = document.getElementById('canvas-scroll');
   if (!_mountedDocId || !S.pdfDoc || !scroll) return;
+  // Guard: ONLY vault if scroll actually contains rendered PDF page elements (.pg-wrap)
+  if (!scroll.querySelector('.pg-wrap')) {
+    _mountedDocId = null;
+    return;
+  }
   if (_pageObserver) {
     _pageObserver.disconnect();
     _pageObserver = null;
@@ -406,6 +421,48 @@ export async function scheduleNextPdfPrefetch(pdfFile) {
   }
 }
 
+// ── Close active PDF & return to Welcome / Home ──
+export async function closeActivePDF() {
+  if (!S.curPDF && !_mountedDocId) return;
+
+  try {
+    const { flushNotepadSave, notepadOnPDFChange } = await import('./notepad.js');
+    await flushNotepadSave();
+    await notepadOnPDFChange(null);
+  } catch {}
+
+  await flushFolderDoc();
+
+  if (_mountedDocId && S.pdfDoc) {
+    saveMountedPdfToSessionVault();
+  }
+
+  S.curPDF = null;
+  S.pdfDoc = null;
+  S.totalPages = 0;
+  S.pages = {};
+  _mountedDocId = null;
+
+  const { closeOtherPanels } = await import('./ui.js');
+  closeOtherPanels();
+  const { clearSearchHighlights } = await import('./search.js');
+  clearSearchHighlights();
+
+  const scroll = document.getElementById('canvas-scroll');
+  if (scroll) {
+    scroll.innerHTML = getWelcomeHTML();
+  }
+
+  document.getElementById('folder-doc-viewer').style.display = 'none';
+  document.getElementById('content-area').style.display = 'flex';
+  document.getElementById('pg-total').textContent = '0';
+  document.getElementById('pg-input').value = '1';
+  document.getElementById('zoom-lbl').textContent = '100%';
+
+  updateActivePDF();
+  window.__updateDesktopEngineBadge?.({ activeCanvases: 0, totalPages: 0 });
+}
+
 // ── Open PDF from library ──
 export async function openPDFFromLibrary(pdfFile, retries = 5) {
   try {
@@ -450,7 +507,8 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
   document.getElementById('content-area').style.display = 'flex';
 
   // ── FAST PATH 1: Already mounted in #canvas-scroll (e.g. returning from Folder Doc or clicking same PDF) ──
-  if (_mountedDocId === trueId && S.pdfDoc && S.totalPages > 0 && Object.keys(S.pages || {}).length === S.totalPages) {
+  const isActuallyMounted = scroll && scroll.querySelector('.pg-wrap');
+  if (_mountedDocId === trueId && S.pdfDoc && S.totalPages > 0 && Object.keys(S.pages || {}).length === S.totalPages && isActuallyMounted) {
     const manualDefault = safeStorageGet('default_page_' + pdfFile.id)
       || (pdfFile.folder_id ? safeStorageGet('default_page_f_' + pdfFile.folder_id + '_' + trueId) : null);
     if (manualDefault && parseInt(manualDefault) >= 1) {
@@ -492,65 +550,71 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     const vaulted = _pdfSessionVault.get(trueId);
     _pdfSessionVault.delete(trueId);
 
-    S.pdfDoc = vaulted.pdfDoc;
-    S.totalPages = vaulted.totalPages;
-    S.scale = vaulted.scale;
-    S.pages = vaulted.pages;
-    S.curPage = vaulted.curPage || 1;
+    // Verify vaulted fragment actually contains PDF pages (.pg-wrap)
+    const hasVaultedPages = vaulted && vaulted.fragment && vaulted.fragment.querySelector && vaulted.fragment.querySelector('.pg-wrap');
+    if (hasVaultedPages) {
+      S.pdfDoc = vaulted.pdfDoc;
+      S.totalPages = vaulted.totalPages;
+      S.scale = vaulted.scale;
+      S.pages = vaulted.pages;
+      S.curPage = vaulted.curPage || 1;
 
-    _renderedPages = new Set(vaulted.renderedPages);
-    _boxDone.clear(); vaulted.boxDone.forEach(x => _boxDone.add(x));
-    _drawDone.clear(); vaulted.drawDone.forEach(x => _drawDone.add(x));
-    _textDone.clear(); vaulted.textDone.forEach(x => _textDone.add(x));
+      _renderedPages = new Set(vaulted.renderedPages);
+      _boxDone.clear(); vaulted.boxDone.forEach(x => _boxDone.add(x));
+      _drawDone.clear(); vaulted.drawDone.forEach(x => _drawDone.add(x));
+      _textDone.clear(); vaulted.textDone.forEach(x => _textDone.add(x));
 
-    scroll.innerHTML = '';
-    scroll.appendChild(vaulted.fragment);
-    _mountedDocId = trueId;
+      scroll.innerHTML = '';
+      scroll.appendChild(vaulted.fragment);
+      _mountedDocId = trueId;
 
-    document.getElementById('pg-total').textContent = S.totalPages;
-    document.getElementById('pg-input').max = S.totalPages;
-    document.getElementById('pg-input').value = S.curPage;
+      document.getElementById('pg-total').textContent = S.totalPages;
+      document.getElementById('pg-input').max = S.totalPages;
+      document.getElementById('pg-input').value = S.curPage;
 
-    setIsJumping(true);
-    const manualDefault = safeStorageGet('default_page_' + pdfFile.id)
-      || (pdfFile.folder_id ? safeStorageGet('default_page_f_' + pdfFile.folder_id + '_' + trueId) : null);
-    if (manualDefault && parseInt(manualDefault) >= 1) {
-      const targetP = Math.min(S.totalPages, parseInt(manualDefault));
-      S.curPage = targetP;
-      document.getElementById('pg-input').value = targetP;
-      S.pages[targetP]?.wrap?.scrollIntoView({ behavior: 'auto', block: 'start' });
-    } else {
-      scroll.scrollTop = vaulted.scrollTop || 0;
-    }
-    setTimeout(() => setIsJumping(false), 250);
-
-    attachPageObserver(scroll);
-
-    const { redrawAllAnnotations } = await import('./annotate.js');
-    const { redrawAllDrawings }    = await import('./draw.js');
-    redrawAllAnnotations();
-    redrawAllDrawings();
-    renderColorDots();
-    pushRecent(pdfFile);
-    updateDesktopEngineStats();
-
-    if (_renderedPages.size < S.totalPages) {
-      startBackgroundDocRenderer(trueId);
-    }
-
-    Promise.all([
-      dbLoadBookmarks(trueId),
-      dbLoadAnnotations(trueId),
-      dbLoadDrawings(trueId),
-    ]).then(() => {
-      if (S.curPDF && (S.curPDF.linked_pdf_id || S.curPDF.id) === trueId) {
-        redrawAllAnnotations();
-        redrawAllDrawings();
-        renderColorDots();
+      setIsJumping(true);
+      const manualDefault = safeStorageGet('default_page_' + pdfFile.id)
+        || (pdfFile.folder_id ? safeStorageGet('default_page_f_' + pdfFile.folder_id + '_' + trueId) : null);
+      if (manualDefault && parseInt(manualDefault) >= 1) {
+        const targetP = Math.min(S.totalPages, parseInt(manualDefault));
+        S.curPage = targetP;
+        document.getElementById('pg-input').value = targetP;
+        S.pages[targetP]?.wrap?.scrollIntoView({ behavior: 'auto', block: 'start' });
+      } else {
+        scroll.scrollTop = vaulted.scrollTop || 0;
       }
-    }).catch(() => {});
-    syncOK('Ready');
-    return;
+      setTimeout(() => setIsJumping(false), 250);
+
+      attachPageObserver(scroll);
+
+      const { redrawAllAnnotations } = await import('./annotate.js');
+      const { redrawAllDrawings }    = await import('./draw.js');
+      redrawAllAnnotations();
+      redrawAllDrawings();
+      renderColorDots();
+      pushRecent(pdfFile);
+      updateDesktopEngineStats();
+
+      if (_renderedPages.size < S.totalPages) {
+        startBackgroundDocRenderer(trueId);
+      }
+
+      Promise.all([
+        dbLoadBookmarks(trueId),
+        dbLoadAnnotations(trueId),
+        dbLoadDrawings(trueId),
+      ]).then(() => {
+        if (S.curPDF && (S.curPDF.linked_pdf_id || S.curPDF.id) === trueId) {
+          redrawAllAnnotations();
+          redrawAllDrawings();
+          renderColorDots();
+        }
+      }).catch(() => {});
+      syncOK('Ready');
+      return;
+    } else {
+      _mountedDocId = null;
+    }
   }
 
   scroll.innerHTML = `<div class="spin-w"><div class="spinner"></div>${retries < 5 ? 'Retrying PDF...' : 'Loading PDF…'}</div>`;
