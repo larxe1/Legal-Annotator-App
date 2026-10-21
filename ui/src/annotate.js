@@ -154,8 +154,15 @@ export function updateAnnBadge(pdfId) {
 
 // ── Tooltip ──
 let tip = null;
+// Track the real input device: touchscreen laptops report maxTouchPoints > 0
+// even when the user is hovering with a mouse/touchpad, so only skip the
+// hover tooltip when the last interaction was an actual finger touch.
+let _lastPointerType = 'mouse';
+const _trackPointer = e => { if (e.pointerType) _lastPointerType = e.pointerType; };
+window.addEventListener('pointerdown', _trackPointer, { capture: true, passive: true });
+window.addEventListener('pointermove', _trackPointer, { capture: true, passive: true });
 function showTip(e, html) {
-  if (navigator.maxTouchPoints > 0) return;
+  if (_lastPointerType === 'touch' || e?.sourceCapabilities?.firesTouchEvents) return;
   if (!tip) {
     tip = document.createElement('div');
     tip.className = 'ann-hover-tip note-body';

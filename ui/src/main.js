@@ -16,6 +16,7 @@ import {
   openModal, closeModal, autosave, updateAppTitle
 } from './ui.js';
 import { initNotepad } from './notepad.js';
+import { initPanelFind } from './panel-find.js';
 import { initTableContextMenu, initTableLightbox } from './tablepicker.js';
 import { initDualView } from './dualview.js';
 import { initRealtimeSync } from './sync.js';
@@ -116,6 +117,7 @@ async function init() {
   safeInit(initZoom, 'Zoom');
   safeInit(initNavButtons, 'NavButtons');
   safeInit(initNotepad, 'Notepad');
+  safeInit(initPanelFind, 'PanelFind');
   safeInit(initTableContextMenu, 'TableContextMenu');
   safeInit(initTableLightbox, 'TableLightbox');
   safeInit(initDualView, 'DualView');

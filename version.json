@@ -1,7 +1,7 @@
 {
-  "version": "1.1.0",
-  "build": 3,
-  "updatedAt": "2026-10-18T14:11:00+08:00",
-  "notes": "Fix drag to change location function in desktop app (enable HTML5 drag & drop in WebView2)",
+  "version": "1.2.0",
+  "build": 4,
+  "updatedAt": "2026-10-21T18:50:00+08:00",
+  "notes": "Ctrl+F searches inside Notes / Case Digest / Case Summaries; hover note previews work on touchscreen laptops; version & update checker in Settings",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

@@ -1295,3 +1295,24 @@ kbd { background: var(--navy); border: 1px solid var(--navy-b); border-radius: 4
 .desktop-gmail-login-btn:hover {
   filter: brightness(1.15);
 }
+
+/* ── Panel Find (Ctrl+F inside Notes / Case Digest / Case Summaries) ── */
+#panel-find-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; flex-shrink: 0;
+  background: var(--navy); border-bottom: 1px solid var(--gold);
+}
+#panel-find-bar #pf-input {
+  flex: 1; min-width: 0; padding: 5px 8px; font-size: 12.5px;
+  background: rgba(0,0,0,0.25); color: var(--text, #e8e4db);
+  border: 1px solid var(--navy-b); border-radius: 5px; outline: none;
+}
+#panel-find-bar #pf-input:focus { border-color: var(--gold); }
+#panel-find-bar #pf-count { font-size: 11px; color: var(--muted); white-space: nowrap; min-width: 52px; text-align: right; }
+#panel-find-bar button {
+  background: none; border: 1px solid var(--navy-b); color: var(--muted);
+  border-radius: 5px; width: 26px; height: 26px; cursor: pointer; font-size: 11px; flex-shrink: 0;
+}
+#panel-find-bar button:hover { border-color: var(--gold); color: var(--gold); }
+::highlight(panel-find-all) { background-color: rgba(250, 204, 21, 0.35); color: inherit; }
+::highlight(panel-find-cur) { background-color: #f97316; color: #000; }

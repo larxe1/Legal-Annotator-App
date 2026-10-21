@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 echo [1/4] Incrementing build number in version.json...
-powershell -NoProfile -Command "$v = Get-Content 'version.json' | ConvertFrom-Json; $v.build = [int]$v.build + 1; $v.updatedAt = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'); $v | ConvertTo-Json | Set-Content 'version.json' -Encoding UTF8; Write-Host ('New Build Number: #' + $v.build)"
+powershell -NoProfile -Command "$v = Get-Content 'version.json' -Raw | ConvertFrom-Json; $v.build = [int]$v.build + 1; $v.updatedAt = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'); [IO.File]::WriteAllText((Join-Path (Get-Location) 'version.json'), ($v | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false)); Write-Host ('New Build Number: #' + $v.build)"
 
 echo [2/4] Closing running instance and building Legal Annotator.exe...
 powershell -NoProfile -Command "Stop-Process -Name 'Legal Annotator','legal-annotator-desktop' -Force -ErrorAction SilentlyContinue"

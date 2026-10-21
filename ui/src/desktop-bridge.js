@@ -627,8 +627,86 @@ async function showDesktopStatusModal() {
 
 window.openDesktopEngineStatus = showDesktopStatusModal;
 
+// ── Settings → "App Version & Updates" card ──
+// Shows this device's installed version/build next to the latest build published
+// on GitHub, so it is obvious whether the laptop and this PC run the same version.
+function injectSettingsVersionCard() {
+  const modal = document.getElementById('mo-settings');
+  if (!modal || document.getElementById('settings-version-card')) return;
+  const list = modal.querySelector('.modal-box > div[style*="flex-direction:column"]');
+  if (!list) return;
+  const card = document.createElement('div');
+  card.id = 'settings-version-card';
+  card.style.cssText = 'background:rgba(0,0,0,0.2);border:1px solid var(--navy-b);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.6;color:#cbd5e1;';
+  card.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;">
+      <strong style="color:var(--gold);font-size:12.5px;">🏷️ App Version &amp; Updates</strong>
+      <button id="svc-check" class="btn-sec" style="padding:3px 9px;font-size:11px;">🔄 Check now</button>
+    </div>
+    <div>This device: <strong id="svc-local" style="color:#93c5fd;">checking…</strong></div>
+    <div>Latest published: <strong id="svc-remote" style="color:#93c5fd;">checking…</strong></div>
+    <div id="svc-status" style="margin-top:4px;"></div>`;
+  list.prepend(card);
+  card.querySelector('#svc-check').addEventListener('click', () => refreshSettingsVersionCard(true));
+
+  // Re-check every time the Settings window is opened
+  new MutationObserver(() => {
+    if (modal.classList.contains('open')) refreshSettingsVersionCard(false);
+  }).observe(modal, { attributes: true, attributeFilter: ['class'] });
+}
+
+let _svcBusy = false;
+async function refreshSettingsVersionCard(manual) {
+  const card = document.getElementById('settings-version-card');
+  if (!card || _svcBusy) return;
+  _svcBusy = true;
+  const $ = sel => card.querySelector(sel);
+  const btn = $('#svc-check');
+  btn.disabled = true;
+  btn.textContent = '⏳ Checking…';
+  try {
+    const info = await checkAndNotifyGitHubUpdate(manual);
+    if (!info) {
+      $('#svc-local').textContent = 'unknown';
+      $('#svc-remote').textContent = 'unknown';
+      $('#svc-status').innerHTML = '<span style="color:#fca5a5;">⚠️ Could not run the update check.</span>';
+      return;
+    }
+    $('#svc-local').textContent = `v${info.localVersion} (Build #${info.localBuild})`;
+    if (info.error || info.remoteBuild === undefined) {
+      $('#svc-remote').textContent = 'unavailable';
+      $('#svc-status').innerHTML = '<span style="color:#fcd34d;">⚠️ Couldn\'t reach GitHub (offline?). Try again later.</span>';
+      return;
+    }
+    const when = info.updatedAt ? new Date(info.updatedAt).toLocaleString() : '';
+    $('#svc-remote').textContent = `v${info.remoteVersion} (Build #${info.remoteBuild})${when ? ' — ' + when : ''}`;
+    const status = $('#svc-status');
+    if (info.remoteBuild > info.localBuild) {
+      status.innerHTML = '<span style="color:#fcd34d;">🔄 Update available.</span> <button id="svc-install" class="btn-gold" style="padding:3px 10px;font-size:11px;margin-left:6px;">⬇️ Install &amp; restart</button>';
+      status.querySelector('#svc-install').addEventListener('click', async e => {
+        e.currentTarget.disabled = true;
+        e.currentTarget.textContent = '⏳ Downloading…';
+        try {
+          await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null });
+        } catch (err) {
+          status.innerHTML = `<span style="color:#fca5a5;">⚠️ Update failed: ${err}</span>`;
+        }
+      });
+    } else if (info.remoteBuild === info.localBuild) {
+      status.innerHTML = '<span style="color:#86efac;">✅ Up to date — this device has the latest published version.</span>';
+    } else {
+      status.innerHTML = '<span style="color:#fcd34d;">⚠️ This copy is newer than the published version. Your other devices won\'t get it until it is published (Publish-Update-To-Laptop.bat).</span>';
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 Check now';
+    _svcBusy = false;
+  }
+}
+
 async function initDesktopBridge() {
   injectDesktopUI();
+  try { injectSettingsVersionCard(); } catch (e) { console.warn('[Desktop Bridge] version card error:', e); }
   if (invoke) {
     try {
       _engineInfo = await invoke('desktop_system_status');
