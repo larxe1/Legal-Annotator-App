@@ -1,7 +1,7 @@
 {
-  "version": "1.2.0",
-  "build": 4,
-  "updatedAt": "2026-10-21T18:50:00+08:00",
-  "notes": "Ctrl+F searches inside Notes / Case Digest / Case Summaries; hover note previews work on touchscreen laptops; version & update checker in Settings",
+  "version": "1.2.1",
+  "build": 5,
+  "updatedAt": "2026-10-21T19:05:00+08:00",
+  "notes": "Automatic background updates (seamless download & restart on startup/intervals without manual clicks); cache-busted update checks; auto-update toggle in Settings",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

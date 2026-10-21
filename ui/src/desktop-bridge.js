@@ -479,9 +479,18 @@ function injectDesktopUI() {
 }
 
 let _updateInfo = null;
+let _isUpdating = false;
+let _lastCheckTime = 0;
 
-function showUpdateBanner(info) {
-  _updateInfo = info;
+function isAutoUpdateEnabled() {
+  return safeStorageGet('desktop_auto_update_enabled', 'true') !== 'false';
+}
+
+function setAutoUpdateEnabled(val) {
+  safeStorageSet('desktop_auto_update_enabled', val ? 'true' : 'false');
+}
+
+function getUpdatePill() {
   let pill = document.getElementById('desktop-update-pill');
   if (!pill) {
     pill = document.createElement('div');
@@ -503,13 +512,48 @@ function showUpdateBanner(info) {
       'font-family:Inter,system-ui,sans-serif',
       'font-size:12px',
       'font-weight:600',
-      'cursor:pointer',
       'user-select:none',
       'transition:transform 0.2s ease, filter 0.2s ease',
     ].join(';');
     document.body.appendChild(pill);
   }
+  return pill;
+}
+
+async function performAutoUpdate(info) {
+  if (_isUpdating || !info?.hasUpdate || !invoke) return;
+  _isUpdating = true;
+  const pill = getUpdatePill();
   pill.style.display = 'flex';
+  pill.style.cursor = 'wait';
+  pill.style.background = 'linear-gradient(135deg, rgba(16,185,129,0.95), rgba(5,150,105,0.95))';
+  pill.innerHTML = `<span>🔄 Auto-updating to Build #${info.remoteBuild}… Downloading in background (~32 MB)</span>`;
+
+  try {
+    // Flush notes before update so local and cloud state are 100% saved
+    try {
+      const { flushNotepadSave } = await import('./notepad.js');
+      await flushNotepadSave();
+    } catch {}
+
+    pill.innerHTML = `<span>⏳ Downloading update from GitHub (~32 MB)… Please wait</span>`;
+    await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null });
+    pill.innerHTML = `<span>✅ Update installed! Restarting Legal Annotator…</span>`;
+  } catch (err) {
+    _isUpdating = false;
+    pill.style.cursor = 'pointer';
+    pill.style.background = 'linear-gradient(135deg, #b91c1c, #991b1b)';
+    pill.innerHTML = `<span>⚠️ Auto-update paused: ${err} (will retry automatically)</span>`;
+    setTimeout(() => { if (!_isUpdating) pill.style.display = 'none'; }, 8000);
+  }
+}
+
+function showUpdateBanner(info) {
+  _updateInfo = info;
+  const pill = getUpdatePill();
+  pill.style.display = 'flex';
+  pill.style.cursor = 'pointer';
+  pill.style.background = 'linear-gradient(135deg, rgba(16,185,129,0.95), rgba(5,150,105,0.95))';
   pill.title = info.notes || 'Click to download latest Legal Annotator.exe from GitHub and restart';
   pill.innerHTML = `
     <span>🔄 Update Available (Build #${info.remoteBuild}) — <u>Click to Update &amp; Restart</u></span>
@@ -520,29 +564,23 @@ function showUpdateBanner(info) {
     pill.style.display = 'none';
   });
   pill.onclick = async () => {
-    if (pill.dataset.updating === '1') return;
-    pill.dataset.updating = '1';
-    pill.style.cursor = 'wait';
-    pill.innerHTML = `<span>⏳ Downloading update from GitHub (~32 MB)… Please wait</span>`;
-    try {
-      await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null });
-      pill.innerHTML = `<span>✅ Update installed! Restarting app…</span>`;
-    } catch (err) {
-      pill.dataset.updating = '0';
-      pill.style.cursor = 'pointer';
-      pill.style.background = 'linear-gradient(135deg, #b91c1c, #991b1b)';
-      pill.innerHTML = `<span>⚠️ Update failed: ${err} (Click to retry)</span>`;
-    }
+    if (_isUpdating) return;
+    performAutoUpdate(info);
   };
 }
 
 async function checkAndNotifyGitHubUpdate(manual = false) {
   if (!invoke) return null;
+  _lastCheckTime = Date.now();
   try {
     const info = await invoke('desktop_check_github_update');
     _updateInfo = info;
     if (info?.hasUpdate) {
-      showUpdateBanner(info);
+      if (isAutoUpdateEnabled() && !manual) {
+        performAutoUpdate(info);
+      } else {
+        showUpdateBanner(info);
+      }
     }
     return info;
   } catch (e) {
@@ -645,9 +683,28 @@ function injectSettingsVersionCard() {
     </div>
     <div>This device: <strong id="svc-local" style="color:#93c5fd;">checking…</strong></div>
     <div>Latest published: <strong id="svc-remote" style="color:#93c5fd;">checking…</strong></div>
-    <div id="svc-status" style="margin-top:4px;"></div>`;
+    <div id="svc-status" style="margin-top:4px;"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.08);">
+      <span>Automatic updates:</span>
+      <button id="svc-toggle-auto" class="btn-sec" style="padding:2px 8px;font-size:11px;cursor:pointer;"></button>
+    </div>`;
   list.prepend(card);
   card.querySelector('#svc-check').addEventListener('click', () => refreshSettingsVersionCard(true));
+
+  const updateAutoBtn = () => {
+    const enabled = isAutoUpdateEnabled();
+    const tbtn = card.querySelector('#svc-toggle-auto');
+    if (tbtn) {
+      tbtn.textContent = enabled ? '✅ Auto-Update: ON' : '⏸️ Auto-Update: OFF';
+      tbtn.style.color = enabled ? '#86efac' : '#fcd34d';
+      tbtn.title = enabled ? 'Click to pause automatic updates' : 'Click to enable automatic background updates';
+    }
+  };
+  updateAutoBtn();
+  card.querySelector('#svc-toggle-auto')?.addEventListener('click', () => {
+    setAutoUpdateEnabled(!isAutoUpdateEnabled());
+    updateAutoBtn();
+  });
 
   // Re-check every time the Settings window is opened
   new MutationObserver(() => {
@@ -717,6 +774,18 @@ async function initDesktopBridge() {
     setTimeout(() => {
       checkAndNotifyGitHubUpdate(false);
     }, 2500);
+
+    // Periodic automatic check every 15 minutes while running
+    setInterval(() => {
+      checkAndNotifyGitHubUpdate(false);
+    }, 15 * 60 * 1000);
+
+    // Check on window focus if more than 5 minutes have elapsed since last check
+    window.addEventListener('focus', () => {
+      if (Date.now() - _lastCheckTime > 5 * 60 * 1000) {
+        checkAndNotifyGitHubUpdate(false);
+      }
+    });
   }
 }
 

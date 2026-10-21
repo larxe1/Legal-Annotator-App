@@ -1490,7 +1490,16 @@ async fn desktop_check_github_update() -> Result<serde_json::Value, String> {
     use std::os::windows::process::CommandExt;
 
     let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
-    cmd.args(["-fsSL", "--max-time", "10", &url]);
+    cmd.args([
+        "-fsSL",
+        "--max-time",
+        "10",
+        "-H",
+        "Cache-Control: no-cache",
+        "-H",
+        "Pragma: no-cache",
+        &url,
+    ]);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
@@ -1564,6 +1573,10 @@ async fn desktop_apply_github_update(download_url: Option<String>) -> Result<Str
         "--show-error",
         "--max-time",
         "240",
+        "-H",
+        "Cache-Control: no-cache",
+        "-H",
+        "Pragma: no-cache",
         "-o",
         &new_exe_str,
         &url,
