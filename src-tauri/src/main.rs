@@ -697,11 +697,24 @@ const OAUTH_INIT_SCRIPT: &str = r#"
   function reportToken(tok) {
     if (!tok || window.__TAURI_TOKEN_SENT__) return;
     window.__TAURI_TOKEN_SENT__ = true;
-    window.location.replace('http://127.0.0.1:19876/__tauri_oauth?token=' + encodeURIComponent(tok));
-  }
-  function inspectPayload(val) {
     try {
-      var s = typeof val === 'string' ? val : JSON.stringify(val);
+      window.location.replace('http://127.0.0.1:19876/__tauri_oauth?token=' + encodeURIComponent(tok));
+    } catch (e) {}
+  }
+
+  function inspectPayload(val) {
+    if (!val) return false;
+    try {
+      var s = '';
+      if (typeof val === 'string') {
+        s = val;
+      } else if (typeof val === 'object') {
+        if (val.access_token && typeof val.access_token === 'string') {
+          s = val.access_token;
+        } else {
+          try { s = JSON.stringify(val); } catch (e) {}
+        }
+      }
       if (!s) return false;
       var m = s.match(/ya29\.[A-Za-z0-9_\-\.]+/);
       if (m && m[0] && m[0].length > 20) {
@@ -711,40 +724,44 @@ const OAUTH_INIT_SCRIPT: &str = r#"
     } catch (e) {}
     return false;
   }
+
+  // Intercept window postMessage events
+  window.addEventListener('message', function(e) {
+    try {
+      if (e && e.data) inspectPayload(e.data);
+    } catch (e) {}
+  }, true);
+
+  // Monitor location changes safely (NEVER call document.documentElement.innerHTML)
+  function checkUrl() {
+    try {
+      inspectPayload(window.location.href);
+      inspectPayload(window.location.hash);
+      inspectPayload(window.location.search);
+    } catch (e) {}
+  }
+  window.addEventListener('hashchange', checkUrl);
+  setInterval(checkUrl, 400);
+
+  // Provide a safe, standard fakeOpener object WITHOUT recursive Proxies
   var fakeOpener = {
-    postMessage: function(msg, origin) {
+    closed: false,
+    location: { href: 'https://notetaking-app.pages.dev/' },
+    postMessage: function(msg) {
       inspectPayload(msg);
     },
-    closed: false,
-    location: { href: 'https://notetaking-app.pages.dev/' }
+    frames: []
   };
-  try {
-    fakeOpener.frames = new Proxy({}, {
-      get: function() { return fakeOpener; }
-    });
-  } catch (e) {}
+
   try {
     Object.defineProperty(window, 'opener', {
-      get: function() { return fakeOpener; },
+      value: fakeOpener,
+      writable: true,
       configurable: true
     });
-  } catch (e) {}
-  window.close = function() {
-    try {
-      inspectPayload(window.location.href);
-      if (document.documentElement) {
-        inspectPayload(document.documentElement.innerHTML);
-      }
-    } catch (e) {}
-  };
-  setInterval(function() {
-    try {
-      inspectPayload(window.location.href);
-      if (document.documentElement) {
-        inspectPayload(document.documentElement.innerHTML);
-      }
-    } catch (e) {}
-  }, 150);
+  } catch (e) {
+    try { window.opener = fakeOpener; } catch (e2) {}
+  }
 })();
 "#;
 
@@ -781,7 +798,8 @@ async fn desktop_start_google_oauth(
     }
 
     if let Some(existing) = app.get_webview_window("google-auth") {
-        let _ = existing.close();
+        let _ = existing.destroy();
+        std::thread::sleep(std::time::Duration::from_millis(60));
     }
 
     let auth_url_str = "https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=3&client_id=572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20email%20profile&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fnotetaking-app.pages.dev%3Fid%3Dauth123456&prompt=select_account&response_type=token&include_granted_scopes=true";

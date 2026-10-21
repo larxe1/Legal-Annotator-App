@@ -1,7 +1,7 @@
 {
-  "version": "1.2.1",
-  "build": 5,
-  "updatedAt": "2026-10-21T19:05:00+08:00",
-  "notes": "Automatic background updates (seamless download & restart on startup/intervals without manual clicks); cache-busted update checks; auto-update toggle in Settings",
+  "version": "1.2.2",
+  "build": 6,
+  "updatedAt": "2026-10-21T23:05:00+08:00",
+  "notes": "Fix Google Sign-In crash that caused app window blackout (sanitized OAuth script, eliminated DOM thrashing, and prevented WebView2 renderer failure)",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
