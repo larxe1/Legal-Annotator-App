@@ -171,7 +171,9 @@ html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; b
 .li-subj-hd { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 5px 8px; cursor: pointer; border-radius: 6px; transition: background .1s; user-select: none; }
 .li-subj-hd:hover { background: var(--navy-l); }
 .li-subj-hd:hover .li-acts { display: flex; }
-.li-chev { font-size: 10px; color: var(--muted); transition: transform .2s; flex-shrink: 0; }
+.li-chev { font-size: 11px; color: var(--muted); transition: transform .2s, background .15s, color .15s; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 28px; margin: -5px 0 -5px -6px; border-radius: 5px; touch-action: manipulation; }
+.li-chev:hover, .li-chev:active { background: rgba(255,255,255,.1); color: var(--gold); }
+@media (pointer: coarse), (any-pointer: coarse) { .li-fold-hd .li-chev, .li-subj-hd .li-chev { width: 38px; height: 36px; margin: -6px 2px -6px -6px; font-size: 12px; } }
 .li-chev.closed { transform: rotate(-90deg); }
 .li-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .li-subj-name { flex: 1; font-size: 13px; font-weight: 500; word-break: break-word; }
@@ -382,12 +384,12 @@ html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; b
   pointer-events: none;
 }
 #ann-panel.open { transform: translateX(0); z-index: 30; visibility: visible; pointer-events: auto; }
-.ap-hd { padding: 14px 14px 10px; border-bottom: 1px solid var(--navy-b); flex-shrink: 0; display: flex; align-items: flex-start; gap: 8px; }
-.ap-ex { flex: 1; font-family: 'Libre Baskerville', serif; font-style: italic; font-size: 12px; color: var(--gold); line-height: 1.5; max-height: 50px; overflow: hidden; }
+.ap-hd { padding: 9px 12px 8px; border-bottom: 1px solid var(--navy-b); flex-shrink: 0; display: flex; align-items: flex-start; gap: 8px; }
+.ap-ex { flex: 1; font-family: 'Libre Baskerville', serif; font-style: italic; font-size: 12px; color: var(--gold); line-height: 1.4; max-height: 36px; overflow: hidden; }
 .ap-close { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; flex-shrink: 0; padding: 0; line-height: 1; }
-.ap-colors { display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--navy-b); flex-shrink: 0; flex-wrap: wrap; }
-.ap-colors-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); width: 100%; margin-bottom: 2px; }
-.apc-dot { width: 20px; height: 20px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: border-color .15s, transform .15s; position: relative; }
+.ap-colors { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--navy-b); flex-shrink: 0; flex-wrap: wrap; }
+.ap-colors-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); width: auto; margin-right: 4px; }
+.apc-dot { width: 17px; height: 17px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: border-color .15s, transform .15s; position: relative; }
 .apc-dot:hover { transform: scale(1.12); }
 .apc-dot.sel { border-color: #fff; }
 .apc-dot::after { content: attr(title); position: absolute; bottom: calc(100% + 5px); left: 50%; transform: translateX(-50%); background: var(--navy-l); border: 1px solid var(--navy-b); color: #e8e4db; font-size: 10px; white-space: nowrap; padding: 2px 6px; border-radius: 4px; pointer-events: none; opacity: 0; transition: opacity .15s; }
@@ -467,11 +469,11 @@ html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; b
 .note-body h1, #note-editor h1, #edit-note-ed h1 { font-size: 15px; font-weight: 700; color: var(--gold); margin: 8px 0 4px; }
 .note-body h2, #note-editor h2, #edit-note-ed h2 { font-size: 13px; font-weight: 600; color: #e8e4db; margin: 6px 0 3px; }
 .note-body blockquote, #note-editor blockquote, #edit-note-ed blockquote { border-left: 3px solid var(--gold); margin: 6px 0; padding: 4px 10px; background: rgba(201,168,76,0.06); font-style: italic; }
-#add-note-area { padding: 10px 14px 14px; border-top: 1px solid var(--navy-b); flex-shrink: 0; }
+#add-note-area { padding: 8px 12px 10px; border-top: 1px solid var(--navy-b); flex-shrink: 0; }
 .fmt-bar { display: flex; gap: 3px; margin-bottom: 6px; }
 .fmt-btn, .folder-fmt-btn, .np-fmt-btn { background: rgba(255,255,255,.06); border: 1px solid var(--navy-b); color: #b0aaa0; border-radius: 4px; padding: 3px 8px; font-size: 12px; cursor: pointer; transition: all .15s; font-family: 'Inter', sans-serif; min-width: 28px; text-align: center; }
 .fmt-btn:hover, .folder-fmt-btn:hover, .np-fmt-btn:hover { background: var(--gold-bg); border-color: var(--gold); color: var(--gold); }
-#note-editor { background: var(--navy); border: 1px solid var(--navy-b); border-radius: 6px; padding: 10px 12px; font-size: 13.5px; line-height: 1.6; color: #e8e4db; min-height: 110px; max-height: 300px; overflow-y: auto; overflow-x: auto; resize: vertical; outline: none; transition: border-color .15s; }
+#note-editor { background: var(--navy); border: 1px solid var(--navy-b); border-radius: 6px; padding: 8px 10px; font-size: 13.5px; line-height: 1.5; color: #e8e4db; min-height: 64px; max-height: 220px; overflow-y: auto; overflow-x: auto; resize: vertical; outline: none; transition: border-color .15s; }
 #note-editor:focus { border-color: var(--gold); }
 #note-editor:empty::before { content: attr(data-ph); color: var(--muted); pointer-events: none; }
 #note-editor.shake { animation: shake .3s ease; }

@@ -111,10 +111,17 @@ export function drawAnnotation(ann) {
   }
   grp.addEventListener('click', e => { e.stopPropagation(); openAnnPanel(ann); });
   grp.addEventListener('mouseenter', e => {
-    const genNotes = ann.notes.filter(n => getNoteType(n) === 'general');
-    if (!genNotes.length) return;
+    const notes = Array.isArray(ann.notes) ? ann.notes : [];
+    const genNotes = notes.filter(n => getNoteType(n) === 'general');
+    const caseCount = notes.filter(n => getNoteType(n) === 'case').length;
+    if (!genNotes.length && !caseCount) return;
     
     let html = '';
+    if (caseCount > 0) {
+      const caseLabel = caseCount === 1 ? 'case' : 'cases';
+      html += `<div style="display:flex; align-items:center; gap:6px; font-size:0.9em; font-weight:600; color:#c9a84c; background:rgba(201,168,76,0.12); border:1px solid rgba(201,168,76,0.35); border-radius:6px; padding:4px 10px; margin-bottom:${genNotes.length ? '8px' : '0'};">⚖️ (${caseCount}) ${caseLabel}</div>`;
+    }
+
     const toShow = Math.min(genNotes.length, 3);
     for (let i = 0; i < toShow; i++) {
       if (i > 0) html += '<div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 6px 0; padding-top: 6px;"></div>';
@@ -195,6 +202,13 @@ function hideTip() { if (tip) tip.style.display = 'none'; }
 // ── Annotation Panel ──
 export function openAnnPanel(ann) {
   S.selAnn = ann;
+  const notes = Array.isArray(ann.notes) ? ann.notes : [];
+  const genCount = notes.filter(n => getNoteType(n) === 'general').length;
+  const caseCount = notes.filter(n => getNoteType(n) === 'case').length;
+  activeNoteTab = (genCount === 0 && caseCount > 0) ? 'case' : 'general';
+  document.querySelectorAll('.ap-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.aptab === activeNoteTab);
+  });
   document.querySelectorAll('.hi-grp').forEach(g => g.classList.remove('selected'));
   document.querySelector(`[data-id="${ann.id}"]`)?.classList.add('selected');
   document.getElementById('ap-ex').textContent =

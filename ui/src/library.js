@@ -632,7 +632,7 @@ function buildFolderEl(fold) {
 
   w.innerHTML = `
     <div class="li-fold-hd">
-      <span class="li-chev ${exp ? '' : 'closed'}" style="font-size:9px">▼</span>
+      <span class="li-chev ${exp ? '' : 'closed'}" title="Expand / collapse folder">▼</span>
       <span>${icons[fold.folder_type] || '📁'}</span>
       <span class="li-fold-name" title="${fold.name.replace(/"/g, '&quot;')}">${fold.name}</span>
       <div class="li-acts">

@@ -1,7 +1,7 @@
 {
-  "version": "1.2.2",
-  "build": 6,
-  "updatedAt": "2026-10-21T23:05:00+08:00",
-  "notes": "Fix Google Sign-In crash that caused app window blackout (sanitized OAuth script, eliminated DOM thrashing, and prevented WebView2 renderer failure)",
+  "version": "1.2.3",
+  "build": 7,
+  "updatedAt": "2026-10-25T08:52:00+08:00",
+  "notes": "Smart default tab on highlight open (Notes vs Case Summaries), minimalist right highlight panel for laptop screens, case count badge on highlight hover, and larger touchscreen expand target for folders",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
