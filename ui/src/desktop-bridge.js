@@ -151,6 +151,40 @@ window.__DESKTOP_PDFIUM__ = {
       return false;
     }
   },
+
+  async downloadGDriveFile(fileId, token = null) {
+    if (!invoke) return null;
+    try {
+      const b64 = await invoke('desktop_gdrive_download_file', {
+        fileId: String(fileId),
+        token: token ? String(token) : null,
+      });
+      if (!b64) return null;
+      const binStr = atob(b64);
+      const bytes = new Uint8Array(binStr.length);
+      for (let i = 0; i < binStr.length; i++) {
+        bytes[i] = binStr.charCodeAt(i);
+      }
+      return new Blob([bytes], { type: 'application/pdf' });
+    } catch (e) {
+      console.warn('[Desktop GDrive] downloadGDriveFile error:', e);
+      return null;
+    }
+  },
+
+  async listGDriveFolder(folderId, token = null) {
+    if (!invoke) return null;
+    try {
+      const res = await invoke('desktop_gdrive_list_folder', {
+        folderId: String(folderId),
+        token: token ? String(token) : null,
+      });
+      return Array.isArray(res?.files) ? res.files : null;
+    } catch (e) {
+      console.warn('[Desktop GDrive] listGDriveFolder error:', e);
+      return null;
+    }
+  },
 };
 
 window.__DESKTOP_SQLITE__ = {

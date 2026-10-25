@@ -7,7 +7,7 @@ import { getCachedPDF, setCachedPDF, deleteCachedPDF } from './pdfcache.js';
 import { safeStorageSet, safeStorageGet, safeStorageRemove } from './storage.js';
 
 const CLIENT_ID   = window.APP_CONFIG?.GOOGLE_CLIENT_ID || '';
-const SCOPE       = 'https://www.googleapis.com/auth/drive.file';
+const SCOPE       = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
 const FOLDER_NAME = 'Legal Annotator';
 
 let _tokenRefreshTimer = null;

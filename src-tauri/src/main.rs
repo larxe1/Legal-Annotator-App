@@ -802,7 +802,7 @@ async fn desktop_start_google_oauth(
         std::thread::sleep(std::time::Duration::from_millis(60));
     }
 
-    let auth_url_str = "https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=3&client_id=572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20email%20profile&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fnotetaking-app.pages.dev%3Fid%3Dauth123456&prompt=select_account&response_type=token&include_granted_scopes=true";
+    let auth_url_str = "https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=3&client_id=572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fnotetaking-app.pages.dev%3Fid%3Dauth123456&prompt=select_account&response_type=token&include_granted_scopes=true";
     let parsed_url = tauri::Url::parse(auth_url_str).map_err(|e| e.to_string())?;
 
     let token_arc = Arc::clone(&state.oauth_token);
@@ -964,6 +964,194 @@ async fn desktop_cache_read_pdf(
         return Ok(None);
     }
     Ok(Some(BASE64.encode(&bytes)))
+}
+
+fn decode_html_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&#160;", " ")
+        .replace("&nbsp;", " ")
+}
+
+#[tauri::command]
+async fn desktop_gdrive_download_file(
+    file_id: String,
+    token: Option<String>,
+) -> Result<String, String> {
+    let safe_id = sanitize_cache_id(&file_id);
+    if safe_id.is_empty() {
+        return Err("Invalid Google Drive file ID".into());
+    }
+
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    // 1. Try Google Drive API with user's OAuth token if present
+    if let Some(ref tok) = token {
+        if !tok.trim().is_empty() {
+            let api_url = format!(
+                "https://www.googleapis.com/drive/v3/files/{}?alt=media&supportsAllDrives=true",
+                safe_id
+            );
+            let auth_hdr = format!("Authorization: Bearer {}", tok.trim());
+            let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+            cmd.args([
+                "-L",
+                "--silent",
+                "--max-time",
+                "90",
+                "-H",
+                &auth_hdr,
+                &api_url,
+            ]);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000);
+            if let Ok(out) = cmd.output() {
+                if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
+                    return Ok(BASE64.encode(&out.stdout));
+                }
+            }
+        }
+    }
+
+    // 2. Fallback: Direct public/shared link download via drive.usercontent.google.com & drive.google.com/uc
+    let public_urls = [
+        format!(
+            "https://drive.usercontent.google.com/download?id={}&export=download&confirm=t",
+            safe_id
+        ),
+        format!(
+            "https://drive.google.com/uc?export=download&id={}&confirm=t",
+            safe_id
+        ),
+    ];
+
+    for url in &public_urls {
+        let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+        cmd.args([
+            "-L",
+            "--silent",
+            "--max-time",
+            "90",
+            "-A",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            url,
+        ]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
+        if let Ok(out) = cmd.output() {
+            if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
+                return Ok(BASE64.encode(&out.stdout));
+            }
+        }
+    }
+
+    Err("Could not download PDF from Google Drive. Make sure the file is shared ('Anyone with the link') or sign in again with Google Drive.".into())
+}
+
+#[tauri::command]
+async fn desktop_gdrive_list_folder(
+    folder_id: String,
+    token: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let safe_id = sanitize_cache_id(&folder_id);
+    if safe_id.is_empty() {
+        return Err("Invalid Google Drive folder ID".into());
+    }
+
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    // 1. Try Google Drive v3 API if token has access
+    if let Some(ref tok) = token {
+        if !tok.trim().is_empty() {
+            let api_url = format!(
+                "https://www.googleapis.com/drive/v3/files?q=%27{}%27+in+parents+and+trashed=false&fields=files(id,name,mimeType)&pageSize=500&supportsAllDrives=true&includeItemsFromAllDrives=true",
+                safe_id
+            );
+            let auth_hdr = format!("Authorization: Bearer {}", tok.trim());
+            let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+            cmd.args([
+                "-L",
+                "--silent",
+                "--max-time",
+                "30",
+                "-H",
+                &auth_hdr,
+                &api_url,
+            ]);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000);
+            if let Ok(out) = cmd.output() {
+                if out.status.success() {
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                        if let Some(arr) = val.get("files").and_then(|f| f.as_array()) {
+                            if !arr.is_empty() {
+                                return Ok(serde_json::json!({ "files": arr }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fallback: Public embeddedfolderview HTML listing (works for any 'Anyone with the link' folder without OAuth)
+    let embed_url = format!(
+        "https://drive.google.com/embeddedfolderview?id={}#list",
+        safe_id
+    );
+    let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+    cmd.args([
+        "-L",
+        "--silent",
+        "--max-time",
+        "30",
+        "-A",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        &embed_url,
+    ]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    let html = String::from_utf8_lossy(&out.stdout);
+    let mut files = Vec::new();
+
+    let marker = "id=\"entry-";
+    let title_marker = "<div class=\"flip-entry-title\">";
+    let mut pos = 0;
+    while let Some(idx) = html[pos..].find(marker) {
+        let start_id = pos + idx + marker.len();
+        if let Some(end_id_rel) = html[start_id..].find('"') {
+            let entry_id = &html[start_id..start_id + end_id_rel];
+            let after_id = start_id + end_id_rel;
+            if let Some(t_rel) = html[after_id..].find(title_marker) {
+                let start_t = after_id + t_rel + title_marker.len();
+                if let Some(end_t_rel) = html[start_t..].find("</div>") {
+                    let raw_title = html[start_t..start_t + end_t_rel].trim();
+                    let clean_title = decode_html_entities(raw_title);
+                    if !entry_id.is_empty() && !clean_title.is_empty() {
+                        files.push(serde_json::json!({
+                            "id": entry_id,
+                            "name": clean_title,
+                        }));
+                    }
+                    pos = start_t + end_t_rel;
+                    continue;
+                }
+            }
+            pos = after_id;
+        } else {
+            break;
+        }
+    }
+
+    Ok(serde_json::json!({ "files": files }))
 }
 
 #[tauri::command]
@@ -1702,6 +1890,8 @@ fn main() {
             desktop_cache_get_path,
             desktop_cache_save_pdf,
             desktop_cache_read_pdf,
+            desktop_gdrive_download_file,
+            desktop_gdrive_list_folder,
             desktop_vault_get_page_text,
             desktop_vault_save_page_text,
             desktop_sqlite_sync_annotations,

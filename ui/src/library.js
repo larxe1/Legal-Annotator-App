@@ -70,6 +70,8 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   document.getElementById('lib-ctx-offline').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   document.getElementById('lib-ctx-download').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   document.getElementById('lib-ctx-gdrive').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
+  const sylBtn = document.getElementById('lib-ctx-syllabus');
+  if (sylBtn) sylBtn.style.display = (isFolder && !isMultiFolder) ? 'block' : 'none';
   document.getElementById('lib-ctx-export-pdf').style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
   if (forceSyncBtn) forceSyncBtn.style.display = 'block';
 
@@ -285,6 +287,15 @@ export function initContextMenu() {
       console.error('[Download to PC] Failed:', err);
       toast(`❌ Download failed: ${err.message || 'Unknown error'}`);
     }
+  });
+
+  // "Import / Order from Syllabus"
+  document.getElementById('lib-ctx-syllabus')?.addEventListener('click', async () => {
+    if (!_ctxTarget || !_ctxIsFolder || Array.isArray(_ctxTarget)) return;
+    const folder = _ctxTarget;
+    hideLibCtxMenu();
+    const { openSyllabusModal } = await import('./syllabus.js');
+    openSyllabusModal(folder.id);
   });
 
   // "Export Notes to PDF"
@@ -636,6 +647,7 @@ function buildFolderEl(fold) {
       <span>${icons[fold.folder_type] || '📁'}</span>
       <span class="li-fold-name" title="${fold.name.replace(/"/g, '&quot;')}">${fold.name}</span>
       <div class="li-acts">
+        <button class="li-act-btn" title="Import / Auto-Order from Syllabus" data-act="syllabus">📋</button>
         <button class="li-act-btn" title="Add subfolder" data-act="subfolder">📁+</button>
         <button class="li-act-btn" title="Add PDF" data-act="upload">📄+</button>
         <button class="li-act-btn" title="Rename" data-act="rename">✏</button>
@@ -680,6 +692,12 @@ function buildFolderEl(fold) {
       openFolderDoc(fold);
       closeSidebar();
     }
+  });
+
+  w.querySelector('[data-act="syllabus"]').addEventListener('click', async e => {
+    e.stopPropagation();
+    const { openSyllabusModal } = await import('./syllabus.js');
+    openSyllabusModal(fold.id);
   });
 
   w.querySelector('[data-act="subfolder"]').addEventListener('click', e => {
