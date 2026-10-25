@@ -83,7 +83,7 @@ html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; b
   justify-content: center;
 }
 
-.lib-hd { padding: 14px 14px 10px; border-bottom: 1px solid var(--navy-b); flex-shrink: 0; }
+.lib-hd { padding: 24px 14px 10px; border-bottom: 1px solid var(--navy-b); flex-shrink: 0; }
 .brand { font-family: 'Libre Baskerville', serif; font-size: 16px; color: var(--gold); display: flex; justify-content: space-between; align-items: center; }
 
 /* Sync bar */
@@ -1527,14 +1527,14 @@ body.theme-paper .cal-item .cal-time {
   display: flex;
   align-items: flex-end;
   gap: 5px;
-  padding: 8px 12px 0 12px;
+  padding: 26px 12px 0 12px;
   background: var(--gn-tab-bar-bg, #EAE5DA);
   border-bottom: 1px solid var(--navy-b);
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
   flex-shrink: 0;
-  height: 42px;
+  height: 60px;
   box-sizing: border-box;
 }
 #gn-doc-tabs::-webkit-scrollbar {
@@ -1545,7 +1545,7 @@ body.theme-paper .cal-item .cal-time {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 33px;
+  height: 32px;
   padding: 0 11px;
   max-width: 220px;
   min-width: 90px;
@@ -1580,7 +1580,7 @@ body:not(.theme-paper) .gn-tab:hover {
   border-color: var(--navy-b);
   border-bottom: 1px solid var(--gn-tab-active, var(--navy-l));
   margin-bottom: -1px;
-  height: 34px;
+  height: 33px;
   font-weight: 600;
   box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.04);
   position: relative;
@@ -1842,6 +1842,22 @@ body.theme-paper .gn-notebook-card {
 
 
 /* ── Continue Studying Card Top Row, Relative Time & Dismiss Button ── */
+.gn-shelf-clear {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.gn-shelf-clear:hover {
+  background: #EF4444;
+  border-color: #EF4444;
+  color: #FFFFFF;
+}
 .gn-nb-top-row {
   display: flex;
   align-items: center;
@@ -1849,28 +1865,28 @@ body.theme-paper .gn-notebook-card {
   gap: 6px;
 }
 .gn-nb-dismiss {
-  background: none;
-  border: none;
+  background: rgba(100, 116, 139, 0.12);
+  border: 1px solid transparent;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 11px;
   line-height: 1;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
+  opacity: 0.85;
+  transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-}
-.gn-notebook-card:hover .gn-nb-dismiss {
-  opacity: 0.75;
+  position: relative;
+  z-index: 3;
 }
 .gn-nb-dismiss:hover {
   opacity: 1 !important;
-  background: rgba(239, 68, 68, 0.15);
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.4);
   color: #EF4444;
 }
 .gn-nb-time {

@@ -148,6 +148,41 @@ export function pruneLocalStorage() {
       });
     }
 
+    // 5. If localStorage is still > 2.5 MB, evict largest INACTIVE & ALREADY-SYNCED notepad/digest caches
+    // (Never touches unsynced notes where write_ts > sync_ts)
+    if (getLocalStorageUsage() > 2.5 * 1024 * 1024) {
+      const syncedCacheCandidates = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        if (k.startsWith('local_notepad_') || k.startsWith('local_digest_')) {
+          if (k.startsWith('local_notepad_write_ts_') || k.startsWith('local_notepad_sync_ts_')) continue;
+          const pdfId = k.replace(/^local_(notepad|digest)_/, '');
+          if (!pdfId || pdfId === curPdfId) continue;
+          const writeTs = parseInt(localStorage.getItem('local_notepad_write_ts_' + pdfId) || '0', 10);
+          const syncTs = parseInt(localStorage.getItem('local_notepad_sync_ts_' + pdfId) || '0', 10);
+          const hasUnsyncedChanges = writeTs > 0 && writeTs > syncTs;
+          if (!hasUnsyncedChanges) {
+            const val = localStorage.getItem(k) || '';
+            syncedCacheCandidates.push({
+              key: k,
+              pdfId,
+              isDigest: k.startsWith('local_digest_'),
+              len: val.length,
+            });
+          }
+        }
+      }
+      syncedCacheCandidates.sort((a, b) => b.len - a.len);
+      for (const item of syncedCacheCandidates) {
+        if (item.isDigest && S.digestMap && item.len > 20) {
+          S.digestMap[item.pdfId] = true;
+        }
+        safeStorageRemove(item.key);
+        if (getLocalStorageUsage() < 1.8 * 1024 * 1024) break;
+      }
+    }
+
     console.log(`[Storage] Pruning complete. Removed ${keysToRemove.length} cache items, trimmed ${historyKeysToTrim.length} history items.`);
   } catch (e) {
     console.warn('[Storage] Error during pruning:', e);

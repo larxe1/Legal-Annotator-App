@@ -3,14 +3,19 @@
 // Color-Coded Subject Binders, Case Digest Tracker, & Study Desk Home
 // ═══════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
-import { safeStorageGet, safeStorageSet } from './storage.js';
-import { dbGetSetting, dbSetSetting } from './db.js';
+import { safeStorageGet, safeStorageSet, safeStorageRemove, initStorageManager } from './storage.js';
+import { dbSetSetting } from './db.js';
 import { toast } from './ui.js';
 
 const THEME_KEY = 'app_ui_theme';
 const OPEN_TABS_KEY = 'gn_open_tabs_v1';
-const RECENT_IDS_KEY = 'gn_recent_pdf_ids_v1';
-const RECENT_READS_KEY = 'gn_recent_reads_v2';
+const LEGACY_RECENT_V1 = 'gn_recent_pdf_ids_v1';
+const LEGACY_RECENT_V2 = 'gn_recent_reads_v2';
+const RECENT_READS_KEY = 'gn_recent_reads_v3';
+
+// Authoritative in-memory recent reads list so opening/dismissing works 100% of the time
+// even if localStorage is full
+let _recentEntries = null;
 
 // Curated GoodNotes academic binder palette
 const BINDER_PALETTE = [
@@ -196,6 +201,7 @@ export function notifyTabOpened(item, type = 'pdf') {
     pushRecentPdfId(item.id);
   }
   renderDocTabs();
+  renderStudyDesk();
 }
 
 export function notifyTabClosedToHome() {
@@ -322,52 +328,78 @@ export function renderDocTabs() {
 
 // ── 5. Recent Cases Persistence & Study Desk Home Screen ────────────────────
 function loadRecentEntries() {
+  if (Array.isArray(_recentEntries)) {
+    return _recentEntries;
+  }
   try {
-    const rawV2 = safeStorageGet(RECENT_READS_KEY);
-    if (rawV2) {
-      const parsed = JSON.parse(rawV2);
+    // Purge legacy keys that contained old fallback PDFs
+    safeStorageRemove(LEGACY_RECENT_V1);
+    safeStorageRemove(LEGACY_RECENT_V2);
+
+    const rawV3 = safeStorageGet(RECENT_READS_KEY);
+    if (rawV3) {
+      const parsed = JSON.parse(rawV3);
       if (Array.isArray(parsed)) {
-        return parsed.filter(x => x && typeof x.id === 'string');
-      }
-    }
-    // One-time migration from v1 (which only stored IDs opened by the user)
-    const rawV1 = safeStorageGet(RECENT_IDS_KEY);
-    if (rawV1) {
-      const ids = JSON.parse(rawV1);
-      if (Array.isArray(ids) && ids.length) {
-        const now = Date.now();
-        const migrated = ids
-          .filter(id => typeof id === 'string')
-          .slice(0, 6)
-          .map((id, i) => ({ id, ts: now - i * 1000 }));
-        safeStorageSet(RECENT_READS_KEY, JSON.stringify(migrated));
-        return migrated;
+        _recentEntries = parsed
+          .filter(x => x && x.id != null)
+          .map(x => ({ id: String(x.id), ts: Number(x.ts) || Date.now() }));
+        return _recentEntries;
       }
     }
   } catch {}
-  return [];
+  _recentEntries = [];
+  return _recentEntries;
 }
 
 function saveRecentEntries(entries) {
+  const trimmed = (entries || [])
+    .filter(x => x && x.id != null)
+    .map(x => ({ id: String(x.id), ts: Number(x.ts) || Date.now() }))
+    .slice(0, 6);
+  _recentEntries = trimmed;
   try {
-    const trimmed = entries.slice(0, 6);
+    safeStorageRemove(RECENT_READS_KEY);
     safeStorageSet(RECENT_READS_KEY, JSON.stringify(trimmed));
     dbSetSetting(RECENT_READS_KEY, JSON.stringify(trimmed)).catch(() => {});
   } catch {}
 }
 
-function pushRecentPdfId(pdfId) {
+export function pushRecentPdfId(pdfId) {
   if (!pdfId) return;
+  const sid = String(pdfId);
   const now = Date.now();
-  const entries = loadRecentEntries().filter(e => e.id !== pdfId);
-  entries.unshift({ id: pdfId, ts: now });
+  const entries = loadRecentEntries().filter(e => String(e.id) !== sid);
+  entries.unshift({ id: sid, ts: now });
   saveRecentEntries(entries);
 }
 
 export function removeRecentRead(pdfId, e) {
-  if (e) e.stopPropagation();
-  const next = loadRecentEntries().filter(x => x.id !== pdfId);
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  const sid = String(pdfId);
+  const pdfObj = S.pdfs.find(x => String(x.id) === sid);
+  const linkedSid = pdfObj?.linked_pdf_id ? String(pdfObj.linked_pdf_id) : null;
+  const next = loadRecentEntries().filter(
+    x => String(x.id) !== sid && (!linkedSid || String(x.id) !== linkedSid)
+  );
   saveRecentEntries(next);
+  if (Array.isArray(S.recentPDFs)) {
+    S.recentPDFs = S.recentPDFs.filter(p => String(p.id) !== sid);
+  }
+  renderStudyDesk();
+}
+
+export function clearAllRecentReads(e) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  saveRecentEntries([]);
+  if (Array.isArray(S.recentPDFs)) {
+    S.recentPDFs = [];
+  }
   renderStudyDesk();
 }
 
@@ -390,11 +422,14 @@ function formatRelativeTime(ts) {
 }
 
 function getRecentPdfsForShelf() {
-  const entries = loadRecentEntries().sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const entries = [...loadRecentEntries()].sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const found = [];
   for (const entry of entries) {
-    const p = S.pdfs.find(x => x.id === entry.id);
-    if (p && !found.some(f => f.pdf.id === p.id)) {
+    const sid = String(entry.id);
+    const p =
+      S.pdfs.find(x => String(x.id) === sid) ||
+      S.pdfs.find(x => x.linked_pdf_id && String(x.linked_pdf_id) === sid);
+    if (p && !found.some(f => String(f.pdf.id) === String(p.id))) {
       found.push({ pdf: p, ts: entry.ts });
     }
     if (found.length >= 4) break;
@@ -483,10 +518,14 @@ export function renderStudyDesk() {
     shelf.innerHTML = `
       <div class="gn-shelf-hd">
         <span>📖 Continue Studying</span>
-        <span class="gn-shelf-sub">Your most recently opened cases</span>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span class="gn-shelf-sub">Your most recently opened cases</span>
+          <button type="button" class="gn-shelf-clear" title="Clear Continue Studying list">Clear list</button>
+        </div>
       </div>
       <div class="gn-shelf-grid"></div>
     `;
+    shelf.querySelector('.gn-shelf-clear')?.addEventListener('click', e => clearAllRecentReads(e));
     const grid = shelf.querySelector('.gn-shelf-grid');
     recentItems.forEach(({ pdf, ts }, i) => {
       const subj = getSubjectForPdf(pdf);
@@ -505,7 +544,7 @@ export function renderStudyDesk() {
         <div class="gn-nb-body">
           <div class="gn-nb-top-row">
             <div class="gn-nb-meta">${subj ? subj.name : 'Library'}${fold ? ' › ' + fold.name : ''}</div>
-            <button type="button" class="gn-nb-dismiss" title="Remove from Continue Studying">×</button>
+            <button type="button" class="gn-nb-dismiss" title="Remove from Continue Studying">✕</button>
           </div>
           <div class="gn-nb-title" title="${pdf.name.replace(/"/g, '&quot;')}">${pdf.name}</div>
           <div class="gn-nb-footer">
@@ -514,8 +553,13 @@ export function renderStudyDesk() {
           </div>
         </div>
       `;
-      card.querySelector('.gn-nb-dismiss')?.addEventListener('click', e => removeRecentRead(pdf.id, e));
-      card.addEventListener('click', async () => {
+      const dismissBtn = card.querySelector('.gn-nb-dismiss');
+      if (dismissBtn) {
+        dismissBtn.addEventListener('pointerdown', e => e.stopPropagation());
+        dismissBtn.addEventListener('click', e => removeRecentRead(pdf.id, e));
+      }
+      card.addEventListener('click', async (e) => {
+        if (e.target.closest('.gn-nb-dismiss')) return;
         const { openPDFFromLibrary } = await import('./viewer.js');
         openPDFFromLibrary(pdf);
       });
@@ -547,36 +591,15 @@ export function renderStudyDesk() {
 
 // ── 6. Initialize All GoodNotes UI Upgrades ─────────────────────────────────
 export function initGoodNotesUI() {
+  try { initStorageManager(); } catch {}
   // Capture pristine #welcome HTML before any tab or PDF overwrites #canvas-scroll
   import('./viewer.js').then(m => m.getWelcomeHTML?.()).catch(() => {});
 
   applyAppTheme(getAppTheme());
   loadSavedTabs();
+  loadRecentEntries();
   renderDocTabs();
   renderStudyDesk();
-
-  // Sync recent reads from cloud if local list is empty or older
-  dbGetSetting(RECENT_READS_KEY)
-    .then(val => {
-      if (!val) return;
-      const remote = JSON.parse(val);
-      if (!Array.isArray(remote) || !remote.length) return;
-      const local = loadRecentEntries();
-      const map = new Map();
-      for (const item of [...local, ...remote]) {
-        if (!item?.id) continue;
-        const prev = map.get(item.id);
-        if (!prev || (item.ts || 0) > (prev.ts || 0)) {
-          map.set(item.id, { id: item.id, ts: item.ts || 0 });
-        }
-      }
-      const merged = Array.from(map.values())
-        .sort((a, b) => (b.ts || 0) - (a.ts || 0))
-        .slice(0, 6);
-      safeStorageSet(RECENT_READS_KEY, JSON.stringify(merged));
-      renderStudyDesk();
-    })
-    .catch(() => {});
 
   document.getElementById('btn-theme-toggle')?.addEventListener('click', cycleAppTheme);
 }
