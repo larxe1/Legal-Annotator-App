@@ -24,6 +24,7 @@ import { initOutbox } from './outbox.js';
 import { initDiagramStudio } from './diagram.js';
 import { initGlobalPdfLinks } from './pdflink.js';
 import { initStorageManager, safeStorageSet, safeStorageGet, safeStorageRemove } from './storage.js';
+import { initGoodNotesUI, openSubjectBinderByTitle } from './goodnotes-ui.js';
 
 // Global Error Boundary to prevent tab-freezing crashes
 function setupGlobalErrorBoundary() {
@@ -82,8 +83,7 @@ async function init() {
   };
 
   safeInit(initModals, 'Modals');
-  
-  // Brand title in sidebar
+  safeInit(initGoodNotesUI, 'GoodNotesUI');
   document.getElementById('app-title')?.addEventListener('click', async () => {
     // If a PDF is currently open, clicking the app title should not dismiss it
     if (S.curPDF) return;
@@ -164,6 +164,8 @@ async function init() {
       autosave('saving');
       const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
       await dbCreateBookmark(trueId, S.curPage, title);
+      S.bookmarks.push({ pdf_id: trueId, page: S.curPage, title });
+      S.bookmarks.sort((a, b) => a.page - b.page);
       inp.value = '';
       autosave('saved');
       // Re-render TOC
@@ -727,12 +729,26 @@ function initCalendar() {
     if (!item) return;
     const strong = item.querySelector('strong');
     if (!strong) return;
-    
     curSubj = strong.textContent.trim();
-    document.getElementById('mo-subj-notes-title').textContent = curSubj + ' Notes';
-    const notes = safeStorageGet('subj_notes_' + curSubj, '') || '';
-    document.getElementById('subj-notes-ta').value = notes;
-    openModal('mo-subj-notes');
+
+    // If user clicked the "📝 Note" button on the schedule card, open subject quick notes
+    if (e.target.closest('.gn-cal-note-btn')) {
+      e.stopPropagation();
+      document.getElementById('mo-subj-notes-title').textContent = curSubj + ' Notes';
+      const notes = safeStorageGet('subj_notes_' + curSubj, '') || '';
+      document.getElementById('subj-notes-ta').value = notes;
+      openModal('mo-subj-notes');
+      return;
+    }
+
+    // Otherwise, clicking the schedule card opens the corresponding Subject binder in the Library!
+    const opened = openSubjectBinderByTitle(curSubj);
+    if (!opened) {
+      document.getElementById('mo-subj-notes-title').textContent = curSubj + ' Notes';
+      const notes = safeStorageGet('subj_notes_' + curSubj, '') || '';
+      document.getElementById('subj-notes-ta').value = notes;
+      openModal('mo-subj-notes');
+    }
   });
 
   // Dynamically set title on hover to show notes

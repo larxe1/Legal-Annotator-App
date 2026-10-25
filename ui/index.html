@@ -41,7 +41,7 @@
 <!-- Stylesheet -->
 <link rel="stylesheet" href="src/style.css">
 </head>
-<body>
+<body class="theme-paper">
 
 <div id="app">
   <!-- ══════════════════════════════
@@ -99,23 +99,26 @@
        VIEWER
   ══════════════════════════════ -->
   <div id="viewer-wrap">
+    <!-- GoodNotes Multi-Case Document Tabs -->
+    <div id="gn-doc-tabs"></div>
+
     <!-- Toolbar -->
     <div id="toolbar">
       <button id="mob-menu-btn">☰</button>
 
-      <!-- Mode toggle -->
+      <!-- Mode toggle (GoodNotes Stationery Capsule) -->
       <div id="mode-tog">
-        <button class="mode-btn active" data-mode="text">
-          <svg width="12" height="12" fill="currentColor" viewBox="0 0 20 20"><path d="M4 3h12v2H4V3zm0 4h12v2H4V7zm0 4h8v2H4v-2z"/></svg>
-          <span>Text</span>
+        <button class="mode-btn active" data-mode="text" title="Highlight Text (H)">
+          <span class="gn-tool-emoji">🖍️</span>
+          <span>Highlight</span>
         </button>
-        <button class="mode-btn" data-mode="box">
-          <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" rx="1"/></svg>
+        <button class="mode-btn" data-mode="box" title="Box Highlight / Excerpt (B)">
+          <span class="gn-tool-emoji">📐</span>
           <span>Box</span>
         </button>
-        <button class="mode-btn" data-mode="draw">
-          <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
-          <span>Draw</span>
+        <button class="mode-btn" data-mode="draw" title="Freehand Pen & Ink (D)">
+          <span class="gn-tool-emoji">🖋️</span>
+          <span>Pen</span>
         </button>
       </div>
 
@@ -195,6 +198,11 @@
       <button class="tb-btn" id="btn-notepad" title="PDF Notepad">
         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
         Notepad
+      </button>
+
+      <!-- GoodNotes Theme Toggle (Warm Paper / Cozy Dark / Classic Navy) -->
+      <button class="tb-btn" id="btn-theme-toggle" title="Switch Theme (Paper / Dark / Classic)">
+        <span>☀️</span><span>Paper</span>
       </button>
 
       <!-- Swap panes button (only visible in dual view) -->

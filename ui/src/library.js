@@ -18,6 +18,14 @@ import { safeStorageGet, safeStorageSet, safeStorageRemove } from './storage.js'
 import { driveUploadPDF, driveDeleteFile, driveEnsureSubFolder, driveResolveFolderPath, scheduleDriveOrganize } from './drive.js';
 import { openPDFFromLibrary, updateActivePDF, openFolderDoc } from './viewer.js';
 import { closeSidebar } from './ui.js';
+import {
+  getSubjectBinderColor,
+  getCaseReadStatus,
+  cycleCaseReadStatus,
+  getFolderReadProgress,
+  renderStudyDesk,
+  renderDocTabs,
+} from './goodnotes-ui.js';
 
 let _pdfToLink = null;
 let _folderNotesId = null;
@@ -534,25 +542,36 @@ export function renderLibrary() {
   const tree = document.getElementById('lib-tree');
   if (!S.subjects.length) {
     tree.innerHTML = '<div class="lib-empty">No subjects yet.<br>Click "+ New Subject" to start.</div>';
+    renderStudyDesk();
+    renderDocTabs();
     return;
   }
   tree.innerHTML = '';
-  for (const subj of S.subjects) tree.appendChild(buildSubjectEl(subj));
+  S.subjects.forEach((subj, idx) => tree.appendChild(buildSubjectEl(subj, idx)));
   updateSelectionUI();
+  renderStudyDesk();
+  renderDocTabs();
 }
 
 // ── Subject node ──
-function buildSubjectEl(subj) {
+function buildSubjectEl(subj, idx = 0) {
   const w   = document.createElement('div');
   w.className   = 'li-subj';
   w.dataset.id  = subj.id;
   const exp = !S.collapsedSubj[subj.id];
+  const binderColor = getSubjectBinderColor(subj, idx);
+  w.style.setProperty('--subj-color', binderColor);
+
+  // Count total cases under this subject
+  const subjFolderIds = new Set(S.folders.filter(f => f.subject_id === subj.id).map(f => f.id));
+  const subjPdfCount = S.pdfs.filter(p => subjFolderIds.has(p.folder_id)).length;
 
   w.innerHTML = `
     <div class="li-subj-hd">
       <span class="li-chev ${exp ? '' : 'closed'}">▼</span>
-      <span class="li-dot" style="background:${subj.hex_color || '#c9a84c'}"></span>
+      <span class="li-dot" style="background:${binderColor}"></span>
       <span class="li-subj-name" title="${subj.name.replace(/"/g, '&quot;')}">${subj.name}</span>
+      ${subjPdfCount > 0 ? `<span class="subj-count-pill" title="${subjPdfCount} cases in binder">${subjPdfCount}</span>` : ''}
       <div class="li-acts">
         <button class="li-act-btn" title="Add folder" data-act="add-fold">📁+</button>
         <button class="li-act-btn" title="Rename" data-act="rename">✏</button>
@@ -640,12 +659,18 @@ function buildFolderEl(fold) {
   w.draggable  = true;
   const exp  = !!S.expandedFold[fold.id];
   const icons = { codal: '📜', cases: '⚖', laws: '📋', others: '📁', custom: '📂' };
+  const prog = getFolderReadProgress(fold.id);
+  const allRead = prog.total > 0 && prog.read === prog.total;
+  const progBadgeHtml = prog.total > 0
+    ? `<span class="fold-prog-badge ${allRead ? 'done' : ''}" title="${prog.read} of ${prog.total} cases read">${allRead ? '✅ ' : ''}${prog.read}/${prog.total}</span>`
+    : '';
 
   w.innerHTML = `
     <div class="li-fold-hd">
       <span class="li-chev ${exp ? '' : 'closed'}" title="Expand / collapse folder">▼</span>
       <span>${icons[fold.folder_type] || '📁'}</span>
       <span class="li-fold-name" title="${fold.name.replace(/"/g, '&quot;')}">${fold.name}</span>
+      ${progBadgeHtml}
       <div class="li-acts">
         <button class="li-act-btn" title="Import / Auto-Order from Syllabus" data-act="syllabus">📋</button>
         <button class="li-act-btn" title="Add subfolder" data-act="subfolder">📁+</button>
@@ -845,7 +870,8 @@ function buildFolderEl(fold) {
 
 function buildPdfEl(pdf) {
   const el = document.createElement('div');
-  el.className  = 'li-pdf' + (S.curPDF?.id === pdf.id ? ' active' : '');
+  const readSt = getCaseReadStatus(pdf);
+  el.className  = 'li-pdf' + (S.curPDF?.id === pdf.id ? ' active' : '') + (readSt ? ` status-${readSt}` : '');
   el.dataset.id = pdf.id;
   el.draggable  = true;
 
@@ -855,8 +881,15 @@ function buildPdfEl(pdf) {
     || (pdf.folder_id ? safeStorageGet('default_page_f_' + pdf.folder_id + '_' + trueId) : null);
   const defBadgeHtml = defPage ? `<span class="def-page-badge" title="Opens at page ${defPage} by default (Click to change)">p.${defPage}</span>` : '';
 
+  const statusIcon = readSt === 'star' ? '⭐' : readSt === 'read' ? '✅' : '○';
+  const statusTitle = readSt === 'star'
+    ? 'Recit Ready! (Click to clear status)'
+    : readSt === 'read'
+    ? 'Read (Click to mark ⭐ Recit Ready)'
+    : 'Unread (Click to mark ✅ Read)';
+
   el.innerHTML = `
-    <span>📄</span>
+    <button type="button" class="case-status-btn ${readSt}" title="${statusTitle}">${statusIcon}</button>
     <span class="li-pdf-name" title="${pdf.name.replace(/"/g, '&quot;')}">
       ${pdf.linked_pdf_id ? '<span style="color:var(--gold);margin-right:4px" title="Shortcut">🔗</span>' : ''}
       ${pdf.name}
@@ -868,6 +901,16 @@ function buildPdfEl(pdf) {
       <button class="li-act-btn" title="Rename" data-act="rename">✏</button>
       <button class="li-act-btn del" title="Delete" data-act="del">✕</button>
     </div>`;
+
+  const stBtn = el.querySelector('.case-status-btn');
+  if (stBtn) {
+    stBtn.addEventListener('pointerdown', e => e.stopPropagation());
+    stBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      cycleCaseReadStatus(pdf);
+      renderLibrary();
+    });
+  }
 
   el.addEventListener('dragstart', e => {
     e.stopPropagation();

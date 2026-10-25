@@ -1,4 +1,4 @@
-@import url('../fonts/fonts.css');
+@import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500;600&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1225,79 +1225,6 @@ kbd { background: var(--navy); border: 1px solid var(--navy-b); border-radius: 4
 }
 
 
-/* ── Standalone Desktop Layout Lock & Containment (Zero Scroll Jump) ── */
-#canvas-scroll,
-#canvas-scroll-b {
-  overflow-anchor: none !important;
-}
-.pg-wrap,
-.pg-wrap.pg-cv-auto {
-  flex-shrink: 0 !important;
-  overflow-anchor: none !important;
-  contain: layout style paint;
-}
-.desktop-engine-bar {
-  position: fixed;
-  bottom: 12px;
-  right: 12px;
-  z-index: 25;
-  display: none;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 9px;
-  background: rgba(15, 23, 42, 0.94);
-  border: 1px solid rgba(59, 130, 246, 0.35);
-  border-radius: 12px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(8px);
-  color: #e2e8f0;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  font-size: 10px;
-  pointer-events: auto;
-  cursor: pointer;
-  opacity: 0;
-  transform: translateY(6px) scale(0.96);
-  transition: opacity 0.25s ease, transform 0.25s ease, right 0.25s cubic-bezier(0.16, 1, 0.3, 1), bottom 0.25s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease, border-color 0.2s ease;
-  user-select: none;
-}
-.desktop-engine-bar.visible {
-  display: flex;
-  opacity: 1;
-  transform: translateY(0) scale(1);
-}
-.desktop-engine-bar:hover {
-  background: rgba(26, 38, 64, 0.98);
-  border-color: rgba(96, 165, 250, 0.7);
-}
-@keyframes pulseGlow {
-  0%, 100% { opacity: 0.75; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.15); filter: drop-shadow(0 0 4px #60a5fa); }
-}
-.desktop-engine-pulse {
-  display: inline-block;
-  font-size: 10px;
-  animation: pulseGlow 1.5s ease-in-out infinite;
-}
-.desktop-gmail-login-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin: 6px 12px 2px 12px;
-  padding: 7px 10px;
-  background: linear-gradient(135deg, rgba(234,179,8,0.18), rgba(202,138,4,0.28));
-  border: 1px solid #eab308;
-  border-radius: 6px;
-  color: #fde047;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: filter 0.15s;
-}
-.desktop-gmail-login-btn:hover {
-  filter: brightness(1.15);
-}
-
 /* ── Panel Find (Ctrl+F inside Notes / Case Digest / Case Summaries) ── */
 #panel-find-bar {
   display: flex; align-items: center; gap: 6px;
@@ -1318,3 +1245,573 @@ kbd { background: var(--navy); border: 1px solid var(--navy-b); border-radius: 4
 #panel-find-bar button:hover { border-color: var(--gold); color: var(--gold); }
 ::highlight(panel-find-all) { background-color: rgba(250, 204, 21, 0.35); color: inherit; }
 ::highlight(panel-find-cur) { background-color: #f97316; color: #000; }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GOODNOTES SCHOOL NOTEBOOK UI REDESIGN (v1.4.0)
+   - Warm Paper Theme (Default), Cozy Dark Mode, & Classic Navy
+   - Top Multi-Case Document Tabs (#gn-doc-tabs)
+   - Stationery Capsule Toolbar
+   - Color-Coded Subject Binders & Case Read/Recit Progress Checkmarks
+   - Interactive Study Desk ("Continue Studying" Shelf + Binder Schedule Cards)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Theme Palette Variables ── */
+body.theme-paper {
+  --navy:    #F6F3EC;
+  --navy-l:  #FFFFFF;
+  --navy-m:  #EFECE4;
+  --navy-b:  #DDD7C8;
+  --gold:    #B45309;
+  --gold-l:  #D97706;
+  --cream:   #FFFFFF;
+  --text:    #1E293B;
+  --muted:   #64748B;
+  --gn-desk-bg: #E8E3D8;
+  --gn-tab-bar-bg: #EAE5DA;
+  --gn-tab-inactive: #DFD9CC;
+  --gn-tab-active: #F6F3EC;
+  --gn-card-bg: #FFFFFF;
+  --gn-ink: #1E293B;
+  --gn-shadow: 0 2px 10px rgba(30, 41, 59, 0.06);
+  background: var(--navy);
+  color: var(--text);
+}
+
+body.theme-slate {
+  --navy:    #16181E;
+  --navy-l:  #20232B;
+  --navy-m:  #282C37;
+  --navy-b:  #323746;
+  --gold:    #F59E0B;
+  --gold-l:  #FBBF24;
+  --cream:   #F8FAFC;
+  --text:    #E2E8F0;
+  --muted:   #94A3B8;
+  --gn-desk-bg: #111318;
+  --gn-tab-bar-bg: #111318;
+  --gn-tab-inactive: #1B1E26;
+  --gn-tab-active: #20232B;
+  --gn-card-bg: #20232B;
+  --gn-ink: #F1F5F9;
+  --gn-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+
+body.theme-classic {
+  --gn-desk-bg: #080d18;
+  --gn-tab-bar-bg: #080d18;
+  --gn-tab-inactive: #0c1322;
+  --gn-tab-active: #141e33;
+  --gn-card-bg: #141e33;
+  --gn-ink: #e8e4db;
+  --gn-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+/* ── 2. Warm Paper High-Contrast Overrides ── */
+body.theme-paper #lib-side {
+  background: #F4F0E6;
+  border-right: 1px solid #DDD7C8;
+  box-shadow: 2px 0 12px rgba(30, 41, 59, 0.05);
+}
+body.theme-paper .lib-hd {
+  background: #EFECE2;
+  border-bottom: 1px solid #DDD7C8;
+}
+body.theme-paper #app-title {
+  color: #1E293B !important;
+}
+body.theme-paper #sync-bar,
+body.theme-paper #drive-bar {
+  background: #EFECE2;
+  border-bottom: 1px solid #DDD7C8;
+  color: #475569;
+}
+body.theme-paper #new-subj-btn {
+  background: #FFFFFF;
+  color: #1E293B;
+  border: 1px solid #D0C9B8;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+body.theme-paper #new-subj-btn:hover {
+  background: #FFFBEB;
+  border-color: var(--gold);
+  color: var(--gold);
+}
+body.theme-paper .li-subj-name {
+  color: #0F172A !important;
+  font-weight: 600;
+}
+body.theme-paper .li-fold-hd {
+  color: #334155 !important;
+}
+body.theme-paper .li-fold-hd:hover {
+  background: rgba(30, 41, 59, 0.06);
+  color: #0F172A !important;
+}
+body.theme-paper .li-pdf {
+  color: #334155 !important;
+}
+body.theme-paper .li-pdf:hover {
+  background: rgba(30, 41, 59, 0.06);
+  color: #0F172A !important;
+}
+body.theme-paper .li-pdf.active {
+  background: #FEF3C7 !important;
+  color: #92400E !important;
+  font-weight: 600;
+}
+body.theme-paper .li-act-btn {
+  color: #64748B;
+}
+body.theme-paper .li-act-btn:hover {
+  background: rgba(30, 41, 59, 0.08);
+  color: #0F172A;
+}
+
+/* Toolbar & Stationery Controls in Paper Theme */
+body.theme-paper #toolbar {
+  background: #FAF8F3;
+  border-bottom: 1px solid #DDD7C8;
+  box-shadow: 0 2px 8px rgba(30, 41, 59, 0.04);
+}
+body.theme-paper #mode-tog {
+  background: #EAE5D9;
+  border: 1px solid #D5CFC0;
+  border-radius: 999px;
+  padding: 2px;
+}
+body.theme-paper .mode-btn {
+  color: #475569;
+  border-radius: 999px;
+  font-weight: 500;
+}
+body.theme-paper .mode-btn.active {
+  background: #FFFFFF;
+  color: #0F172A;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+body.theme-paper .tb-btn {
+  background: #FFFFFF;
+  border-color: #D6D0C2;
+  color: #334155;
+  border-radius: 8px;
+  font-weight: 500;
+}
+body.theme-paper .tb-btn:hover {
+  background: #FFFBEB;
+  border-color: var(--gold);
+  color: #92400E;
+}
+body.theme-paper #pg-input {
+  background: #FFFFFF;
+  border-color: #D6D0C2;
+  color: #1E293B;
+}
+
+/* Canvas Scroll & Clean White Editors in Paper Theme */
+body.theme-paper #canvas-scroll {
+  background: var(--gn-desk-bg);
+}
+body.theme-paper .pg-wrap {
+  box-shadow: 0 6px 20px rgba(30, 41, 59, 0.12), 0 1px 3px rgba(30, 41, 59, 0.08);
+  border-radius: 4px;
+}
+body.theme-paper #folder-doc-viewer {
+  background: #EFECE3 !important;
+}
+body.theme-paper #folder-doc-title {
+  color: #0F172A !important;
+}
+body.theme-paper #folder-doc-toolbar {
+  background: #EFECE3 !important;
+  border-bottom: 1px solid #DDD7C8;
+}
+body.theme-paper .folder-fmt-btn,
+body.theme-paper .np-fmt-btn {
+  background: #FFFFFF !important;
+  color: #334155 !important;
+  border: 1px solid #D6D0C2 !important;
+  border-radius: 6px;
+}
+body.theme-paper .folder-fmt-btn:hover,
+body.theme-paper .np-fmt-btn:hover {
+  background: #FFFBEB !important;
+  border-color: var(--gold) !important;
+  color: #92400E !important;
+}
+body.theme-paper #folder-doc-editor {
+  background: #FFFFFF !important;
+  color: #1E293B !important;
+  border: 1px solid #DDD7C8 !important;
+  box-shadow: 0 8px 24px rgba(30, 41, 59, 0.07) !important;
+}
+body.theme-paper #notepad-panel,
+body.theme-paper #ann-panel,
+body.theme-paper #search-panel {
+  background: #FAF8F3 !important;
+  border-left: 1px solid #DDD7C8 !important;
+  color: #1E293B !important;
+}
+body.theme-paper #np-editor,
+body.theme-paper #np-digest-wrap,
+body.theme-paper #np-summaries-list {
+  background: #FFFFFF !important;
+  color: #1E293B !important;
+}
+body.theme-paper .np-digest-field textarea,
+body.theme-paper .np-digest-field div[contenteditable="true"] {
+  background: #FAF8F3 !important;
+  color: #1E293B !important;
+  border-color: #DDD7C8 !important;
+}
+body.theme-paper .modal {
+  background: #FAF8F3 !important;
+  color: #1E293B !important;
+  border: 1px solid #D6D0C2 !important;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16) !important;
+}
+body.theme-paper .modal h3,
+body.theme-paper .modal label,
+body.theme-paper .modal strong {
+  color: #0F172A !important;
+}
+body.theme-paper .modal input,
+body.theme-paper .modal textarea,
+body.theme-paper .modal select {
+  background: #FFFFFF !important;
+  color: #0F172A !important;
+  border: 1px solid #CBD5E1 !important;
+}
+body.theme-paper #lib-ctx-menu {
+  background: #FFFFFF !important;
+  border: 1px solid #DDD7C8 !important;
+  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.12) !important;
+}
+body.theme-paper .ctx-item {
+  color: #1E293B !important;
+}
+body.theme-paper .ctx-item:hover {
+  background: #F1F5F9 !important;
+}
+
+/* Study Desk / Schedule in Paper Theme */
+body.theme-paper .cal-header h2 {
+  color: #0F172A !important;
+}
+body.theme-paper .cal-day {
+  background: #FAF8F3 !important;
+  border: 1px solid #DDD7C8 !important;
+  box-shadow: var(--gn-shadow);
+}
+body.theme-paper .cal-day-title {
+  color: #334155 !important;
+  border-bottom-color: #DDD7C8 !important;
+}
+body.theme-paper .cal-item {
+  background: #FFFFFF !important;
+  border-color: #E2E8F0;
+  color: #475569 !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+body.theme-paper .cal-item strong {
+  color: #0F172A !important;
+}
+body.theme-paper .cal-item .cal-time {
+  color: #B45309 !important;
+  font-weight: 600;
+}
+
+/* ── 3. Top GoodNotes Document Tabs (#gn-doc-tabs) ── */
+#gn-doc-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 6px 10px 0 10px;
+  background: var(--gn-tab-bar-bg, #EAE5DA);
+  border-bottom: 1px solid var(--navy-b);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;
+  min-height: 36px;
+}
+#gn-doc-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.gn-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  max-width: 210px;
+  min-width: 90px;
+  background: var(--gn-tab-inactive, rgba(0,0,0,0.12));
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.14s ease;
+  flex-shrink: 0;
+}
+.gn-tab.gn-tab-home {
+  min-width: auto;
+  font-weight: 600;
+}
+.gn-tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.45);
+}
+body:not(.theme-paper) .gn-tab:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+.gn-tab.active {
+  background: var(--gn-tab-active, var(--navy-l));
+  color: var(--text);
+  border-color: var(--navy-b);
+  font-weight: 600;
+  box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.04);
+  position: relative;
+  z-index: 2;
+}
+.gn-tab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.gn-tab-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.gn-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.gn-tab-status {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.gn-tab-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 3px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.65;
+}
+.gn-tab-close:hover {
+  opacity: 1;
+  background: rgba(239, 68, 68, 0.15);
+  color: #EF4444;
+}
+
+/* ── 4. Color-Coded Subject Binders & Case Status Checkmarks ── */
+.li-subj {
+  border-left: 4px solid var(--subj-color, #2563EB);
+  border-radius: 6px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.03);
+  transition: box-shadow 0.25s ease, background 0.2s ease;
+}
+body.theme-paper .li-subj {
+  background: rgba(255, 255, 255, 0.65);
+  border-top: 1px solid rgba(221, 215, 200, 0.55);
+  border-right: 1px solid rgba(221, 215, 200, 0.55);
+  border-bottom: 1px solid rgba(221, 215, 200, 0.55);
+}
+.li-subj.binder-pulse {
+  box-shadow: 0 0 0 3px var(--gold);
+}
+.subj-count-pill {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  background: rgba(100, 116, 139, 0.14);
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+.fold-prog-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  background: rgba(100, 116, 139, 0.13);
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-left: auto;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+.fold-prog-badge.done {
+  background: rgba(16, 185, 129, 0.16);
+  color: #059669;
+}
+body:not(.theme-paper) .fold-prog-badge.done {
+  color: #34D399;
+}
+
+.case-status-btn {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--muted);
+  flex-shrink: 0;
+  border-radius: 4px;
+  transition: transform 0.12s ease, color 0.12s ease;
+}
+.case-status-btn:hover {
+  transform: scale(1.18);
+  color: var(--gold);
+}
+
+/* ── 5. Study Desk Home Screen ("Continue Studying" Shelf + Schedule Actions) ── */
+.gn-desk-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(180, 83, 9, 0.1);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+#gn-study-shelf {
+  margin-bottom: 24px;
+  background: var(--gn-card-bg, var(--navy-l));
+  border: 1px solid var(--navy-b);
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: var(--gn-shadow);
+}
+.gn-shelf-hd {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+.gn-shelf-sub {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.gn-shelf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+}
+.gn-notebook-card {
+  display: flex;
+  background: var(--navy);
+  border: 1px solid var(--navy-b);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  min-height: 84px;
+}
+body.theme-paper .gn-notebook-card {
+  background: #FAF8F3;
+}
+.gn-notebook-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--spine-color, var(--gold));
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+}
+.gn-nb-spine {
+  width: 8px;
+  flex-shrink: 0;
+}
+.gn-nb-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex: 1;
+  min-width: 0;
+}
+.gn-nb-meta {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gn-nb-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 4px 0 6px 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.35;
+}
+.gn-nb-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.gn-nb-status {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.gn-nb-status.read {
+  color: #059669;
+}
+.gn-nb-status.star {
+  color: #D97706;
+}
+
+.gn-cal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--navy-b);
+}
+.gn-cal-open-binder {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gold);
+}
+.gn-cal-note-btn {
+  background: rgba(180, 83, 9, 0.1);
+  border: 1px solid rgba(180, 83, 9, 0.28);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.gn-cal-note-btn:hover {
+  background: var(--gold);
+  color: #FFFFFF;
+}

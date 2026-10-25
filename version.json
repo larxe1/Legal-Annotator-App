@@ -1,7 +1,7 @@
 {
-  "version": "1.3.3",
-  "build": 12,
-  "updatedAt": "2026-10-25T16:07:00+08:00",
-  "notes": "Persist both Database Google Drive (ec.mataac@gmail.com) and Syllabus Google Drive (ermataac@up.edu.ph) tokens separately on disk with automatic hidden background silent renewal so you never have to re-login",
+  "version": "1.4.0",
+  "build": 13,
+  "updatedAt": "2026-10-25T16:34:00+08:00",
+  "notes": "GoodNotes School Notebook UI Redesign: Warm Paper default theme + 1-click theme switcher, multi-case top document tabs, color-coded subject binders, Read/Recit Ready checkmarks & folder progress badges, and interactive Study Desk with Continue Studying shelf",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
