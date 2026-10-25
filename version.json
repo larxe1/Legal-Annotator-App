@@ -1,7 +1,7 @@
 {
-  "version": "1.4.1",
-  "build": 14,
-  "updatedAt": "2026-10-25T16:46:00+08:00",
-  "notes": "Fix Study Desk homepage disappearing when switching back from PDF/Folder tabs, and replace read counter with automatic Case Digest tracker on folders, PDFs, tabs, and Study Desk",
+  "version": "1.4.2",
+  "build": 15,
+  "updatedAt": "2026-10-25T16:52:00+08:00",
+  "notes": "Fix top document tab bar clipping with top of app window by giving tabs dedicated height and comfortable top breathing padding",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

@@ -1526,14 +1526,16 @@ body.theme-paper .cal-item .cal-time {
 #gn-doc-tabs {
   display: flex;
   align-items: flex-end;
-  gap: 4px;
-  padding: 6px 10px 0 10px;
+  gap: 5px;
+  padding: 8px 12px 0 12px;
   background: var(--gn-tab-bar-bg, #EAE5DA);
   border-bottom: 1px solid var(--navy-b);
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
   flex-shrink: 0;
-  min-height: 36px;
+  height: 42px;
+  box-sizing: border-box;
 }
 #gn-doc-tabs::-webkit-scrollbar {
   display: none;
@@ -1543,20 +1545,23 @@ body.theme-paper .cal-item .cal-time {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 11px;
-  max-width: 210px;
+  height: 33px;
+  padding: 0 11px;
+  max-width: 220px;
   min-width: 90px;
   background: var(--gn-tab-inactive, rgba(0,0,0,0.12));
   color: var(--muted);
-  border: 1px solid transparent;
+  border: 1px solid var(--navy-b);
   border-bottom: none;
-  border-radius: 9px 9px 0 0;
+  border-radius: 8px 8px 0 0;
   font-size: 12px;
   font-weight: 500;
+  line-height: 1;
   cursor: pointer;
   user-select: none;
   transition: all 0.14s ease;
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 .gn-tab.gn-tab-home {
   min-width: auto;
@@ -1567,12 +1572,15 @@ body.theme-paper .cal-item .cal-time {
   background: rgba(255, 255, 255, 0.45);
 }
 body:not(.theme-paper) .gn-tab:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.08);
 }
 .gn-tab.active {
   background: var(--gn-tab-active, var(--navy-l));
   color: var(--text);
   border-color: var(--navy-b);
+  border-bottom: 1px solid var(--gn-tab-active, var(--navy-l));
+  margin-bottom: -1px;
+  height: 34px;
   font-weight: 600;
   box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.04);
   position: relative;
@@ -1585,7 +1593,11 @@ body:not(.theme-paper) .gn-tab:hover {
   flex-shrink: 0;
 }
 .gn-tab-icon {
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
 .gn-tab-title {
@@ -1593,9 +1605,15 @@ body:not(.theme-paper) .gn-tab:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  line-height: 1.2;
+  font-size: 12px;
 }
 .gn-tab-status {
   font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
 .gn-tab-close {
@@ -1603,11 +1621,17 @@ body:not(.theme-paper) .gn-tab:hover {
   border: none;
   color: var(--muted);
   font-size: 14px;
+  width: 18px;
+  height: 18px;
   line-height: 1;
-  padding: 0 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border-radius: 4px;
   cursor: pointer;
   opacity: 0.65;
+  margin-left: 2px;
 }
 .gn-tab-close:hover {
   opacity: 1;
