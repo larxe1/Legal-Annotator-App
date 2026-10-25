@@ -1839,3 +1839,42 @@ body.theme-paper .gn-notebook-card {
   background: var(--gold);
   color: #FFFFFF;
 }
+
+
+/* ── Continue Studying Card Top Row, Relative Time & Dismiss Button ── */
+.gn-nb-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.gn-nb-dismiss {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.gn-notebook-card:hover .gn-nb-dismiss {
+  opacity: 0.75;
+}
+.gn-nb-dismiss:hover {
+  opacity: 1 !important;
+  background: rgba(239, 68, 68, 0.15);
+  color: #EF4444;
+}
+.gn-nb-time {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-weight: 500;
+}

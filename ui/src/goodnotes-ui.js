@@ -4,11 +4,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
 import { safeStorageGet, safeStorageSet } from './storage.js';
+import { dbGetSetting, dbSetSetting } from './db.js';
 import { toast } from './ui.js';
 
 const THEME_KEY = 'app_ui_theme';
 const OPEN_TABS_KEY = 'gn_open_tabs_v1';
 const RECENT_IDS_KEY = 'gn_recent_pdf_ids_v1';
+const RECENT_READS_KEY = 'gn_recent_reads_v2';
 
 // Curated GoodNotes academic binder palette
 const BINDER_PALETTE = [
@@ -319,32 +321,86 @@ export function renderDocTabs() {
 }
 
 // ── 5. Recent Cases Persistence & Study Desk Home Screen ────────────────────
-function pushRecentPdfId(pdfId) {
-  if (!pdfId) return;
+function loadRecentEntries() {
   try {
-    const raw = JSON.parse(safeStorageGet(RECENT_IDS_KEY) || '[]');
-    const next = [pdfId, ...raw.filter(id => id !== pdfId)].slice(0, 6);
-    safeStorageSet(RECENT_IDS_KEY, JSON.stringify(next));
+    const rawV2 = safeStorageGet(RECENT_READS_KEY);
+    if (rawV2) {
+      const parsed = JSON.parse(rawV2);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(x => x && typeof x.id === 'string');
+      }
+    }
+    // One-time migration from v1 (which only stored IDs opened by the user)
+    const rawV1 = safeStorageGet(RECENT_IDS_KEY);
+    if (rawV1) {
+      const ids = JSON.parse(rawV1);
+      if (Array.isArray(ids) && ids.length) {
+        const now = Date.now();
+        const migrated = ids
+          .filter(id => typeof id === 'string')
+          .slice(0, 6)
+          .map((id, i) => ({ id, ts: now - i * 1000 }));
+        safeStorageSet(RECENT_READS_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+  } catch {}
+  return [];
+}
+
+function saveRecentEntries(entries) {
+  try {
+    const trimmed = entries.slice(0, 6);
+    safeStorageSet(RECENT_READS_KEY, JSON.stringify(trimmed));
+    dbSetSetting(RECENT_READS_KEY, JSON.stringify(trimmed)).catch(() => {});
   } catch {}
 }
 
-function getRecentPdfsForShelf() {
-  let ids = [];
+function pushRecentPdfId(pdfId) {
+  if (!pdfId) return;
+  const now = Date.now();
+  const entries = loadRecentEntries().filter(e => e.id !== pdfId);
+  entries.unshift({ id: pdfId, ts: now });
+  saveRecentEntries(entries);
+}
+
+export function removeRecentRead(pdfId, e) {
+  if (e) e.stopPropagation();
+  const next = loadRecentEntries().filter(x => x.id !== pdfId);
+  saveRecentEntries(next);
+  renderStudyDesk();
+}
+
+function formatRelativeTime(ts) {
+  if (!ts) return 'Recent';
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSec < 60) return 'Just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay === 1) return 'Yesterday';
+  if (diffDay < 7) return `${diffDay}d ago`;
   try {
-    ids = JSON.parse(safeStorageGet(RECENT_IDS_KEY) || '[]');
-  } catch {}
+    return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  } catch {
+    return 'Recent';
+  }
+}
+
+function getRecentPdfsForShelf() {
+  const entries = loadRecentEntries().sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const found = [];
-  for (const id of ids) {
-    const p = S.pdfs.find(x => x.id === id);
-    if (p && !found.some(f => f.id === p.id)) found.push(p);
-  }
-  if (found.length < 4 && S.pdfs.length > 0) {
-    for (const p of S.pdfs) {
-      if (found.length >= 4) break;
-      if (!found.some(f => f.id === p.id)) found.push(p);
+  for (const entry of entries) {
+    const p = S.pdfs.find(x => x.id === entry.id);
+    if (p && !found.some(f => f.pdf.id === p.id)) {
+      found.push({ pdf: p, ts: entry.ts });
     }
+    if (found.length >= 4) break;
   }
-  return found.slice(0, 4);
+  // Strictly return ONLY cases the user actually opened recently (never pad with old library cases!)
+  return found;
 }
 
 export function openSubjectBinderByTitle(rawTitle) {
@@ -421,24 +477,25 @@ export function renderStudyDesk() {
     headerP.innerHTML = `2ND YEAR, 1ST SEMESTER &nbsp;•&nbsp; <span class="gn-desk-stat">⚖️ ${digestedCount} / ${totalCases} Digested</span>`;
   }
 
-  const recentPdfs = getRecentPdfsForShelf();
-  if (recentPdfs.length > 0) {
+  const recentItems = getRecentPdfsForShelf();
+  if (recentItems.length > 0) {
     shelf.style.display = 'block';
     shelf.innerHTML = `
       <div class="gn-shelf-hd">
         <span>📖 Continue Studying</span>
-        <span class="gn-shelf-sub">Click any notebook card to jump back in</span>
+        <span class="gn-shelf-sub">Your most recently opened cases</span>
       </div>
       <div class="gn-shelf-grid"></div>
     `;
     const grid = shelf.querySelector('.gn-shelf-grid');
-    recentPdfs.forEach((pdf, i) => {
+    recentItems.forEach(({ pdf, ts }, i) => {
       const subj = getSubjectForPdf(pdf);
       const fold = S.folders.find(f => f.id === pdf.folder_id);
       const spineColor = getSubjectBinderColor(subj, i);
       const digested = hasCaseDigest(pdf);
       const stClass = digested ? 'read' : '';
       const stLabel = digested ? '⚖️ Digest Ready' : '📝 No Digest Yet';
+      const timeLabel = formatRelativeTime(ts);
 
       const card = document.createElement('div');
       card.className = 'gn-notebook-card';
@@ -446,13 +503,18 @@ export function renderStudyDesk() {
       card.innerHTML = `
         <div class="gn-nb-spine" style="background:${spineColor}"></div>
         <div class="gn-nb-body">
-          <div class="gn-nb-meta">${subj ? subj.name : 'Library'}${fold ? ' › ' + fold.name : ''}</div>
+          <div class="gn-nb-top-row">
+            <div class="gn-nb-meta">${subj ? subj.name : 'Library'}${fold ? ' › ' + fold.name : ''}</div>
+            <button type="button" class="gn-nb-dismiss" title="Remove from Continue Studying">×</button>
+          </div>
           <div class="gn-nb-title" title="${pdf.name.replace(/"/g, '&quot;')}">${pdf.name}</div>
           <div class="gn-nb-footer">
             <span class="gn-nb-status ${stClass}">${stLabel}</span>
+            <span class="gn-nb-time">${timeLabel}</span>
           </div>
         </div>
       `;
+      card.querySelector('.gn-nb-dismiss')?.addEventListener('click', e => removeRecentRead(pdf.id, e));
       card.addEventListener('click', async () => {
         const { openPDFFromLibrary } = await import('./viewer.js');
         openPDFFromLibrary(pdf);
@@ -492,6 +554,29 @@ export function initGoodNotesUI() {
   loadSavedTabs();
   renderDocTabs();
   renderStudyDesk();
+
+  // Sync recent reads from cloud if local list is empty or older
+  dbGetSetting(RECENT_READS_KEY)
+    .then(val => {
+      if (!val) return;
+      const remote = JSON.parse(val);
+      if (!Array.isArray(remote) || !remote.length) return;
+      const local = loadRecentEntries();
+      const map = new Map();
+      for (const item of [...local, ...remote]) {
+        if (!item?.id) continue;
+        const prev = map.get(item.id);
+        if (!prev || (item.ts || 0) > (prev.ts || 0)) {
+          map.set(item.id, { id: item.id, ts: item.ts || 0 });
+        }
+      }
+      const merged = Array.from(map.values())
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+        .slice(0, 6);
+      safeStorageSet(RECENT_READS_KEY, JSON.stringify(merged));
+      renderStudyDesk();
+    })
+    .catch(() => {});
 
   document.getElementById('btn-theme-toggle')?.addEventListener('click', cycleAppTheme);
 }

@@ -1,7 +1,7 @@
 {
-  "version": "1.4.2",
-  "build": 15,
-  "updatedAt": "2026-10-25T16:52:00+08:00",
-  "notes": "Fix top document tab bar clipping with top of app window by giving tabs dedicated height and comfortable top breathing padding",
+  "version": "1.4.3",
+  "build": 16,
+  "updatedAt": "2026-10-25T19:43:00+08:00",
+  "notes": "Fix Continue Studying shelf so it strictly shows only your most recently opened cases (with relative timestamps and dismiss buttons) and never fills slots with old library cases",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
