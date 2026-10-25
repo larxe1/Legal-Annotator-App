@@ -6,12 +6,13 @@
 import { S } from './state.js';
 import { toast, openModal, closeModal } from './ui.js';
 import { dbRegisterPDF, dbRenamePDF, dbReorderPDF } from './db.js';
-import { driveUploadPDF, driveResolveFolderPath, driveFetchPDF } from './drive.js';
+import { driveUploadPDF, driveResolveFolderPath, driveFetchPDF, ensureDriveTokenFresh } from './drive.js';
 import { getCachedPDF, setCachedPDF } from './pdfcache.js';
 import { safeStorageGet, safeStorageSet, safeStorageRemove } from './storage.js';
 
 const CLIENT_ID = window.APP_CONFIG?.GOOGLE_CLIENT_ID || '';
 const SYLLABUS_SCOPE = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file email profile';
+const DEFAULT_SYLLABUS_EMAIL = 'ermataac@up.edu.ph';
 
 let _targetFolderId = null;
 let _parsedRows = [];
@@ -21,8 +22,9 @@ let _isRunning = false;
 let _diagnosticLogs = []; // string[]
 
 let _syllabusToken = safeStorageGet('syllabusSourceToken') || null;
-let _syllabusEmail = safeStorageGet('syllabusSourceEmail') || null;
+let _syllabusEmail = safeStorageGet('syllabusSourceEmail') || DEFAULT_SYLLABUS_EMAIL;
 let _syllabusHasReadonly = false;
+let _syllabusRefreshTimer = null;
 
 const LEGAL_STOPWORDS = new Set([
   'people', 'philippines', 'republic', 'court', 'appeals', 'supreme', 'sandiganbayan',
@@ -43,50 +45,151 @@ function getActiveSourceToken() {
   return S.driveToken || null;
 }
 
+function _scheduleSyllabusRefresh() {
+  if (_syllabusRefreshTimer) clearTimeout(_syllabusRefreshTimer);
+  _syllabusRefreshTimer = setTimeout(() => {
+    requestSyllabusToken(true, true).catch(() => {});
+  }, 50 * 60 * 1000); // silently renew every 50 mins
+}
+
+async function requestSyllabusToken(silent = false, forceRefresh = false) {
+  const hintEmail = _syllabusEmail || safeStorageGet('syllabusSourceEmail') || DEFAULT_SYLLABUS_EMAIL;
+  let accessToken = null;
+
+  if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function') {
+    const resp = await window.__DESKTOP_GOOGLE_OAUTH__(
+      CLIENT_ID,
+      SYLLABUS_SCOPE,
+      silent,
+      true,
+      hintEmail,
+      forceRefresh
+    );
+    accessToken = resp?.access_token || null;
+  } else if (typeof google !== 'undefined' && google.accounts?.oauth2) {
+    accessToken = await new Promise((resolve, reject) => {
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SYLLABUS_SCOPE,
+        hint: hintEmail,
+        callback: resp => {
+          if (resp.error) reject(new Error(resp.error_description || resp.error));
+          else resolve(resp.access_token);
+        },
+      });
+      client.requestAccessToken({
+        prompt: silent ? '' : 'select_account',
+        hint: hintEmail,
+      });
+    });
+  } else {
+    throw new Error('Google Sign-In library not loaded');
+  }
+
+  if (!accessToken) throw new Error('No access token returned');
+
+  let email = hintEmail;
+  try {
+    const ur = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (ur.ok) {
+      const uinfo = await ur.json();
+      if (uinfo.email) email = uinfo.email;
+    }
+  } catch {}
+
+  _syllabusToken = accessToken;
+  _syllabusEmail = email;
+  safeStorageSet('syllabusSourceToken', accessToken);
+  safeStorageSet('syllabusSourceEmail', email);
+  safeStorageSet('syllabusSourceExpiry', Date.now() + 3500_000);
+  _scheduleSyllabusRefresh();
+  return accessToken;
+}
+
+export async function ensureSyllabusTokenFresh(forceRefresh = false) {
+  const exp = Number(safeStorageGet('syllabusSourceExpiry') || 0);
+  if (!forceRefresh && _syllabusToken && exp && Date.now() < exp - 60_000) {
+    return _syllabusToken;
+  }
+  try {
+    return await requestSyllabusToken(true, forceRefresh);
+  } catch {
+    return getActiveSourceToken();
+  }
+}
+
+// Warm up persistent syllabus token in background shortly after startup
+setTimeout(() => {
+  ensureSyllabusTokenFresh(false).catch(() => {});
+}, 2500);
+
 // ── Verify token scopes & email via Google tokeninfo / userinfo ──
 async function verifySourceTokenStatus() {
   const statusEl = document.getElementById('syl-auth-status');
   const btnEl = document.getElementById('syl-auth-btn');
   if (!statusEl) return;
 
-  const tok = getActiveSourceToken();
+  const exp = Number(safeStorageGet('syllabusSourceExpiry') || 0);
+  if (!_syllabusToken || (exp && Date.now() >= exp - 60_000)) {
+    statusEl.innerHTML = `<span style="color:var(--muted);">⏳ Restoring persistent session for <strong>${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL}</strong>…</span>`;
+    await ensureSyllabusTokenFresh(false);
+  }
+
+  let tok = getActiveSourceToken();
   if (!tok) {
     _syllabusHasReadonly = false;
-    statusEl.innerHTML = `<span style="color:#fca5a5;">⚠️ Not signed in — restricted Google Drive links require Gmail sign-in</span>`;
-    if (btnEl) btnEl.textContent = '🔑 Sign in Gmail for Restricted Links';
+    statusEl.innerHTML = `<span style="color:#fca5a5;">⚠️ Not signed in — click to connect <strong>${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL}</strong> once (persists automatically)</span>`;
+    if (btnEl) btnEl.textContent = `🔑 Sign in (${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL})`;
     return;
   }
 
   try {
-    const r = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(tok)}`);
+    let r = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(tok)}`);
+    if (!r.ok) {
+      // Token expired early — try silent background renewal for ermataac@up.edu.ph
+      statusEl.innerHTML = `<span style="color:var(--muted);">⏳ Silently renewing token for <strong>${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL}</strong>…</span>`;
+      const refreshed = await ensureSyllabusTokenFresh(true);
+      if (refreshed && refreshed !== tok) {
+        tok = refreshed;
+        r = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(tok)}`);
+      }
+    }
+
     if (!r.ok) {
       if (tok === _syllabusToken) {
         _syllabusToken = null;
         safeStorageRemove('syllabusSourceToken');
       }
       _syllabusHasReadonly = false;
-      statusEl.innerHTML = `<span style="color:#fca5a5;">⚠️ Source Gmail session expired — click to sign in for restricted links</span>`;
-      if (btnEl) btnEl.textContent = '🔑 Sign in Gmail for Restricted Links';
+      statusEl.innerHTML = `<span style="color:#fca5a5;">⚠️ Session needs one-time sign-in for <strong>${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL}</strong></span>`;
+      if (btnEl) btnEl.textContent = `🔑 Sign in (${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL})`;
       return;
     }
+
     const info = await r.json();
     const scopes = String(info.scope || '');
-    const email = _syllabusEmail || info.email || S.driveUser || 'Connected Account';
+    const email = info.email || _syllabusEmail || DEFAULT_SYLLABUS_EMAIL;
+    if (info.email && tok === _syllabusToken) {
+      _syllabusEmail = info.email;
+      safeStorageSet('syllabusSourceEmail', info.email);
+    }
     _syllabusHasReadonly = scopes.includes('drive.readonly') || scopes.includes(' auth/drive ');
 
     if (_syllabusHasReadonly) {
-      statusEl.innerHTML = `<span style="color:#4ade80;">✅ Reading restricted links as: <strong>${email}</strong> (Shared Read Access active)</span>`;
-      if (btnEl) btnEl.textContent = '🔄 Switch Source Gmail';
+      statusEl.innerHTML = `<span style="color:#4ade80;">✅ Persistent Syllabus Account: <strong>${email}</strong> (Auto-renews silently)</span>`;
+      if (btnEl) btnEl.textContent = '🔄 Switch Syllabus Account';
     } else {
-      statusEl.innerHTML = `<span style="color:#fcd34d;">⚠️ Signed in as <strong>${email}</strong>, but token only has app-file access (missing shared-link read access)</span>`;
-      if (btnEl) btnEl.textContent = '🔑 Authorize Gmail for Restricted Links';
+      statusEl.innerHTML = `<span style="color:#fcd34d;">⚠️ Signed in as <strong>${email}</strong>, but missing shared-link read access — click to authorize once</span>`;
+      if (btnEl) btnEl.textContent = `🔑 Authorize ${email}`;
     }
   } catch {
-    statusEl.innerHTML = `<span style="color:var(--muted);">🔑 Source Gmail: ${_syllabusEmail || S.driveUser || 'Default'}</span>`;
+    statusEl.innerHTML = `<span style="color:var(--muted);">🔑 Syllabus Account: ${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL}</span>`;
   }
 }
 
-// ── Sign in with a specific Gmail account for reading restricted syllabus links ──
+// ── Sign in with a specific Gmail / UP Mail account for reading restricted syllabus links ──
 async function signInSyllabusGmail() {
   const btnEl = document.getElementById('syl-auth-btn');
   if (btnEl) {
@@ -94,58 +197,12 @@ async function signInSyllabusGmail() {
     btnEl.textContent = '⏳ Signing in…';
   }
   try {
-    let accessToken = null;
-    if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function') {
-      const resp = await window.__DESKTOP_GOOGLE_OAUTH__(CLIENT_ID, SYLLABUS_SCOPE, false, true);
-      accessToken = resp?.access_token || null;
-    } else if (typeof google !== 'undefined' && google.accounts?.oauth2) {
-      accessToken = await new Promise((resolve, reject) => {
-        const client = google.accounts.oauth2.initTokenClient({
-          client_id: CLIENT_ID,
-          scope: SYLLABUS_SCOPE,
-          callback: resp => {
-            if (resp.error) reject(new Error(resp.error_description || resp.error));
-            else resolve(resp.access_token);
-          },
-        });
-        client.requestAccessToken({ prompt: 'select_account consent' });
-      });
-    } else {
-      throw new Error('Google Sign-In library not loaded');
-    }
-
-    if (!accessToken) throw new Error('No access token returned');
-
-    let email = 'Connected Gmail';
-    try {
-      const ur = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (ur.ok) {
-        const uinfo = await ur.json();
-        if (uinfo.email) email = uinfo.email;
-      }
-    } catch {}
-
-    _syllabusToken = accessToken;
-    _syllabusEmail = email;
-    safeStorageSet('syllabusSourceToken', accessToken);
-    safeStorageSet('syllabusSourceEmail', email);
-    safeStorageSet('syllabusSourceExpiry', Date.now() + 3500_000);
-
-    // If the user wasn't signed into the main Drive at all, also populate S.driveToken
-    if (!S.driveToken) {
-      S.driveToken = accessToken;
-      S.driveUser = email;
-      safeStorageSet('driveToken', accessToken);
-      safeStorageSet('driveUser', email);
-    }
-
+    await requestSyllabusToken(false, true);
     await verifySourceTokenStatus();
-    toast(`✅ Signed in as ${email} for restricted syllabus links!`);
+    toast(`✅ Persistent syllabus account (${_syllabusEmail}) connected!`);
   } catch (err) {
     console.warn('[Syllabus] Gmail sign-in error:', err);
-    toast('⚠️ Gmail sign-in cancelled or failed: ' + (err.message || err));
+    toast('⚠️ Sign-in cancelled or failed: ' + (err.message || err));
     await verifySourceTokenStatus();
   } finally {
     if (btnEl) btnEl.disabled = false;
@@ -1126,6 +1183,7 @@ function renderPreviewList() {
 }
 
 async function listFilesInDriveFolderId(folderId) {
+  await ensureSyllabusTokenFresh(false);
   const activeTok = getActiveSourceToken();
   let files = null;
 
@@ -1357,9 +1415,16 @@ async function executeSyllabusImport() {
   );
 
   try {
-    if (needsUpload && S.driveToken) {
-      if (progTxt) progTxt.textContent = 'Preparing Google Drive folder…';
-      targetDriveFolderId = await driveResolveFolderPath(_targetFolderId);
+    if (needsUpload) {
+      if (progTxt) progTxt.textContent = 'Verifying Google Drive sessions…';
+      await Promise.all([
+        ensureSyllabusTokenFresh(false).catch(() => {}),
+        ensureDriveTokenFresh().catch(() => {}),
+      ]);
+      if (S.driveToken) {
+        if (progTxt) progTxt.textContent = 'Preparing Google Drive folder…';
+        targetDriveFolderId = await driveResolveFolderPath(_targetFolderId);
+      }
     }
 
     const orderedPdfRecords = [];

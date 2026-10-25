@@ -9,6 +9,7 @@ import { safeStorageSet, safeStorageGet, safeStorageRemove } from './storage.js'
 const CLIENT_ID   = window.APP_CONFIG?.GOOGLE_CLIENT_ID || '';
 const SCOPE       = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
 const FOLDER_NAME = 'Legal Annotator';
+const DEFAULT_DRIVE_EMAIL = 'ec.mataac@gmail.com';
 
 let _tokenRefreshTimer = null;
 let _healthCheckInterval = null;
@@ -19,16 +20,18 @@ async function _applyAccessToken(accessToken) {
   S.driveToken = accessToken;
   safeStorageSet('driveToken', S.driveToken);
   safeStorageSet('driveTokenExpiry', Date.now() + 3500000); // ~58 mins
-  if (!S.driveUser) {
-    try {
-      const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-        headers: { Authorization: `Bearer ${S.driveToken}` }
-      });
+  try {
+    const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${S.driveToken}` }
+    });
+    if (r.ok) {
       const info = await r.json();
-      S.driveUser = info.email || 'Connected';
+      S.driveUser = info.email || S.driveUser || safeStorageGet('driveUser') || DEFAULT_DRIVE_EMAIL;
       safeStorageSet('driveUser', S.driveUser);
-    } catch {
-      S.driveUser = 'Connected';
+    }
+  } catch {
+    if (!S.driveUser) {
+      S.driveUser = safeStorageGet('driveUser') || DEFAULT_DRIVE_EMAIL;
       safeStorageSet('driveUser', S.driveUser);
     }
   }
@@ -39,9 +42,10 @@ async function _applyAccessToken(accessToken) {
   _startHealthCheck();
 }
 
-function _requestToken(silent = false) {
+function _requestToken(silent = false, forceRefresh = false) {
+  const hintEmail = S.driveUser || safeStorageGet('driveUser') || DEFAULT_DRIVE_EMAIL;
   if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function') {
-    return window.__DESKTOP_GOOGLE_OAUTH__(CLIENT_ID, SCOPE, silent).then(async (resp) => {
+    return window.__DESKTOP_GOOGLE_OAUTH__(CLIENT_ID, SCOPE, silent, false, hintEmail, forceRefresh).then(async (resp) => {
       if (!resp || !resp.access_token) throw new Error(resp?.error || 'Cancelled');
       await _applyAccessToken(resp.access_token);
     });
@@ -50,6 +54,7 @@ function _requestToken(silent = false) {
     const client = google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
       scope: SCOPE,
+      hint: hintEmail,
       callback: async (resp) => {
         if (resp.error) { reject(resp); return; }
         try {
@@ -62,8 +67,21 @@ function _requestToken(silent = false) {
     });
     // prompt: '' = silent (no UI shown if already authorised)
     // prompt: 'select_account' = show picker (used for explicit sign-in)
-    client.requestAccessToken({ prompt: silent ? '' : 'select_account' });
+    client.requestAccessToken({ prompt: silent ? '' : 'select_account', hint: hintEmail });
   });
+}
+
+export async function ensureDriveTokenFresh() {
+  const expiry = Number(safeStorageGet('driveTokenExpiry') || 0);
+  if (S.driveToken && expiry && Date.now() < expiry - 60_000) {
+    return S.driveToken;
+  }
+  try {
+    await _requestToken(true, false);
+    return S.driveToken;
+  } catch {
+    return S.driveToken || null;
+  }
 }
 
 let _isAutoPrompting = false;
@@ -73,8 +91,8 @@ function _scheduleRefresh() {
   if (_tokenRefreshTimer) clearTimeout(_tokenRefreshTimer);
   _tokenRefreshTimer = setTimeout(async () => {
     try {
-      await _requestToken(true); // silent
-      await _verifyToken();      // confirm it actually works
+      await _requestToken(true, true); // silent background renewal
+      await _verifyToken();            // confirm it actually works
     } catch {
       // Silent refresh failed — automatically trigger account picker prompt
       _onSessionExpired();
@@ -109,8 +127,13 @@ async function _verifyToken() {
       `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(S.driveToken)}`
     );
     if (r.status === 400 || r.status === 401) {
-      console.warn('[Drive] Token verification failed (expired or revoked):', r.status);
-      _onSessionExpired();
+      console.warn('[Drive] Token verification returned', r.status, '— attempting silent background renewal for', S.driveUser || DEFAULT_DRIVE_EMAIL);
+      try {
+        await _requestToken(true, true);
+        hideDriveWarning();
+      } catch {
+        _onSessionExpired();
+      }
     } else if (r.ok) {
       hideDriveWarning();
     }
@@ -125,10 +148,8 @@ export function _onSessionExpired() {
   _stopHealthCheck();
   if (_tokenRefreshTimer) { clearTimeout(_tokenRefreshTimer); _tokenRefreshTimer = null; }
   S.driveToken    = null;
-  S.driveUser     = null;
   S.driveFolderId = null;
   safeStorageRemove('driveToken');
-  safeStorageRemove('driveUser');
   safeStorageRemove('driveTokenExpiry');
   safeStorageRemove('driveFolderId');
   updateDriveBar();
@@ -774,7 +795,10 @@ export async function driveOrganizeAll({ silent = false } = {}) {
 // ── Upload PDF to Drive ──
 // targetFolderId: optional Drive folder ID to place the file in (defaults to root app folder)
 export async function driveUploadPDF(file, targetFolderId) {
-  if (!S.driveToken) throw new Error('Not signed in to Google Drive');
+  if (!S.driveToken) {
+    await ensureDriveTokenFresh();
+  }
+  if (!S.driveToken) throw new Error('Not signed in to Google Drive (ec.mataac@gmail.com)');
   if (!S.driveFolderId) S.driveFolderId = await ensureAppFolder();
 
   const parentId = targetFolderId || S.driveFolderId;
@@ -784,18 +808,38 @@ export async function driveUploadPDF(file, targetFolderId) {
     name: file.name,
     parents: [parentId],
   };
-  const form = new FormData();
-  form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
-  form.append('file', file);
 
-  const resp = await fetch(
+  const buildForm = () => {
+    const f = new FormData();
+    f.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
+    f.append('file', file);
+    return f;
+  };
+
+  let resp = await fetch(
     'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${S.driveToken}` },
-      body: form,
+      body: buildForm(),
     }
   );
+  if (resp.status === 401) {
+    try {
+      await _requestToken(true, true);
+      resp = await fetch(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${S.driveToken}` },
+          body: buildForm(),
+        }
+      );
+    } catch {
+      _onSessionExpired();
+      throw new Error('Google Drive session expired. Please sign in again.');
+    }
+  }
   if (!resp.ok) {
     const err = await resp.text();
     syncErr('Upload failed');
@@ -824,6 +868,9 @@ export async function driveFetchPDF(drive_file_id, onProgress = null, pdfName = 
   }
 
   if (!S.driveToken) {
+    await ensureDriveTokenFresh();
+  }
+  if (!S.driveToken) {
     throw new Error('Not signed in to Google Drive');
   }
 
@@ -841,7 +888,7 @@ export async function driveFetchPDF(drive_file_id, onProgress = null, pdfName = 
   // ── On 401: try one silent token refresh before giving up ──
   if (resp.status === 401) {
     try {
-      await _requestToken(true); // silent refresh — no popup, fast if Google session is active
+      await _requestToken(true, true); // silent refresh — no popup, fast if Google session is active
       resp = await _doFetch(S.driveToken); // retry with the fresh token
     } catch {
       // Silent refresh failed — must show login prompt
@@ -948,7 +995,16 @@ async function driveListAll(q, fields = 'id,name,mimeType,parents') {
 
 // ── Helper: authenticated GET ──
 async function driveGet(url) {
-  const r = await _fetchWithTimeout(url, { headers: { Authorization: `Bearer ${S.driveToken}` } });
+  let r = await _fetchWithTimeout(url, { headers: { Authorization: `Bearer ${S.driveToken}` } });
+  if (r.status === 401) {
+    try {
+      await _requestToken(true, true);
+      r = await _fetchWithTimeout(url, { headers: { Authorization: `Bearer ${S.driveToken}` } });
+    } catch {
+      _onSessionExpired();
+      throw new Error('Drive session expired');
+    }
+  }
   if (r.status === 401) { _onSessionExpired(); throw new Error('Drive session expired'); }
   if (!r.ok) throw new Error(`Drive request failed (${r.status})`);
   return r.json();
@@ -956,7 +1012,7 @@ async function driveGet(url) {
 
 // ── Helper: authenticated POST with JSON body ──
 async function drivePost(url, body) {
-  const r = await _fetchWithTimeout(url, {
+  let r = await _fetchWithTimeout(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${S.driveToken}`,
@@ -964,6 +1020,22 @@ async function drivePost(url, body) {
     },
     body: JSON.stringify(body),
   });
+  if (r.status === 401) {
+    try {
+      await _requestToken(true, true);
+      r = await _fetchWithTimeout(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${S.driveToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      _onSessionExpired();
+      throw new Error('Drive session expired');
+    }
+  }
   if (r.status === 401) { _onSessionExpired(); throw new Error('Drive session expired'); }
   if (!r.ok) throw new Error(`Drive request failed (${r.status})`);
   return r.json();
@@ -971,7 +1043,7 @@ async function drivePost(url, body) {
 
 // ── Helper: authenticated PATCH with JSON body ──
 async function drivePatch(url, body = {}) {
-  const r = await _fetchWithTimeout(url, {
+  let r = await _fetchWithTimeout(url, {
     method: 'PATCH',
     headers: {
       Authorization: `Bearer ${S.driveToken}`,
@@ -979,6 +1051,22 @@ async function drivePatch(url, body = {}) {
     },
     body: JSON.stringify(body),
   });
+  if (r.status === 401) {
+    try {
+      await _requestToken(true, true);
+      r = await _fetchWithTimeout(url, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${S.driveToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      _onSessionExpired();
+      throw new Error('Drive session expired');
+    }
+  }
   if (r.status === 401) { _onSessionExpired(); throw new Error('Drive session expired'); }
   if (!r.ok) throw new Error(`Drive PATCH failed (${r.status})`);
   return r.json();
@@ -988,7 +1076,7 @@ async function drivePatch(url, body = {}) {
 export function initDriveBar() {
   const token  = safeStorageGet('driveToken');
   const expiry = safeStorageGet('driveTokenExpiry');
-  const user   = safeStorageGet('driveUser');
+  const user   = safeStorageGet('driveUser') || DEFAULT_DRIVE_EMAIL;
 
   if (token && expiry && Date.now() < parseInt(expiry)) {
     // Token still valid from cache — restore session
@@ -997,34 +1085,27 @@ export function initDriveBar() {
     S.driveFolderId = safeStorageGet('driveFolderId');
     updateDriveBar();
     // Verify the cached token is actually still accepted by Google
-    // (It may have been revoked, even if it hasn't expired yet)
     setTimeout(() => _verifyToken(), 2000);
     _scheduleRefresh();
     _startHealthCheck(); // begin 5-min periodic checks
-  } else if (user) {
-    // Token expired but user previously signed in — try silent refresh
-    S.driveUser = user; // keep name visible while refreshing
+  } else {
+    // Token expired or not cached in localStorage — try silent background restore for ec.mataac@gmail.com
+    S.driveUser = user;
     updateDriveBar();
     const trySilent = async () => {
       try {
-        await _requestToken(true);
+        await _requestToken(true, false);
         await _verifyToken();
       } catch {
-        _onSessionExpired();
+        // Silent restore requires interactive login; leave button ready without annoying popup if first time
+        S.driveUser = null;
+        updateDriveBar();
       }
     };
-    if (typeof google !== 'undefined') {
+    if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function' || typeof google !== 'undefined') {
       trySilent();
     } else {
       setTimeout(trySilent, 1000);
     }
-  } else {
-    // Never signed in — render button, onclick already set by updateDriveBar()
-    updateDriveBar();
-    if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function') {
-      _requestToken(true).catch(() => {});
-    }
   }
-  // NOTE: Do NOT add an addEventListener here — updateDriveBar() already sets btnEl.onclick.
-  // Two event bindings on the same button cause duplicate OAuth requests which browsers block.
 }
