@@ -770,8 +770,10 @@ async fn desktop_start_google_oauth(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     silent: Option<bool>,
+    for_syllabus: Option<bool>,
 ) -> Result<OAuthPollResponse, String> {
-    if silent.unwrap_or(false) {
+    let is_syllabus = for_syllabus.unwrap_or(false);
+    if silent.unwrap_or(false) && !is_syllabus {
         if let Some(saved) = load_saved_oauth_token(&state.oauth_path) {
             if let Ok(mut g) = state.oauth_token.lock() {
                 *g = Some(saved.clone());
@@ -802,7 +804,7 @@ async fn desktop_start_google_oauth(
         std::thread::sleep(std::time::Duration::from_millis(60));
     }
 
-    let auth_url_str = "https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=3&client_id=572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fnotetaking-app.pages.dev%3Fid%3Dauth123456&prompt=select_account&response_type=token&include_granted_scopes=true";
+    let auth_url_str = "https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=3&client_id=572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fnotetaking-app.pages.dev%3Fid%3Dauth123456&prompt=select_account%20consent&response_type=token&include_granted_scopes=true";
     let parsed_url = tauri::Url::parse(auth_url_str).map_err(|e| e.to_string())?;
 
     let token_arc = Arc::clone(&state.oauth_token);
@@ -811,14 +813,20 @@ async fn desktop_start_google_oauth(
     let app_for_nav = app.clone();
 
     WebviewWindowBuilder::new(&app, "google-auth", WebviewUrl::External(parsed_url))
-        .title("Sign in with Google (Gmail) — Legal Annotator")
+        .title(if is_syllabus {
+            "Sign in with Gmail for Restricted Syllabus Links — Legal Annotator"
+        } else {
+            "Sign in with Google (Gmail) — Legal Annotator"
+        })
         .inner_size(520.0, 680.0)
         .center()
         .initialization_script(OAUTH_INIT_SCRIPT)
         .on_navigation(move |url| {
             let url_str = url.as_str();
             if let Some(tok) = extract_ya29_token(url_str) {
-                save_oauth_token(&oauth_path, &tok);
+                if !is_syllabus || load_saved_oauth_token(&oauth_path).is_none() {
+                    save_oauth_token(&oauth_path, &tok);
+                }
                 if let Ok(mut g) = token_arc.lock() {
                     *g = Some(tok);
                 }
@@ -981,56 +989,174 @@ fn decode_html_entities(s: &str) -> String {
 async fn desktop_gdrive_download_file(
     file_id: String,
     token: Option<String>,
-) -> Result<String, String> {
+    fallback_token: Option<String>,
+) -> Result<serde_json::Value, String> {
     let safe_id = sanitize_cache_id(&file_id);
     if safe_id.is_empty() {
-        return Err("Invalid Google Drive file ID".into());
+        return Ok(serde_json::json!({
+            "ok": false,
+            "error": "Invalid Google Drive file ID",
+            "diagnostics": ["Invalid or empty Google Drive File ID"]
+        }));
     }
 
     #[cfg(target_os = "windows")]
     use std::os::windows::process::CommandExt;
 
-    // 1. Try Google Drive API with user's OAuth token if present
-    if let Some(ref tok) = token {
-        if !tok.trim().is_empty() {
-            let api_url = format!(
-                "https://www.googleapis.com/drive/v3/files/{}?alt=media&supportsAllDrives=true",
-                safe_id
-            );
-            let auth_hdr = format!("Authorization: Bearer {}", tok.trim());
-            let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
-            cmd.args([
-                "-L",
-                "--silent",
-                "--max-time",
-                "90",
-                "-H",
-                &auth_hdr,
-                &api_url,
-            ]);
-            #[cfg(target_os = "windows")]
-            cmd.creation_flags(0x08000000);
-            if let Ok(out) = cmd.output() {
-                if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
-                    return Ok(BASE64.encode(&out.stdout));
+    let mut diag: Vec<String> = Vec::new();
+    diag.push(format!("Target File ID: {}", safe_id));
+
+    let mut tokens_to_try: Vec<(&str, String)> = Vec::new();
+    if let Some(t) = token {
+        let trimmed = t.trim().to_string();
+        if !trimmed.is_empty() {
+            tokens_to_try.push(("Syllabus Gmail Token", trimmed));
+        }
+    }
+    if let Some(ft) = fallback_token {
+        let trimmed = ft.trim().to_string();
+        if !trimmed.is_empty() && !tokens_to_try.iter().any(|(_, existing)| existing == &trimmed) {
+            tokens_to_try.push(("Main App Drive Token", trimmed));
+        }
+    }
+
+    if tokens_to_try.is_empty() {
+        diag.push("No Google OAuth token provided — skipping authenticated Drive API.".into());
+    }
+
+    // 1. Try Google Drive API with provided OAuth token(s)
+    for (label, tok) in &tokens_to_try {
+        let auth_hdr = format!("Authorization: Bearer {}", tok);
+        let mut target_id = safe_id.clone();
+        let mut mime_type = String::new();
+
+        // 1a. Check file metadata (resolves shortcuts & detects Google Docs)
+        let meta_url = format!(
+            "https://www.googleapis.com/drive/v3/files/{}?fields=id,name,mimeType,shortcutDetails&supportsAllDrives=true",
+            target_id
+        );
+        let mut meta_cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+        meta_cmd.args(["-L", "--silent", "--max-time", "25", "-H", &auth_hdr, &meta_url]);
+        #[cfg(target_os = "windows")]
+        meta_cmd.creation_flags(0x08000000);
+
+        if let Ok(meta_out) = meta_cmd.output() {
+            if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&meta_out.stdout) {
+                if let Some(err_obj) = meta_json.get("error") {
+                    let code = err_obj.get("code").and_then(|c| c.as_u64()).unwrap_or(0);
+                    let msg = err_obj
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("Unknown API error");
+                    diag.push(format!(
+                        "{}: Metadata check returned HTTP {} — {} (If 404/403 on a restricted file, sign in with the specific Gmail that has access or grant drive.readonly permission)",
+                        label, code, msg
+                    ));
+                } else {
+                    mime_type = meta_json
+                        .get("mimeType")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let fname = meta_json.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    diag.push(format!(
+                        "{}: Metadata OK — name=\"{}\", mimeType=\"{}\"",
+                        label, fname, mime_type
+                    ));
+                    if mime_type == "application/vnd.google-apps.shortcut" {
+                        if let Some(tid) = meta_json
+                            .get("shortcutDetails")
+                            .and_then(|s| s.get("targetId"))
+                            .and_then(|t| t.as_str())
+                        {
+                            target_id = sanitize_cache_id(tid);
+                            diag.push(format!("{}: Followed Drive shortcut to targetId={}", label, target_id));
+                        }
+                    }
                 }
+            }
+        }
+
+        // 1b. If Google Doc, export as PDF; otherwise download via alt=media
+        let dl_url = if mime_type == "application/vnd.google-apps.document" {
+            format!(
+                "https://www.googleapis.com/drive/v3/files/{}/export?mimeType=application/pdf",
+                target_id
+            )
+        } else {
+            format!(
+                "https://www.googleapis.com/drive/v3/files/{}?alt=media&supportsAllDrives=true",
+                target_id
+            )
+        };
+
+        let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+        cmd.args(["-L", "--silent", "--max-time", "90", "-H", &auth_hdr, &dl_url]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
+
+        if let Ok(out) = cmd.output() {
+            if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
+                diag.push(format!("{}: Downloaded valid PDF ({} bytes)", label, out.stdout.len()));
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "base64": BASE64.encode(&out.stdout),
+                    "diagnostics": diag
+                }));
+            } else if out.stdout.len() >= 4 && &out.stdout[0..4] == b"PK\x03\x04" {
+                diag.push(format!(
+                    "{}: Downloaded file is a ZIP/DOCX archive (PK header), not a PDF. Trying Google Docs PDF export…",
+                    label
+                ));
+                let exp_url = format!(
+                    "https://www.googleapis.com/drive/v3/files/{}/export?mimeType=application/pdf",
+                    target_id
+                );
+                let mut exp_cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+                exp_cmd.args(["-L", "--silent", "--max-time", "90", "-H", &auth_hdr, &exp_url]);
+                #[cfg(target_os = "windows")]
+                exp_cmd.creation_flags(0x08000000);
+                if let Ok(exp_out) = exp_cmd.output() {
+                    if exp_out.stdout.len() > 100 && &exp_out.stdout[0..4] == b"%PDF" {
+                        return Ok(serde_json::json!({
+                            "ok": true,
+                            "base64": BASE64.encode(&exp_out.stdout),
+                            "diagnostics": diag
+                        }));
+                    }
+                }
+            } else if let Ok(err_json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                let code = err_json
+                    .get("error")
+                    .and_then(|e| e.get("code"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0);
+                let msg = err_json
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Unknown error");
+                diag.push(format!("{}: Download returned HTTP {} — {}", label, code, msg));
             }
         }
     }
 
-    // 2. Fallback: Direct public/shared link download via drive.usercontent.google.com & drive.google.com/uc
+    // 2. Fallback: Direct public/shared link download
     let public_urls = [
-        format!(
-            "https://drive.usercontent.google.com/download?id={}&export=download&confirm=t",
-            safe_id
+        (
+            "Public Drive Download",
+            format!(
+                "https://drive.usercontent.google.com/download?id={}&export=download&confirm=t",
+                safe_id
+            ),
         ),
-        format!(
-            "https://drive.google.com/uc?export=download&id={}&confirm=t",
-            safe_id
+        (
+            "Public Google Doc Export",
+            format!("https://docs.google.com/document/d/{}/export?format=pdf", safe_id),
         ),
     ];
 
-    for url in &public_urls {
+    for (label, url) in &public_urls {
         let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
         cmd.args([
             "-L",
@@ -1045,12 +1171,43 @@ async fn desktop_gdrive_download_file(
         cmd.creation_flags(0x08000000);
         if let Ok(out) = cmd.output() {
             if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
-                return Ok(BASE64.encode(&out.stdout));
+                diag.push(format!("{}: Succeeded ({} bytes)", label, out.stdout.len()));
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "base64": BASE64.encode(&out.stdout),
+                    "diagnostics": diag
+                }));
+            } else {
+                let preview = String::from_utf8_lossy(&out.stdout[..std::cmp::min(out.stdout.len(), 600)]);
+                if preview.contains("ServiceLogin") || preview.contains("accounts.google.com") {
+                    diag.push(format!(
+                        "{}: Redirected to Google Sign-In page — file is RESTRICTED to specific email accounts.",
+                        label
+                    ));
+                } else if out.stdout.len() >= 4 && &out.stdout[0..4] == b"PK\x03\x04" {
+                    diag.push(format!("{}: File is a Word .docx / ZIP file, not a PDF.", label));
+                } else {
+                    diag.push(format!(
+                        "{}: Returned non-PDF response ({} bytes).",
+                        label,
+                        out.stdout.len()
+                    ));
+                }
             }
         }
     }
 
-    Err("Could not download PDF from Google Drive. Make sure the file is shared ('Anyone with the link') or sign in again with Google Drive.".into())
+    let summary_err = if diag.iter().any(|d| d.contains("RESTRICTED") || d.contains("HTTP 404") || d.contains("HTTP 403")) {
+        "File is restricted — click '🔑 Sign in Gmail for Restricted Links' at the top of the modal and sign in with the email account that has access.".to_string()
+    } else {
+        "Could not download PDF from Google Drive.".to_string()
+    };
+
+    Ok(serde_json::json!({
+        "ok": false,
+        "error": summary_err,
+        "diagnostics": diag
+    }))
 }
 
 #[tauri::command]

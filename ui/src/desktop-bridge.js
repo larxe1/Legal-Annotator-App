@@ -24,8 +24,11 @@ function arrayBufferToBase64(buffer) {
 
 // ── Native Tauri Google (Gmail) OAuth Bridge ──────────────────────────────
 if (invoke) {
-  window.__DESKTOP_GOOGLE_OAUTH__ = async (_clientId, _scope, silent = false) => {
-    const startRes = await invoke('desktop_start_google_oauth', { silent: !!silent });
+  window.__DESKTOP_GOOGLE_OAUTH__ = async (_clientId, _scope, silent = false, forSyllabus = false) => {
+    const startRes = await invoke('desktop_start_google_oauth', {
+      silent: !!silent,
+      forSyllabus: !!forSyllabus,
+    });
     if (startRes?.status === 'success' && startRes?.accessToken) {
       return { access_token: startRes.accessToken };
     }
@@ -152,23 +155,41 @@ window.__DESKTOP_PDFIUM__ = {
     }
   },
 
-  async downloadGDriveFile(fileId, token = null) {
-    if (!invoke) return null;
+  async downloadGDriveFile(fileId, token = null, fallbackToken = null) {
+    if (!invoke) return { ok: false, blob: null, error: 'Desktop bridge unavailable', diagnostics: [] };
     try {
-      const b64 = await invoke('desktop_gdrive_download_file', {
+      const res = await invoke('desktop_gdrive_download_file', {
         fileId: String(fileId),
         token: token ? String(token) : null,
+        fallbackToken: fallbackToken ? String(fallbackToken) : null,
       });
-      if (!b64) return null;
-      const binStr = atob(b64);
+      if (!res?.ok || !res?.base64) {
+        return {
+          ok: false,
+          blob: null,
+          error: res?.error || 'Download failed',
+          diagnostics: Array.isArray(res?.diagnostics) ? res.diagnostics : [],
+        };
+      }
+      const binStr = atob(res.base64);
       const bytes = new Uint8Array(binStr.length);
       for (let i = 0; i < binStr.length; i++) {
         bytes[i] = binStr.charCodeAt(i);
       }
-      return new Blob([bytes], { type: 'application/pdf' });
+      return {
+        ok: true,
+        blob: new Blob([bytes], { type: 'application/pdf' }),
+        error: null,
+        diagnostics: Array.isArray(res?.diagnostics) ? res.diagnostics : [],
+      };
     } catch (e) {
       console.warn('[Desktop GDrive] downloadGDriveFile error:', e);
-      return null;
+      return {
+        ok: false,
+        blob: null,
+        error: String(e?.message || e || 'Unknown error'),
+        diagnostics: [String(e?.message || e)],
+      };
     }
   },
 
