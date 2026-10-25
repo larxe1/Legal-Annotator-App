@@ -334,7 +334,7 @@ export async function dbDelFolder(id) {
 
 // ── PDFs (using Google Drive file ID instead of Supabase storage) ──
 export async function dbRegisterPDF(folder_id, name, drive_file_id, linked_pdf_id = null) {
-  const id = 'pdf_' + Date.now();
+  const id = 'pdf_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
   
   const folder = S.folders.find(f => f.id === folder_id);
   const subject_id = folder ? folder.subject_id : null;

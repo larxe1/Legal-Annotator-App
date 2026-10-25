@@ -5,8 +5,8 @@
 import { S } from './state.js';
 import { toast, openModal, closeModal } from './ui.js';
 import { dbRegisterPDF, dbRenamePDF, dbReorderPDF } from './db.js';
-import { driveUploadPDF, driveResolveFolderPath } from './drive.js';
-import { setCachedPDF } from './pdfcache.js';
+import { driveUploadPDF, driveResolveFolderPath, driveFetchPDF } from './drive.js';
+import { getCachedPDF, setCachedPDF } from './pdfcache.js';
 
 let _targetFolderId = null;
 let _parsedRows = []; // [{ id, num, gr, title, driveFileId, matchedExisting, matchedSharedFile, matchedLocalFile, customName, status }]
@@ -135,6 +135,11 @@ function ensureSyllabusModal() {
       background: rgba(59, 130, 246, 0.16);
       color: #93c5fd;
       border: 1px solid rgba(59, 130, 246, 0.35);
+    }
+    #mo-syllabus .syl-badge.library {
+      background: rgba(6, 182, 212, 0.16);
+      color: #67e8f9;
+      border: 1px solid rgba(6, 182, 212, 0.35);
     }
     #mo-syllabus .syl-badge.shared {
       background: rgba(168, 85, 247, 0.16);
@@ -524,6 +529,7 @@ function handleParsePaste(html, plainText) {
   _parsedRows = rows.map(r => ({
     ...r,
     matchedExisting: null,
+    matchedLibraryPdf: null,
     matchedSharedFile: null,
     matchedLocalFile: null,
     customName: formatRowName(r),
@@ -641,6 +647,11 @@ function matchAllRows() {
   const folderPdfs = _targetFolderId
     ? S.pdfs.filter(p => p.folder_id === _targetFolderId)
     : [];
+  const targetFolder = _targetFolderId ? S.folders.find(f => f.id === _targetFolderId) : null;
+  const targetSubjectId = targetFolder?.subject_id || null;
+
+  // Other PDFs across the database (excluding current target folder)
+  const otherLibraryPdfs = S.pdfs.filter(p => p.folder_id !== _targetFolderId);
 
   const usedExistingIds = new Set();
   const usedSharedIds = new Set();
@@ -648,6 +659,7 @@ function matchAllRows() {
 
   for (const row of _parsedRows) {
     row.matchedExisting = null;
+    row.matchedLibraryPdf = null;
     row.matchedSharedFile = null;
     row.matchedLocalFile = null;
 
@@ -664,7 +676,7 @@ function matchAllRows() {
       }
     }
 
-    // Next check fuzzy score against existing PDFs in folder
+    // Next check fuzzy score against existing PDFs in target folder
     let bestExisting = null;
     let bestExistingScore = 0;
     for (const p of folderPdfs) {
@@ -681,7 +693,48 @@ function matchAllRows() {
       continue;
     }
 
-    // 2. If row doesn't have a direct driveFileId, try matching against Shared Drive Folder files
+    // 2. For unlinked rows, auto-scan existing PDFs in other folders in the database
+    //    (prioritizing folders within the same Subject first, then all folders)
+    if (!row.driveFileId && otherLibraryPdfs.length > 0) {
+      let bestLibPdf = null;
+      let bestLibScore = 0;
+      let bestLibDriveId = null;
+      let bestLibFolder = null;
+
+      for (const p of otherLibraryPdfs) {
+        const baseScore = scoreCandidateMatch(row, p.name);
+        if (baseScore < 35) continue;
+
+        const srcDriveId =
+          p.drive_file_id ||
+          (p.linked_pdf_id ? S.pdfs.find(x => x.id === p.linked_pdf_id)?.drive_file_id : null);
+        if (!srcDriveId) continue;
+
+        const pFolder = S.folders.find(f => f.id === p.folder_id);
+        const sameSubjectBonus =
+          targetSubjectId && pFolder?.subject_id === targetSubjectId ? 25 : 0;
+        const originalBonus = !p.linked_pdf_id ? 5 : 0;
+        const totalScore = baseScore + sameSubjectBonus + originalBonus;
+
+        if (totalScore > bestLibScore) {
+          bestLibScore = totalScore;
+          bestLibPdf = p;
+          bestLibDriveId = srcDriveId;
+          bestLibFolder = pFolder;
+        }
+      }
+
+      if (bestLibPdf && bestLibDriveId) {
+        row.matchedLibraryPdf = {
+          pdf: bestLibPdf,
+          driveFileId: bestLibDriveId,
+          folderName: bestLibFolder?.name || 'Other Folder',
+        };
+        continue;
+      }
+    }
+
+    // 3. If row still doesn't have a match, try matching against Shared Drive Folder files
     if (!row.driveFileId && _sharedFolderFiles.length > 0) {
       let bestShared = null;
       let bestSharedScore = 0;
@@ -741,6 +794,7 @@ function renderPreviewList() {
   }
 
   let existingCount = 0;
+  let libraryCopyCount = 0;
   let driveCount = 0;
   let localCount = 0;
   let missingCount = 0;
@@ -764,6 +818,11 @@ function renderPreviewList() {
       badgeText = '🔗 Drive Link Ready';
       badgeTitle = `Google Drive File ID: ${row.driveFileId}`;
       driveCount++;
+    } else if (row.matchedLibraryPdf) {
+      badgeClass = 'library';
+      badgeText = `📚 Copy from "${row.matchedLibraryPdf.folderName}"`;
+      badgeTitle = `Found "${row.matchedLibraryPdf.pdf.name}" in folder "${row.matchedLibraryPdf.folderName}" — will create an independent copy here`;
+      libraryCopyCount++;
     } else if (row.matchedSharedFile) {
       badgeClass = 'shared';
       badgeText = `📁 Shared Drive (${row.matchedSharedFile.name})`;
@@ -820,9 +879,9 @@ function renderPreviewList() {
     listEl.appendChild(item);
   });
 
-  const actionable = existingCount + driveCount + localCount;
+  const actionable = existingCount + libraryCopyCount + driveCount + localCount;
   if (sumEl) {
-    sumEl.textContent = `${_parsedRows.length} case${_parsedRows.length === 1 ? '' : 's'} in syllabus order • ${driveCount} from Drive • ${existingCount} in folder${localCount ? ` • ${localCount} local` : ''}${missingCount ? ` • ${missingCount} missing link` : ''}`;
+    sumEl.textContent = `${_parsedRows.length} case${_parsedRows.length === 1 ? '' : 's'} in syllabus order • ${driveCount} from Drive${libraryCopyCount ? ` • ${libraryCopyCount} from Library` : ''} • ${existingCount} in folder${localCount ? ` • ${localCount} local` : ''}${missingCount ? ` • ${missingCount} missing link` : ''}`;
   }
   if (runBtn) {
     runBtn.disabled = actionable === 0;
@@ -920,6 +979,71 @@ async function fetchExternalDrivePDF(fileId) {
   );
 }
 
+// ── Create an independent Google Drive copy of an existing library PDF ──
+async function copyLibraryPdfIndependently(sourceDriveId, finalName, targetDriveFolderId) {
+  let newDriveId = null;
+  let blob = await getCachedPDF(sourceDriveId).catch(() => null);
+
+  // 1. Try fast server-side Google Drive files.copy into target folder
+  if (S.driveToken && sourceDriveId && !sourceDriveId.startsWith('local_')) {
+    try {
+      const body = { name: `${finalName}.pdf` };
+      if (targetDriveFolderId) body.parents = [targetDriveFolderId];
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(sourceDriveId)}/copy?supportsAllDrives=true&fields=id,name`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${S.driveToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.id) newDriveId = data.id;
+      }
+    } catch (e) {
+      console.warn('[Syllabus] Server-side Drive copy fallback:', e);
+    }
+  }
+
+  // 2. If server-side copy succeeded and we already had a cached blob, mirror it under the new Drive ID
+  if (newDriveId) {
+    if (!blob) {
+      try {
+        blob = await driveFetchPDF(sourceDriveId, null, finalName);
+      } catch {}
+    }
+    if (blob) {
+      await setCachedPDF(newDriveId, blob, finalName);
+    }
+    return newDriveId;
+  }
+
+  // 3. Fallback: fetch the PDF blob and upload a fresh independent file
+  if (!blob) {
+    try {
+      blob = await driveFetchPDF(sourceDriveId, null, finalName);
+    } catch {
+      blob = await fetchExternalDrivePDF(sourceDriveId);
+    }
+  }
+  if (!blob) {
+    throw new Error(`Could not read existing library PDF (${finalName})`);
+  }
+
+  const fileObj = new File([blob], `${finalName}.pdf`, { type: 'application/pdf' });
+  newDriveId = 'local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  if (S.driveToken) {
+    const uploaded = await driveUploadPDF(fileObj, targetDriveFolderId);
+    if (uploaded?.id) newDriveId = uploaded.id;
+  }
+  await setCachedPDF(newDriveId, blob, finalName);
+  return newDriveId;
+}
+
 // ── Execute Import, Renaming, and Auto-Ordering ──
 async function executeSyllabusImport() {
   if (_isRunning || !_targetFolderId || !_parsedRows.length) return;
@@ -936,12 +1060,12 @@ async function executeSyllabusImport() {
   if (progWrap) progWrap.style.display = 'flex';
 
   const actionableRows = _parsedRows.filter(
-    r => r.matchedExisting || r.driveFileId || r.matchedSharedFile || r.matchedLocalFile
+    r => r.matchedExisting || r.matchedLibraryPdf || r.driveFileId || r.matchedSharedFile || r.matchedLocalFile
   );
 
   let targetDriveFolderId = null;
   const needsUpload = actionableRows.some(
-    r => !r.matchedExisting && (r.driveFileId || r.matchedSharedFile || r.matchedLocalFile)
+    r => !r.matchedExisting && (r.matchedLibraryPdf || r.driveFileId || r.matchedSharedFile || r.matchedLocalFile)
   );
 
   try {
@@ -971,6 +1095,15 @@ async function executeSyllabusImport() {
           }
           orderedPdfRecords.push({ pdf: pdfRec, syllabusNum: parseFloat(row.num) });
           reorderedCount++;
+        } else if (row.matchedLibraryPdf && !row.driveFileId) {
+          const newDriveId = await copyLibraryPdfIndependently(
+            row.matchedLibraryPdf.driveFileId,
+            finalName,
+            targetDriveFolderId
+          );
+          const rec = await dbRegisterPDF(_targetFolderId, finalName, newDriveId, null);
+          orderedPdfRecords.push({ pdf: rec, syllabusNum: parseFloat(row.num) });
+          importedCount++;
         } else {
           let blob = null;
           const extDriveId = row.driveFileId || row.matchedSharedFile?.id || null;

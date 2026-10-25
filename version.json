@@ -1,7 +1,7 @@
 {
-  "version": "1.3.0",
-  "build": 9,
-  "updatedAt": "2026-10-25T15:21:00+08:00",
-  "notes": "Add Syllabus Importer & Auto-Order tool (paste syllabus table rows with Google Drive links or shared Drive folders to automatically download, name, and order cases in any folder)",
+  "version": "1.3.1",
+  "build": 10,
+  "updatedAt": "2026-10-25T15:30:00+08:00",
+  "notes": "Auto-scan existing subject/library folders for unlinked syllabus cases and create independent copies in the target folder",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
