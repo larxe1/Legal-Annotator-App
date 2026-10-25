@@ -15,6 +15,45 @@ const _boxDone  = new Set();
 const _drawDone = new Set();
 const _textDone = new Set();
 
+// Shared offscreen canvas for fast text-width calibration (matches PDF.js TextLayer)
+let _txtMeasureCtx = null;
+function getMeasureCtx() {
+  if (!_txtMeasureCtx) {
+    const c = document.createElement('canvas');
+    _txtMeasureCtx = c.getContext('2d');
+  }
+  return _txtMeasureCtx;
+}
+
+function resolvePdfFontFamily(tcStyles, fontName) {
+  const raw = (tcStyles && fontName && tcStyles[fontName]?.fontFamily) || '';
+  const lower = raw.toLowerCase();
+  if (lower.includes('monospace') || lower.includes('courier')) return 'monospace';
+  if (lower.includes('serif') && !lower.includes('sans')) return 'serif';
+  return 'sans-serif';
+}
+
+function computeSpanScaleX(str, fh, fontFam, targetWidthPx) {
+  if (!str || !str.trim() || !(targetWidthPx > 0) || !(fh > 0)) return 1;
+  const ctx = getMeasureCtx();
+  if (!ctx) return 1;
+  ctx.font = `${fh}px ${fontFam}`;
+  const naturalW = ctx.measureText(str).width;
+  if (!(naturalW > 0)) return 1;
+  const ratio = targetWidthPx / naturalW;
+  if (!Number.isFinite(ratio) || ratio < 0.35 || ratio > 3.5) return 1;
+  return Math.round(ratio * 10000) / 10000;
+}
+
+function buildSpanTransform(angle, scaleX) {
+  const hasAngle = angle && Math.abs(angle) > 1e-4;
+  const hasScale = scaleX && Math.abs(scaleX - 1) > 1e-3;
+  if (hasAngle && hasScale) return `rotate(${angle}rad) scaleX(${scaleX})`;
+  if (hasAngle) return `rotate(${angle}rad)`;
+  if (hasScale) return `scaleX(${scaleX})`;
+  return '';
+}
+
 let _currentFolderDocId = null;
 let _folderDocDebounce = null;
 
@@ -884,7 +923,7 @@ export async function ensurePageRendered(pageNum, container = null) {
 
   try {
     const trueId = _mountedDocId || S.curPDF?.linked_pdf_id || S.curPDF?.id;
-    const scaleKey = String(Math.round(S.scale * 100));
+    const scaleKey = 'v2_' + Math.round(S.scale * 100);
 
     // 1. Check Permanent Disk Page Vault for pre-extracted text & dimensions (skips S.pdfDoc.getPage & getTextContent!)
     let cachedText = null;
@@ -981,7 +1020,8 @@ export async function ensurePageRendered(pageNum, container = null) {
         const span = document.createElement('span');
         span.textContent = sp.s;
         span.style.cssText = `left:${sp.l}px;top:${sp.t}px;font-size:${sp.fs}px;font-family:${sp.ff || 'sans-serif'}`;
-        if (sp.a) span.style.transform = `rotate(${sp.a}rad)`;
+        const tf = buildSpanTransform(sp.a, sp.sx);
+        if (tf) span.style.transform = tf;
         txtFrag.appendChild(span);
       }
       txtLayer.appendChild(txtFrag);
@@ -1002,10 +1042,13 @@ export async function ensurePageRendered(pageNum, container = null) {
         const angle = Math.atan2(tx[1], tx[0]);
         const leftPx = tx[4];
         const topPx = tx[5] - fh * 0.8;
-        const fontFam = item.fontName || 'sans-serif';
+        const fontFam = resolvePdfFontFamily(tc.styles, item.fontName);
+        const targetW = Math.abs(item.width || 0) * S.scale;
+        const scaleX  = computeSpanScaleX(item.str, fh, fontFam, targetW);
         span.textContent = item.str;
         span.style.cssText = `left:${leftPx}px;top:${topPx}px;font-size:${fh}px;font-family:${fontFam}`;
-        if (angle !== 0) span.style.transform = `rotate(${angle}rad)`;
+        const tf = buildSpanTransform(angle, scaleX);
+        if (tf) span.style.transform = tf;
         txtFrag.appendChild(span);
         spansToVault.push({
           s: item.str,
@@ -1014,6 +1057,7 @@ export async function ensurePageRendered(pageNum, container = null) {
           fs: Math.round(fh * 100) / 100,
           ff: fontFam,
           a: angle ? Math.round(angle * 10000) / 10000 : 0,
+          sx: scaleX,
         });
         textItems.push({
           str: item.str,
@@ -1089,7 +1133,7 @@ export async function renderPageInto(pageNum, container, pdfDocObj, paneState) {
   if (existing) existing.rendering = true;
 
   const scale = paneState.scale || S.scale;
-  const scaleKey = String(Math.round(scale * 100));
+  const scaleKey = 'v2_' + Math.round(scale * 100);
   const trueId = paneState.pdfFile?.linked_pdf_id || paneState.pdfFile?.id || null;
 
   try {
@@ -1174,7 +1218,8 @@ export async function renderPageInto(pageNum, container, pdfDocObj, paneState) {
         const span = document.createElement('span');
         span.textContent = sp.s;
         span.style.cssText = `left:${sp.l}px;top:${sp.t}px;font-size:${sp.fs}px;font-family:${sp.ff || 'sans-serif'}`;
-        if (sp.a) span.style.transform = `rotate(${sp.a}rad)`;
+        const tf = buildSpanTransform(sp.a, sp.sx);
+        if (tf) span.style.transform = tf;
         frag.appendChild(span);
       }
       txtLayer.appendChild(frag);
@@ -1195,10 +1240,13 @@ export async function renderPageInto(pageNum, container, pdfDocObj, paneState) {
         const angle = Math.atan2(tx[1], tx[0]);
         const leftPx = tx[4];
         const topPx = tx[5] - fh * 0.8;
-        const fontFam = item.fontName || 'sans-serif';
+        const fontFam = resolvePdfFontFamily(tc.styles, item.fontName);
+        const targetW = Math.abs(item.width || 0) * scale;
+        const scaleX  = computeSpanScaleX(item.str, fh, fontFam, targetW);
         span.textContent = item.str;
         span.style.cssText = `left:${leftPx}px;top:${topPx}px;font-size:${fh}px;font-family:${fontFam}`;
-        if (angle !== 0) span.style.transform = `rotate(${angle}rad)`;
+        const tf = buildSpanTransform(angle, scaleX);
+        if (tf) span.style.transform = tf;
         frag.appendChild(span);
         spansToVault.push({
           s: item.str,
@@ -1207,6 +1255,7 @@ export async function renderPageInto(pageNum, container, pdfDocObj, paneState) {
           fs: Math.round(fh * 100) / 100,
           ff: fontFam,
           a: angle ? Math.round(angle * 10000) / 10000 : 0,
+          sx: scaleX,
         });
         textItems.push({
           str: item.str,
@@ -1304,8 +1353,9 @@ function onTextUp(pageNum) {
     const prev = merged[merged.length - 1];
     
     const over = Math.max(0, Math.min(prev.y+prev.h, curr.y+curr.h) - Math.max(prev.y, curr.y));
+    const maxGap = Math.max(32, Math.min(prev.h, curr.h) * 2.2);
     // Must share >50% vertical height (same line) and be horizontally adjacent
-    if (over > Math.min(prev.h, curr.h) * 0.5 && curr.x >= prev.x - 4 && curr.x <= prev.x + prev.w + 24) {
+    if (over > Math.min(prev.h, curr.h) * 0.5 && curr.x >= prev.x - 4 && curr.x <= prev.x + prev.w + maxGap) {
       const right = Math.max(prev.x + prev.w, curr.x + curr.w);
       const bottom = Math.max(prev.y + prev.h, curr.y + curr.h);
       prev.x = Math.min(prev.x, curr.x);

@@ -433,7 +433,8 @@ function computeRangeHighlight(geo, wr, startCaret, endCaret) {
   for (let i = 1; i < rects.length; i++) {
     const cur = rects[i], prev = merged[merged.length - 1];
     const over = Math.max(0, Math.min(prev.y + prev.h, cur.y + cur.h) - Math.max(prev.y, cur.y));
-    if (over > Math.min(prev.h, cur.h) * 0.5 && cur.x >= prev.x - 4 && cur.x <= prev.x + prev.w + 24) {
+    const maxGap = Math.max(32, Math.min(prev.h, cur.h) * 2.2);
+    if (over > Math.min(prev.h, cur.h) * 0.5 && cur.x >= prev.x - 4 && cur.x <= prev.x + prev.w + maxGap) {
       const right  = Math.max(prev.x + prev.w, cur.x + cur.w);
       const bottom = Math.max(prev.y + prev.h, cur.y + cur.h);
       prev.x = Math.min(prev.x, cur.x);

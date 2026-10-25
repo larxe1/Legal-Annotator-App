@@ -1,7 +1,7 @@
 {
-  "version": "1.2.3",
-  "build": 7,
-  "updatedAt": "2026-10-25T08:52:00+08:00",
-  "notes": "Smart default tab on highlight open (Notes vs Case Summaries), minimalist right highlight panel for laptop screens, case count badge on highlight hover, and larger touchscreen expand target for folders",
+  "version": "1.2.4",
+  "build": 8,
+  "updatedAt": "2026-10-25T14:27:00+08:00",
+  "notes": "Fix PDF text layer and highlight horizontal alignment by calibrating text span widths (scaleX) to match exact PDF text widths, resolving font families, and bridging mid-line text chunk gaps",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
