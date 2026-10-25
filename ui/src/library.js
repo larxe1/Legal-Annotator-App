@@ -20,9 +20,9 @@ import { openPDFFromLibrary, updateActivePDF, openFolderDoc } from './viewer.js'
 import { closeSidebar } from './ui.js';
 import {
   getSubjectBinderColor,
-  getCaseReadStatus,
-  cycleCaseReadStatus,
-  getFolderReadProgress,
+  hasCaseDigest,
+  getFolderDigestProgress,
+  openCaseDigestForPdf,
   renderStudyDesk,
   renderDocTabs,
 } from './goodnotes-ui.js';
@@ -659,10 +659,10 @@ function buildFolderEl(fold) {
   w.draggable  = true;
   const exp  = !!S.expandedFold[fold.id];
   const icons = { codal: '📜', cases: '⚖', laws: '📋', others: '📁', custom: '📂' };
-  const prog = getFolderReadProgress(fold.id);
-  const allRead = prog.total > 0 && prog.read === prog.total;
+  const prog = getFolderDigestProgress(fold.id);
+  const allDigested = prog.total > 0 && prog.digested === prog.total;
   const progBadgeHtml = prog.total > 0
-    ? `<span class="fold-prog-badge ${allRead ? 'done' : ''}" title="${prog.read} of ${prog.total} cases read">${allRead ? '✅ ' : ''}${prog.read}/${prog.total}</span>`
+    ? `<span class="fold-prog-badge ${allDigested ? 'done' : ''}" title="${prog.digested} of ${prog.total} cases have a Case Digest">${allDigested ? '✅ ' : '⚖️ '}${prog.digested}/${prog.total}</span>`
     : '';
 
   w.innerHTML = `
@@ -870,8 +870,8 @@ function buildFolderEl(fold) {
 
 function buildPdfEl(pdf) {
   const el = document.createElement('div');
-  const readSt = getCaseReadStatus(pdf);
-  el.className  = 'li-pdf' + (S.curPDF?.id === pdf.id ? ' active' : '') + (readSt ? ` status-${readSt}` : '');
+  const digested = hasCaseDigest(pdf);
+  el.className  = 'li-pdf' + (S.curPDF?.id === pdf.id ? ' active' : '') + (digested ? ' has-digest' : '');
   el.dataset.id = pdf.id;
   el.draggable  = true;
 
@@ -881,15 +881,13 @@ function buildPdfEl(pdf) {
     || (pdf.folder_id ? safeStorageGet('default_page_f_' + pdf.folder_id + '_' + trueId) : null);
   const defBadgeHtml = defPage ? `<span class="def-page-badge" title="Opens at page ${defPage} by default (Click to change)">p.${defPage}</span>` : '';
 
-  const statusIcon = readSt === 'star' ? '⭐' : readSt === 'read' ? '✅' : '○';
-  const statusTitle = readSt === 'star'
-    ? 'Recit Ready! (Click to clear status)'
-    : readSt === 'read'
-    ? 'Read (Click to mark ⭐ Recit Ready)'
-    : 'Unread (Click to mark ✅ Read)';
+  const statusIcon = digested ? '⚖️' : '📄';
+  const statusTitle = digested
+    ? 'Has Case Digest (Click to open Case Digest)'
+    : 'No Case Digest yet (Click to write Case Digest)';
 
   el.innerHTML = `
-    <button type="button" class="case-status-btn ${readSt}" title="${statusTitle}">${statusIcon}</button>
+    <button type="button" class="case-status-btn ${digested ? 'digested' : ''}" title="${statusTitle}">${statusIcon}</button>
     <span class="li-pdf-name" title="${pdf.name.replace(/"/g, '&quot;')}">
       ${pdf.linked_pdf_id ? '<span style="color:var(--gold);margin-right:4px" title="Shortcut">🔗</span>' : ''}
       ${pdf.name}
@@ -907,8 +905,8 @@ function buildPdfEl(pdf) {
     stBtn.addEventListener('pointerdown', e => e.stopPropagation());
     stBtn.addEventListener('click', e => {
       e.stopPropagation();
-      cycleCaseReadStatus(pdf);
-      renderLibrary();
+      openCaseDigestForPdf(pdf);
+      closeSidebar();
     });
   }
 

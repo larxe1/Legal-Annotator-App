@@ -1,11 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // GOODNOTES SCHOOL NOTEBOOK UI — Warm Paper Theme Switcher, Multi-Case Tabs,
-// Color-Coded Subject Binders, Case Read/Starred Tracker, & Study Desk Home
+// Color-Coded Subject Binders, Case Digest Tracker, & Study Desk Home
 // ═══════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
 import { safeStorageGet, safeStorageSet } from './storage.js';
-import { dbSetSetting } from './db.js';
-import { toast, openModal } from './ui.js';
+import { toast } from './ui.js';
 
 const THEME_KEY = 'app_ui_theme';
 const OPEN_TABS_KEY = 'gn_open_tabs_v1';
@@ -68,7 +67,6 @@ export function cycleAppTheme() {
 export function getSubjectBinderColor(subj, idx = 0) {
   if (!subj) return BINDER_PALETTE[0];
   const raw = (subj.hex_color || '').toLowerCase();
-  // Map based on course keywords if using default gold
   const name = (subj.name || '').toLowerCase();
   if (!raw || raw === '#c9a84c') {
     if (name.includes('crim') || name.includes('124')) return '#DC2626';
@@ -94,43 +92,57 @@ export function getSubjectForPdf(pdf) {
   return S.subjects.find(s => s.id === fold.subject_id) || null;
 }
 
-// ── 3. Case Read / Starred Status Tracker ───────────────────────────────────
-export function getCaseReadStatus(pdf) {
-  if (!pdf) return '';
-  const trueId = pdf.linked_pdf_id || pdf.id;
-  return safeStorageGet('case_read_status_' + trueId) || '';
+// ── 3. Case Digest Tracker (Cloud + Local Sync) ─────────────────────────────
+export function hasMeaningfulDigestHtml(html) {
+  if (!html || typeof html !== 'string') return false;
+  const stripped = html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .trim();
+  return stripped.length > 0 || /<img\b|<table\b/i.test(html);
 }
 
-export function setCaseReadStatus(pdf, status) {
-  if (!pdf) return;
+export function hasCaseDigest(pdf) {
+  if (!pdf) return false;
   const trueId = pdf.linked_pdf_id || pdf.id;
-  if (status) {
-    safeStorageSet('case_read_status_' + trueId, status);
-  } else {
-    safeStorageSet('case_read_status_' + trueId, '');
+  // 1. Check live local storage if present on this device
+  const localD = safeStorageGet('local_digest_' + trueId);
+  if (localD !== null && localD !== undefined) {
+    if (hasMeaningfulDigestHtml(localD)) return true;
   }
-  dbSetSetting('case_status_' + trueId, status || '').catch(() => {});
+  if (trueId !== pdf.id) {
+    const altD = safeStorageGet('local_digest_' + pdf.id);
+    if (altD !== null && altD !== undefined && hasMeaningfulDigestHtml(altD)) {
+      return true;
+    }
+  }
+  // 2. Check cloud-synced digest map loaded from Supabase `pdf_notes`
+  if (S.digestMap && (S.digestMap[trueId] || S.digestMap[pdf.id])) {
+    return true;
+  }
+  return false;
 }
 
-export function cycleCaseReadStatus(pdf) {
-  const cur = getCaseReadStatus(pdf);
-  const next = cur === '' ? 'read' : cur === 'read' ? 'star' : '';
-  setCaseReadStatus(pdf, next);
-  if (next === 'read') toast(`✅ Marked "${pdf.name}" as Read`);
-  else if (next === 'star') toast(`⭐ Marked "${pdf.name}" as Recit Ready`);
-  return next;
-}
-
-export function getFolderReadProgress(folderId) {
+export function getFolderDigestProgress(folderId) {
   const pdfs = S.pdfs.filter(p => p.folder_id === folderId);
-  let readCount = 0;
-  let starCount = 0;
+  let digested = 0;
   for (const p of pdfs) {
-    const st = getCaseReadStatus(p);
-    if (st === 'read' || st === 'star') readCount++;
-    if (st === 'star') starCount++;
+    if (hasCaseDigest(p)) digested++;
   }
-  return { total: pdfs.length, read: readCount, starred: starCount };
+  return { total: pdfs.length, digested };
+}
+
+export async function openCaseDigestForPdf(pdf) {
+  if (!pdf) return;
+  const { openPDFFromLibrary } = await import('./viewer.js');
+  if (!S.curPDF || S.curPDF.id !== pdf.id) {
+    await openPDFFromLibrary(pdf);
+  }
+  const trueId = pdf.linked_pdf_id || pdf.id;
+  const { openNotepad, switchNotepadTab } = await import('./notepad.js');
+  await openNotepad(trueId);
+  switchNotepadTab('digest');
 }
 
 // ── 4. Multi-Case Document Tabs at the Top (#gn-doc-tabs) ───────────────────
@@ -204,13 +216,8 @@ export async function closeDocTab(tabId, e) {
       return;
     } else {
       const { closeActivePDF } = await import('./viewer.js');
-      if (S.curPDF) {
-        await closeActivePDF();
-      } else {
-        document.getElementById('folder-doc-viewer').style.display = 'none';
-        document.getElementById('content-area').style.display = 'flex';
-      }
-      _activeTabId = 'home';
+      await closeActivePDF();
+      return;
     }
   }
   renderDocTabs();
@@ -219,17 +226,8 @@ export async function closeDocTab(tabId, e) {
 
 export async function activateDocTab(tabId) {
   if (tabId === 'home') {
-    const { closeActivePDF, flushFolderDoc } = await import('./viewer.js');
-    await flushFolderDoc();
-    if (S.curPDF) {
-      await closeActivePDF();
-    } else {
-      document.getElementById('folder-doc-viewer').style.display = 'none';
-      document.getElementById('content-area').style.display = 'flex';
-    }
-    _activeTabId = 'home';
-    renderDocTabs();
-    renderStudyDesk();
+    const { closeActivePDF } = await import('./viewer.js');
+    await closeActivePDF();
     return;
   }
 
@@ -292,9 +290,9 @@ export function renderDocTabs() {
         t.name = pdf.name;
         const subj = getSubjectForPdf(pdf);
         if (subj) color = getSubjectBinderColor(subj);
-        const st = getCaseReadStatus(pdf);
-        if (st === 'read') statusBadge = '<span class="gn-tab-status" title="Read">✅</span>';
-        else if (st === 'star') statusBadge = '<span class="gn-tab-status" title="Recit Ready">⭐</span>';
+        if (hasCaseDigest(pdf)) {
+          statusBadge = '<span class="gn-tab-status" title="Has Case Digest">⚖️</span>';
+        }
       }
     } else {
       const fold = S.folders.find(f => f.id === t.id);
@@ -340,7 +338,6 @@ function getRecentPdfsForShelf() {
     const p = S.pdfs.find(x => x.id === id);
     if (p && !found.some(f => f.id === p.id)) found.push(p);
   }
-  // If fewer than 4 recent cases, fill from library so the shelf always looks helpful
   if (found.length < 4 && S.pdfs.length > 0) {
     for (const p of S.pdfs) {
       if (found.length >= 4) break;
@@ -353,7 +350,6 @@ function getRecentPdfsForShelf() {
 export function openSubjectBinderByTitle(rawTitle) {
   if (!rawTitle || !S.subjects.length) return false;
   const q = rawTitle.toLowerCase();
-  // Extract course code like 103, 124, 104, 139, 113, 102 or keywords
   const codeMatch = q.match(/\b(\d{3})\b/);
   const code = codeMatch ? codeMatch[1] : null;
 
@@ -377,7 +373,6 @@ export function openSubjectBinderByTitle(rawTitle) {
     return false;
   }
 
-  // Expand subject binder in library
   S.collapsedSubj[matchedSubj.id] = false;
   import('./library.js').then(m => {
     m.renderLibrary();
@@ -400,14 +395,11 @@ export function renderStudyDesk() {
   const cal = document.getElementById('welcome-calendar');
   if (!cal) return;
 
-  // 1. Calculate Semester Reading Stats
-  let readCount = 0;
-  let starCount = 0;
+  // 1. Calculate Semester Digest Stats (count unique canonical PDFs)
+  let digestedCount = 0;
   const totalCases = S.pdfs.length;
   for (const p of S.pdfs) {
-    const st = getCaseReadStatus(p);
-    if (st === 'read' || st === 'star') readCount++;
-    if (st === 'star') starCount++;
+    if (hasCaseDigest(p)) digestedCount++;
   }
 
   // 2. Ensure Continue Studying Shelf exists above .cal-grid
@@ -423,10 +415,10 @@ export function renderStudyDesk() {
     }
   }
 
-  // Update header subtitle with live reading stats pill
+  // Update header subtitle with live Digest stats pill
   const headerP = cal.querySelector('.cal-header p');
   if (headerP) {
-    headerP.innerHTML = `2ND YEAR, 1ST SEMESTER &nbsp;•&nbsp; <span class="gn-desk-stat">✅ ${readCount} Read</span> &nbsp;•&nbsp; <span class="gn-desk-stat">⭐ ${starCount} Recit Ready</span> &nbsp;•&nbsp; <span class="gn-desk-stat">📚 ${totalCases} Cases</span>`;
+    headerP.innerHTML = `2ND YEAR, 1ST SEMESTER &nbsp;•&nbsp; <span class="gn-desk-stat">⚖️ ${digestedCount} / ${totalCases} Digested</span>`;
   }
 
   const recentPdfs = getRecentPdfsForShelf();
@@ -444,8 +436,9 @@ export function renderStudyDesk() {
       const subj = getSubjectForPdf(pdf);
       const fold = S.folders.find(f => f.id === pdf.folder_id);
       const spineColor = getSubjectBinderColor(subj, i);
-      const st = getCaseReadStatus(pdf);
-      const stLabel = st === 'star' ? '⭐ Recit Ready' : st === 'read' ? '✅ Read' : '📖 Open Case';
+      const digested = hasCaseDigest(pdf);
+      const stClass = digested ? 'read' : '';
+      const stLabel = digested ? '⚖️ Digest Ready' : '📝 No Digest Yet';
 
       const card = document.createElement('div');
       card.className = 'gn-notebook-card';
@@ -456,7 +449,7 @@ export function renderStudyDesk() {
           <div class="gn-nb-meta">${subj ? subj.name : 'Library'}${fold ? ' › ' + fold.name : ''}</div>
           <div class="gn-nb-title" title="${pdf.name.replace(/"/g, '&quot;')}">${pdf.name}</div>
           <div class="gn-nb-footer">
-            <span class="gn-nb-status ${st}">${stLabel}</span>
+            <span class="gn-nb-status ${stClass}">${stLabel}</span>
           </div>
         </div>
       `;
@@ -492,6 +485,9 @@ export function renderStudyDesk() {
 
 // ── 6. Initialize All GoodNotes UI Upgrades ─────────────────────────────────
 export function initGoodNotesUI() {
+  // Capture pristine #welcome HTML before any tab or PDF overwrites #canvas-scroll
+  import('./viewer.js').then(m => m.getWelcomeHTML?.()).catch(() => {});
+
   applyAppTheme(getAppTheme());
   loadSavedTabs();
   renderDocTabs();

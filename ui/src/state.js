@@ -75,6 +75,9 @@ export const S = {
 
   // Annotation counts cache: pdf_id → count
   annCounts: {},
+
+  // Case Digest presence cache: pdf_id → boolean
+  digestMap: {},
   
   // Toolbar links
   links: [],

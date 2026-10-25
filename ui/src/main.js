@@ -85,23 +85,8 @@ async function init() {
   safeInit(initModals, 'Modals');
   safeInit(initGoodNotesUI, 'GoodNotesUI');
   document.getElementById('app-title')?.addEventListener('click', async () => {
-    // If a PDF is currently open, clicking the app title should not dismiss it
-    if (S.curPDF) return;
-
-    // Reset view to Welcome if in folder-doc mode
-    try {
-      const { flushFolderDoc } = await import('./viewer.js');
-      await flushFolderDoc();
-    } catch {}
-    document.getElementById('folder-doc-viewer').style.display = 'none';
-    document.getElementById('content-area').style.display = 'flex';
-    const { closeOtherPanels } = await import('./ui.js');
-    closeOtherPanels();
-
-    try {
-      const { updateActivePDF } = await import('./viewer.js');
-      updateActivePDF();
-    } catch {}
+    const { closeActivePDF } = await import('./viewer.js');
+    await closeActivePDF();
   });
 
   safeInit(initSidebar, 'Sidebar');

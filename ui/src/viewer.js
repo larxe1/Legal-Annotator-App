@@ -87,6 +87,8 @@ export async function flushFolderDoc() {
 }
 
 export async function openFolderDoc(fold) {
+  // Capture #welcome template if still present
+  getWelcomeHTML();
   // 1. Flush any pending notes from previously open folder and active PDF notepad first!
   await flushFolderDoc();
   try {
@@ -372,7 +374,7 @@ export async function scheduleNextPdfPrefetch(pdfFile) {
 }
 
 // ── Close active PDF & return to Welcome / Home ──
-let _welcomeHTML = null;
+let _welcomeHTML = (typeof document !== 'undefined' && document.getElementById('welcome')?.outerHTML) || null;
 export function getWelcomeHTML() {
   if (!_welcomeHTML && typeof document !== 'undefined') {
     const el = document.getElementById('welcome');
@@ -382,15 +384,14 @@ export function getWelcomeHTML() {
 }
 
 export async function closeActivePDF() {
-  if (!S.curPDF) return;
-
   try {
     const { flushNotepadSave, notepadOnPDFChange } = await import('./notepad.js');
     await flushNotepadSave();
-    await notepadOnPDFChange(null);
+    if (S.curPDF) await notepadOnPDFChange(null);
   } catch {}
 
   await flushFolderDoc();
+  _currentFolderDocId = null;
 
   if (S.pdfDoc) {
     try { S.pdfDoc.destroy(); } catch {}
@@ -407,7 +408,7 @@ export async function closeActivePDF() {
   clearSearchHighlights();
 
   const scroll = document.getElementById('canvas-scroll');
-  if (scroll) {
+  if (scroll && !scroll.querySelector('#welcome')) {
     scroll.innerHTML = getWelcomeHTML();
   }
 
@@ -423,6 +424,8 @@ export async function closeActivePDF() {
 
 // ── Open PDF from library ──
 export async function openPDFFromLibrary(pdfFile, retries = 5) {
+  // Capture #welcome template before #canvas-scroll is overwritten
+  getWelcomeHTML();
   try {
     const { flushNotepadSave } = await import('./notepad.js');
     await flushNotepadSave();

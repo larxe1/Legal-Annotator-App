@@ -1,7 +1,7 @@
 {
-  "version": "1.4.0",
-  "build": 13,
-  "updatedAt": "2026-10-25T16:34:00+08:00",
-  "notes": "GoodNotes School Notebook UI Redesign: Warm Paper default theme + 1-click theme switcher, multi-case top document tabs, color-coded subject binders, Read/Recit Ready checkmarks & folder progress badges, and interactive Study Desk with Continue Studying shelf",
+  "version": "1.4.1",
+  "build": 14,
+  "updatedAt": "2026-10-25T16:46:00+08:00",
+  "notes": "Fix Study Desk homepage disappearing when switching back from PDF/Folder tabs, and replace read counter with automatic Case Digest tracker on folders, PDFs, tabs, and Study Desk",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
