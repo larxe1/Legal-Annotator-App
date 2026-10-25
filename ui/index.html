@@ -262,6 +262,7 @@
           <button class="folder-fmt-btn" data-cmd="indent" title="Indent / Increase Indent (Tab)" style="font-size:12px; font-weight:600">⇥ Indent</button>
           <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
           <button class="folder-fmt-btn" data-cmd="insertTable" title="Insert Table">Table</button>
+          <button class="folder-fmt-btn" id="folder-copy-summary-table" title="Copy the 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.45); font-weight:600; font-size:12px;">📋 Copy Summary Table</button>
           <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
           <button class="folder-fmt-btn" id="folder-doc-link-pdf" title="Link a PDF from your library">📄 Link PDF</button>
           <button class="folder-fmt-btn" id="folder-doc-link-url" title="Insert Web Link">🌐 Web Link</button>
@@ -409,6 +410,7 @@
       <button class="np-fmt-btn" data-cmd="indent" title="Indent / Increase Indent (Tab)" style="font-size:11px; font-weight:600">⇥ Indent</button>
       <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
       <button class="np-fmt-btn" data-cmd="insertTable" title="Insert Table">Table</button>
+      <button class="np-fmt-btn" id="np-copy-summary-table" title="Copy the 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.45); font-weight:600; font-size:11px;">📋 Copy Summary Table</button>
       <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
       <button class="np-fmt-btn" id="np-link-pdf" title="Link a PDF from your library">📄 Link PDF</button>
       <button class="np-fmt-btn" id="np-link-url" title="Insert Web Link">🌐 Web Link</button>
@@ -647,6 +649,7 @@
       <button class="fmt-btn" data-cmd2="indent" title="Indent / Increase Indent (Tab)" style="font-size:11px; font-weight:600">⇥</button>
       <div style="width:1px; background:var(--navy-b); margin:0 2px;"></div>
       <button class="fmt-btn" id="btn-edit-table" data-cmd2="insertTable" title="Insert Table">Table</button>
+      <button class="fmt-btn" id="btn-edit-copy-table" title="Copy the 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.45); font-weight:600; font-size:11px;">📋 Copy Summary Table</button>
       <button class="fmt-btn" id="btn-edit-pdflink" title="Link to another PDF">📄 Link PDF</button>
       <button class="fmt-btn" id="btn-edit-weblink" title="Insert Web Link">🌐 Web Link</button>
     </div>
@@ -923,7 +926,7 @@
       <div style="display:flex; gap:6px; align-items:center; margin-left:auto;">
         <input type="text" id="table-lb-search" placeholder="Filter rows..." style="background:var(--navy); border:1px solid var(--navy-b); color:#e8e4db; border-radius:4px; padding:4px 8px; font-size:12px; outline:none; width:160px;">
         <button class="btn-sec" id="btn-table-copy-md" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Copy table in Markdown format">📋 Copy Markdown</button>
-        <button class="btn-sec" id="btn-table-copy-html" style="padding:4px 10px; font-size:12px;" title="Copy table HTML">📋 Copy HTML</button>
+        <button class="btn-sec" id="btn-table-copy-html" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Copy table preserving rich formatting">📋 Copy Formatted Table</button>
         <button class="btn-sec" id="btn-table-export-csv" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download table as CSV spreadsheet">💾 Export CSV</button>
         <div style="width:1px; height:16px; background:var(--navy-b); margin:0 4px;"></div>
         <button class="btn-sec" data-close="mo-table-lightbox" style="padding:4px 12px; font-size:14px; color:var(--gold);">✕</button>
@@ -1204,6 +1207,7 @@
 
 <!-- Table Context Menu -->
 <div id="table-ctx-menu" style="display:none; position:absolute; z-index:9999; background:var(--navy-l); border:1px solid var(--navy-b); border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.6); flex-direction:column; padding:4px; min-width:150px;">
+  <div class="ctx-item" id="ctx-copy-table" style="color:var(--gold); font-weight:600;">📋 Copy Formatted Table</div>
   <div class="ctx-item" id="ctx-expand-table" style="color:var(--gold); font-weight:600;">🔍 Expand Table</div>
   <div class="ctx-item" id="ctx-export-csv">💾 Export CSV</div>
   <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>

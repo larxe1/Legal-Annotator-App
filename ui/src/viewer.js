@@ -6,7 +6,7 @@ import { syncOK, syncSpin, jumpToPage, setIsJumping, isUserScrolling, onScrollId
 import { dbLoadAnnotations, dbLoadDrawings, dbLoadBookmarks, dbGetSetting } from './db.js';
 import { driveFetchPDF } from './drive.js';
 import { renderColorDots } from './colors.js';
-import { showTablePicker, handlePaste, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown } from './tablepicker.js';
+import { showTablePicker, handlePaste, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
 import { safeStorageGet, safeStorageSet } from './storage.js';
 import { notifyTabOpened, notifyTabClosedToHome, renderStudyDesk } from './goodnotes-ui.js';
@@ -200,6 +200,10 @@ export async function openFolderDoc(fold) {
       
       e.stopPropagation();
 
+      if (btn.id === 'folder-copy-summary-table') {
+        copyFirstSummaryTable(ed);
+        return;
+      }
       if (btn.id === 'folder-doc-link-pdf') {
         openPdfLinkModal(ed, () => ed.dispatchEvent(new Event('input')));
         return;

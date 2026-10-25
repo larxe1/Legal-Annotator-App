@@ -1,7 +1,7 @@
 {
-  "version": "1.4.4",
-  "build": 17,
-  "updatedAt": "2026-10-25T20:30:00+08:00",
-  "notes": "Fix Study Desk recent reads & dismiss button (localStorage quota recovery + in-memory sync), purge stale Calalang/Mahinay fallback items, and add top clearance so window bar never overlaps document tabs.",
+  "version": "1.5.0",
+  "build": 18,
+  "updatedAt": "2026-10-25T21:57:00+08:00",
+  "notes": "Add one-click Copy Summary Table button (in toolbars, Case Summary cards, table hover pill, and right-click menu) that automatically copies the 1st summary table preserving full rich formatting while ignoring untabled text below.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

@@ -7,7 +7,7 @@ import {
   dbCreateAnnotation, dbUpdateAnnColor, dbDelAnnotation,
   dbCreateNote, dbUpdateNote, dbDelNote,
 } from './db.js';
-import { handlePaste, showTablePicker, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, applyEditorHighlight } from './tablepicker.js';
+import { handlePaste, showTablePicker, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, applyEditorHighlight, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
 import { safeStorageSet, safeStorageGet } from './storage.js';
 
@@ -15,20 +15,11 @@ import { safeStorageSet, safeStorageGet } from './storage.js';
 export async function createAnnotation(pageNum, rects, text, mode_) {
   if (!S.curPDF) return;
   const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
-  const invRatio = 1.5 / (S.scale || 1.5);
-  const normalizedRects = Math.abs(invRatio - 1) > 0.001
-    ? rects.map(r => ({
-        x: Math.round(r.x * invRatio * 100) / 100,
-        y: Math.round(r.y * invRatio * 100) / 100,
-        w: Math.round(r.w * invRatio * 100) / 100,
-        h: Math.round(r.h * invRatio * 100) / 100,
-      }))
-    : rects;
   const ann = {
     id: 'ann_' + Date.now(),
     pdf_file_id: trueId,
     page: pageNum,
-    rects: normalizedRects,
+    rects,
     highlighted_text: text,
     hex_color: S.activeColor,
     highlight_mode: mode_,
@@ -36,8 +27,8 @@ export async function createAnnotation(pageNum, rects, text, mode_) {
   };
   try {
     autosave('saving');
-    S.annotations.push(ann);
     await dbCreateAnnotation(ann);
+    S.annotations.push(ann);
     // Update badge count
     S.annCounts[trueId] = (S.annCounts[trueId] || 0) + 1;
     updateAnnBadge(trueId);
@@ -102,11 +93,10 @@ export function drawAnnotation(ann) {
   grp.style.opacity = '0.4';
   grp.style.mixBlendMode = 'multiply';
 
-  const ratio = (S.scale || 1.5) / 1.5;
-  for (const r of (ann.rects || [])) {
+  for (const r of ann.rects) {
     const d = document.createElement('div');
     d.className = 'hr';
-    d.style.cssText = `left:${r.x * ratio}px;top:${r.y * ratio}px;width:${r.w * ratio}px;height:${r.h * ratio}px;background:${ann.hex_color};`;
+    d.style.cssText = `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${ann.hex_color};`;
     grp.appendChild(d);
   }
   grp.addEventListener('click', e => { e.stopPropagation(); openAnnPanel(ann); });
@@ -302,11 +292,13 @@ function renderNotes(ann) {
     
     const cardTitle = isCase ? `⚖️ Case Summary ${i + 1}` : `📝 Note ${i + 1}`;
     const cleanBody = getNoteBody(note);
+    const hasTable = /<table[\s>]/i.test(cleanBody);
 
     card.innerHTML = `
       <div class="note-card-header">
         <div class="note-num">${cardTitle}</div>
         <div class="note-actions">
+          ${hasTable ? `<button class="note-act-btn copy-tbl-btn" title="Copy 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.4);">📋 Copy Summary Table</button>` : ''}
           <button class="note-act-btn edit-btn" title="Edit Note">✏ Edit</button>
           <button class="note-act-btn del" title="Delete Note">🗑 Delete</button>
         </div>
@@ -326,6 +318,10 @@ function renderNotes(ann) {
           import('./ui.js').then(m => m.toast('PDF not found or deleted'));
         }
       });
+    });
+
+    card.querySelector('.note-act-btn.copy-tbl-btn')?.addEventListener('click', () => {
+      copyFirstSummaryTable(card.querySelector('.note-body'));
     });
 
     card.querySelector('.note-act-btn.edit-btn').addEventListener('click', () => {
@@ -514,6 +510,8 @@ export function initAnnPanel() {
         outdentLine(ed);
       } else if (cmd === 'indent') {
         indentLine(ed);
+      } else if (b.id === 'btn-edit-copy-table') {
+        copyFirstSummaryTable(ed);
       } else if (b.id === 'btn-edit-pdflink') {
         openPdfLinkModal(ed);
       } else if (b.id === 'btn-edit-weblink') {

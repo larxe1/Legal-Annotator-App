@@ -274,6 +274,9 @@ export function handlePaste(e) {
     }
 
     if (tag === 'span') {
+      if (node.classList?.contains('dim-text')) {
+        return `<span class="dim-text" style="opacity: 0.45; color: #94a3b8; display: inline; transition: opacity .15s;">${inner}</span>`;
+      }
       return inner;
     }
     
@@ -389,6 +392,12 @@ export function initTableContextMenu() {
   });
 
   // Bind actions
+  document.getElementById('ctx-copy-table')?.addEventListener('click', () => {
+    if (activeTableCell) {
+      const table = activeTableCell.closest('table');
+      if (table) copyFormattedTable(table, '📋 Table copied with formatting!');
+    }
+  });
   document.getElementById('ctx-expand-table')?.addEventListener('click', () => {
     if (activeTableCell) {
       const table = activeTableCell.closest('table');
@@ -408,6 +417,154 @@ export function initTableContextMenu() {
   document.getElementById('ctx-del-row')?.addEventListener('click', () => modifyTable('del-row'));
   document.getElementById('ctx-del-col')?.addEventListener('click', () => modifyTable('del-col'));
   document.getElementById('ctx-del-table')?.addEventListener('click', () => modifyTable('del-table'));
+
+  initTableHoverCopyBtn();
+}
+
+let _hoveredTableEl = null;
+let _hoverHideTimer = null;
+
+function initTableHoverCopyBtn() {
+  if (document.getElementById('table-hover-copy-btn')) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'table-hover-copy-btn';
+  btn.type = 'button';
+  btn.style.cssText = [
+    'position:fixed',
+    'z-index:2500',
+    'display:none',
+    'align-items:center',
+    'gap:4px',
+    'background:rgba(12, 19, 34, 0.94)',
+    'border:1px solid var(--gold)',
+    'color:var(--gold)',
+    'border-radius:5px',
+    'padding:3px 9px',
+    'font-size:11px',
+    'font-weight:600',
+    'font-family:Inter,sans-serif',
+    'cursor:pointer',
+    'box-shadow:0 4px 14px rgba(0,0,0,0.55)',
+    'backdrop-filter:blur(4px)',
+    'transition:background 0.15s, transform 0.12s',
+    'white-space:nowrap',
+  ].join(';');
+  btn.textContent = '📋 Copy Summary Table';
+  btn.title = 'Instantly copy this table preserving its formatting';
+
+  btn.addEventListener('mousedown', e => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
+  btn.addEventListener('mouseenter', () => {
+    if (_hoverHideTimer) {
+      clearTimeout(_hoverHideTimer);
+      _hoverHideTimer = null;
+    }
+    btn.style.background = 'rgba(201, 168, 76, 0.22)';
+  });
+
+  btn.addEventListener('mouseleave', () => {
+    btn.style.background = 'rgba(12, 19, 34, 0.94)';
+    _hoverHideTimer = setTimeout(() => {
+      btn.style.display = 'none';
+      _hoveredTableEl = null;
+    }, 180);
+  });
+
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!_hoveredTableEl) return;
+    const isFirst = isFirstTableInContainer(_hoveredTableEl);
+    const ok = await copyFormattedTable(
+      _hoveredTableEl,
+      isFirst ? '📋 Summary table copied with formatting!' : '📋 Table copied with formatting!'
+    );
+    if (ok) {
+      const origText = btn.textContent;
+      btn.textContent = '✓ Copied!';
+      setTimeout(() => {
+        if (btn.textContent === '✓ Copied!') btn.textContent = origText;
+      }, 1200);
+    }
+  });
+
+  document.body.appendChild(btn);
+
+  const TABLE_CONTAINERS = '#np-digest-editor, #np-editor, #folder-doc-editor, .note-body, #note-editor, #edit-note-ed';
+
+  function isFirstTableInContainer(table) {
+    const container = table.closest(TABLE_CONTAINERS);
+    if (!container) return true;
+    return container.querySelector('table') === table;
+  }
+
+  function positionHoverBtn(table) {
+    const container = table.closest(TABLE_CONTAINERS);
+    const tRect = table.getBoundingClientRect();
+    if (tRect.width === 0 || tRect.height === 0) {
+      btn.style.display = 'none';
+      return;
+    }
+    if (container) {
+      const cRect = container.getBoundingClientRect();
+      if (tRect.bottom < cRect.top + 20 || tRect.top > cRect.bottom - 20) {
+        btn.style.display = 'none';
+        return;
+      }
+    }
+    const isFirst = isFirstTableInContainer(table);
+    if (btn.textContent !== '✓ Copied!') {
+      btn.textContent = isFirst ? '📋 Copy Summary Table' : '📋 Copy Table';
+    }
+    btn.style.display = 'inline-flex';
+    const bw = btn.offsetWidth || 138;
+    let top = Math.max(8, tRect.top + 5);
+    if (container) {
+      const cRect = container.getBoundingClientRect();
+      top = Math.max(cRect.top + 4, Math.min(top, cRect.bottom - 28));
+    }
+    const left = Math.max(8, Math.min(window.innerWidth - bw - 10, tRect.right - bw - 6));
+    btn.style.top = `${top}px`;
+    btn.style.left = `${left}px`;
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    if (e.target === btn || btn.contains(e.target)) {
+      if (_hoverHideTimer) {
+        clearTimeout(_hoverHideTimer);
+        _hoverHideTimer = null;
+      }
+      return;
+    }
+    const table = e.target.closest?.('table');
+    if (table && table.closest(TABLE_CONTAINERS) && !table.closest('#table-lb-viewport')) {
+      if (_hoverHideTimer) {
+        clearTimeout(_hoverHideTimer);
+        _hoverHideTimer = null;
+      }
+      _hoveredTableEl = table;
+      positionHoverBtn(table);
+    } else if (_hoveredTableEl) {
+      if (!_hoverHideTimer) {
+        _hoverHideTimer = setTimeout(() => {
+          btn.style.display = 'none';
+          _hoveredTableEl = null;
+          _hoverHideTimer = null;
+        }, 200);
+      }
+    }
+  });
+
+  window.addEventListener('scroll', () => {
+    if (btn.style.display !== 'none') {
+      btn.style.display = 'none';
+      _hoveredTableEl = null;
+    }
+  }, true);
 }
 
 function modifyTable(action) {
@@ -574,24 +731,135 @@ export function copyTableMarkdown(tableEl) {
   });
 }
 
-export function copyTableHTML(tableEl) {
+export async function copyFormattedTable(tableEl, customToastMsg) {
   const target = tableEl || _currentLightboxTable;
   if (!target) {
-    toast('No table selected');
-    return;
+    toast('⚠️ No summary table found to copy');
+    return false;
   }
+
   const cleanTable = target.cloneNode(true);
+  cleanTable.removeAttribute('id');
+  cleanTable.classList.remove('table-expandable');
+
+  // Unwrap any lightbox search highlights
   cleanTable.querySelectorAll('.table-highlight').forEach(h => {
     const parent = h.parentNode;
     parent.replaceChild(document.createTextNode(h.textContent), h);
   });
   cleanTable.querySelectorAll('.table-row-hidden').forEach(r => r.classList.remove('table-row-hidden'));
-  
-  navigator.clipboard.writeText(cleanTable.outerHTML).then(() => {
-    toast('📋 Table HTML copied!');
-  }).catch(() => {
-    toast('❌ Failed to copy to clipboard');
+  cleanTable.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+
+  // Ensure portable table & cell border/padding styles so pasting into Word, Google Docs,
+  // Notion, or Legal Annotator preserves the exact grid and text formatting.
+  cleanTable.setAttribute('border', '1');
+  cleanTable.setAttribute('cellpadding', '6');
+  cleanTable.setAttribute('cellspacing', '0');
+  cleanTable.style.cssText = 'width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:break-word; border:1px solid #475569;';
+
+  cleanTable.querySelectorAll('th, td').forEach(cell => {
+    const isTh = cell.tagName.toLowerCase() === 'th';
+    cell.style.border = '1px solid #475569';
+    cell.style.padding = '6px 10px';
+    cell.style.verticalAlign = 'top';
+    cell.style.wordBreak = 'break-word';
+    cell.style.overflowWrap = 'anywhere';
+    if (isTh) cell.style.fontWeight = 'bold';
   });
+
+  const htmlPayload = cleanTable.outerHTML;
+  const rows = Array.from(cleanTable.querySelectorAll('tr'));
+  const plainText = rows.map(tr => {
+    const cells = Array.from(tr.querySelectorAll('th, td'));
+    return cells.map(c => (c.innerText || c.textContent || '').trim().replace(/\r?\n+/g, ' ')).join('\t');
+  }).join('\n');
+
+  let copied = false;
+
+  // 1. Primary: Rich Clipboard API (text/html + text/plain)
+  if (navigator.clipboard && window.ClipboardItem) {
+    try {
+      const item = new ClipboardItem({
+        'text/html': new Blob([htmlPayload], { type: 'text/html' }),
+        'text/plain': new Blob([plainText], { type: 'text/plain' }),
+      });
+      await navigator.clipboard.write([item]);
+      copied = true;
+    } catch (err) {
+      console.warn('ClipboardItem write fallback:', err);
+    }
+  }
+
+  // 2. Fallback: Offscreen contenteditable selection + execCommand('copy')
+  if (!copied) {
+    try {
+      const sel = window.getSelection();
+      const savedRanges = [];
+      if (sel) {
+        for (let i = 0; i < sel.rangeCount; i++) {
+          savedRanges.push(sel.getRangeAt(i).cloneRange());
+        }
+      }
+      const holder = document.createElement('div');
+      holder.contentEditable = 'true';
+      holder.style.cssText = 'position:fixed; left:-9999px; top:0; opacity:0; pointer-events:none;';
+      holder.innerHTML = htmlPayload;
+      document.body.appendChild(holder);
+
+      const range = document.createRange();
+      range.selectNodeContents(holder);
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      copied = document.execCommand('copy');
+      document.body.removeChild(holder);
+
+      if (sel) {
+        sel.removeAllRanges();
+        savedRanges.forEach(r => sel.addRange(r));
+      }
+    } catch (err) {
+      console.warn('execCommand table copy fallback failed:', err);
+    }
+  }
+
+  // 3. Final fallback: plain text
+  if (!copied && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(plainText);
+      copied = true;
+    } catch {}
+  }
+
+  if (copied) {
+    // Visual confirmation flash on the source table
+    const prevOutline = target.style.outline;
+    const prevShadow = target.style.boxShadow;
+    target.style.outline = '2px solid var(--gold)';
+    target.style.boxShadow = '0 0 18px rgba(201, 168, 76, 0.45)';
+    setTimeout(() => {
+      target.style.outline = prevOutline;
+      target.style.boxShadow = prevShadow;
+    }, 650);
+
+    toast(customToastMsg || '📋 Summary table copied with formatting!');
+    return true;
+  } else {
+    toast('❌ Failed to copy table to clipboard');
+    return false;
+  }
+}
+
+export async function copyFirstSummaryTable(containerEl, fallbackContainerEl = null) {
+  const firstTable = containerEl?.querySelector?.('table') || fallbackContainerEl?.querySelector?.('table');
+  if (!firstTable) {
+    toast('⚠️ No summary table found in this section');
+    return false;
+  }
+  return copyFormattedTable(firstTable, '📋 Summary table copied with formatting!');
+}
+
+export function copyTableHTML(tableEl) {
+  return copyFormattedTable(tableEl, '📋 Table copied with formatting!');
 }
 
 function filterTableLightbox(query) {

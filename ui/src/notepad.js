@@ -15,7 +15,7 @@ import {
   dbLoadBookmarks,
 } from './db.js';
 import { replayOutbox } from './outbox.js';
-import { showTablePicker, handlePaste, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown } from './tablepicker.js';
+import { showTablePicker, handlePaste, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
 import { closeOtherPanels, toast } from './ui.js';
 import { safeStorageSet, safeStorageGet } from './storage.js';
@@ -73,10 +73,6 @@ function $saveLbl()      { return document.getElementById('np-save-lbl'); }
 // ── Snapshot backup helper to protect against any data loss ──
 async function saveHistorySnapshot(pdfId, content, digest) {
   if (!pdfId || (!content && !digest)) return;
-  const nowTs = Date.now();
-  // Always persist to Native SQLite Mirror on D: drive first (immune to browser quota)
-  window.__DESKTOP_SQLITE__?.saveNotepadHistory?.(pdfId, nowTs, content || '', digest || '');
-  window.__DESKTOP_SQLITE__?.upsertPdfNote?.(pdfId, content || '', digest || '');
   try {
     const histKey = 'notepad_history_' + pdfId;
     let history = await getNotepadHistoryIDB(pdfId);
@@ -86,7 +82,7 @@ async function saveHistorySnapshot(pdfId, content, digest) {
     const latest = history[history.length - 1];
     if (!latest || latest.content !== content || latest.digest !== digest) {
       history.push({
-        t: nowTs,
+        t: Date.now(),
         content: content || '',
         digest: digest || ''
       });
@@ -1038,13 +1034,7 @@ export async function openHistoryPanel(initialTab = 'snapshots') {
     }
 
     try {
-      let hist = [];
-      if (window.__DESKTOP_SQLITE__?.loadNotepadHistory) {
-        hist = await window.__DESKTOP_SQLITE__.loadNotepadHistory(pdfId);
-      }
-      if (!Array.isArray(hist) || hist.length === 0) {
-        hist = await getNotepadHistoryIDB(pdfId);
-      }
+      let hist = await getNotepadHistoryIDB(pdfId);
       if (!Array.isArray(hist) || hist.length === 0) {
         hist = JSON.parse(safeStorageGet('notepad_history_' + pdfId, '[]') || '[]');
       }
@@ -1055,7 +1045,7 @@ export async function openHistoryPanel(initialTab = 'snapshots') {
           content: snap.content || '',
           digest:  snap.digest  || '',
           badge:   i === hist.length - 1 ? 'current' : 'local',
-          label:   i === hist.length - 1 ? '📍 Latest local snapshot (SQLite Mirror)' : '📂 Local snapshot (SQLite Mirror)'
+          label:   i === hist.length - 1 ? '📍 Latest local snapshot' : '📂 Local snapshot'
         });
       }
     } catch {}
@@ -1493,27 +1483,10 @@ async function _getBestLocalNotepadData(trueId, aliasId = null) {
   if (!localC) localC = cached?.content || storedC || '';
   if (!localD) localD = cached?.digest  || storedD || '';
 
-  // Check Native SQLite Mirror on D: drive if localStorage was empty
-  if ((!localC || !localD) && window.__DESKTOP_SQLITE__?.loadPdfNote) {
-    try {
-      const sq = await window.__DESKTOP_SQLITE__.loadPdfNote(trueId) || (aliasId ? await window.__DESKTOP_SQLITE__.loadPdfNote(aliasId) : null);
-      if (sq) {
-        if (!localC && sq.content) localC = sq.content;
-        if (!localD && sq.digest)  localD = sq.digest;
-      }
-    } catch {}
-  }
-
-  // If local storage was cleared or quota-blocked, check SQLite & IndexedDB snapshot history
+  // If local storage was cleared or quota-blocked, check IndexedDB snapshot history
   if (!localC && !localD) {
     try {
-      let hist = [];
-      if (window.__DESKTOP_SQLITE__?.loadNotepadHistory) {
-        hist = await window.__DESKTOP_SQLITE__.loadNotepadHistory(trueId);
-      }
-      if (!Array.isArray(hist) || hist.length === 0) {
-        hist = await getNotepadHistoryIDB(trueId);
-      }
+      let hist = await getNotepadHistoryIDB(trueId);
       if ((!Array.isArray(hist) || hist.length === 0) && aliasId) {
         hist = await getNotepadHistoryIDB(aliasId);
       }
@@ -2166,6 +2139,11 @@ export function initNotepad() {
       e.stopPropagation();
       const activeEd = $currentEditor();
 
+      if (btn.id === 'np-copy-summary-table') {
+        const fallbackEd = activeEd === $digestEditor() ? $notesEditor() : $digestEditor();
+        copyFirstSummaryTable(activeEd, fallbackEd);
+        return;
+      }
       if (btn.id === 'np-link-pdf') {
         openPdfLinkModal(activeEd, () => {
           activeEd?.dispatchEvent(new Event('input'));
@@ -2217,7 +2195,6 @@ export function initNotepad() {
           setWriteTs(_activePdfId);
           safeStorageSet('local_notepad_' + _activePdfId, content);
           safeStorageSet('local_digest_' + _activePdfId, digest);
-          window.__DESKTOP_SQLITE__?.upsertPdfNote?.(_activePdfId, content, digest);
           scheduleSaveForPdf(_activePdfId);
         }
       }
@@ -2235,7 +2212,6 @@ export function initNotepad() {
         setWriteTs(_activePdfId); // record that this device has local unsaved changes
         safeStorageSet('local_notepad_' + _activePdfId, content);
         safeStorageSet('local_digest_' + _activePdfId, digest);
-        window.__DESKTOP_SQLITE__?.upsertPdfNote?.(_activePdfId, content, digest);
         updateLocalSaveLabel('saved');
         scheduleSaveForPdf(_activePdfId);
       }
