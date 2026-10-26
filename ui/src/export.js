@@ -77,6 +77,57 @@ async function fetchPdfNotesAndDigest(pdf) {
   return { content, digest };
 }
 
+// Extract only the 1st summary <table> from an HTML string (ignoring untabled Facts/text below)
+function extractFirstTableFromHtml(html) {
+  if (!html || !/<table\b/i.test(html)) return '';
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const firstTable = doc.querySelector('table');
+    if (!firstTable) return '';
+    firstTable.removeAttribute('id');
+    firstTable.classList.remove('table-expandable');
+    firstTable.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+    return firstTable.outerHTML;
+  } catch {
+    const m = html.match(/<table\b[\s\S]*?<\/table>/i);
+    return m ? m[0] : '';
+  }
+}
+
+// Extract all <table> elements from an HTML string (fallback for folder-level summary tables)
+function extractAllTablesFromHtml(html) {
+  if (!html || !/<table\b/i.test(html)) return '';
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const tables = Array.from(doc.querySelectorAll('table'));
+    if (!tables.length) return '';
+    return tables.map(t => {
+      t.removeAttribute('id');
+      t.classList.remove('table-expandable');
+      t.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+      return t.outerHTML;
+    }).join('<div style="height:6pt;"></div>');
+  } catch {
+    return '';
+  }
+}
+
+// Fallback: check if the PDF has a summary table inside its Annotation Case Summary cards
+function fetchFirstAnnotationTable(pdf) {
+  const trueId = pdf.linked_pdf_id || pdf.id;
+  try {
+    const raw = safeStorageGet('local_anns_' + trueId, '');
+    const anns = raw ? JSON.parse(raw) : (S.annotations || []).filter(a => a.pdf_file_id === trueId);
+    for (const ann of (anns || [])) {
+      for (const n of (ann.notes || [])) {
+        const tbl = extractFirstTableFromHtml(n.note_html || '');
+        if (tbl) return tbl;
+      }
+    }
+  } catch {}
+  return '';
+}
+
 function getFolderPathString(folder) {
   const parts = [];
   let currFolder = folder;
@@ -99,11 +150,12 @@ function getFolderPathString(folder) {
   return parts.join(' > ');
 }
 
-// Build HTML tree for folder export. Only registers cases that actually have notes/digest.
-async function buildFolderHTML(folderId, depth = 1, caseRegistry = []) {
+// Build HTML tree for folder export. Only registers cases that actually have notes/digest (or a summary table in tablesOnly mode).
+async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}) {
   const folder = S.folders.find(f => f.id === folderId);
   if (!folder) return '';
 
+  const tablesOnly = Boolean(opts.tablesOnly);
   const startCaseIdx = caseRegistry.length;
 
   let casesHtml = '';
@@ -117,6 +169,34 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = []) {
 
   for (const pdf of pdfs) {
     const { content, digest } = await fetchPdfNotesAndDigest(pdf);
+
+    if (tablesOnly) {
+      // Extract ONLY the 1st summary table (check Case Digest first, then Notes, then Annotation Case Summaries)
+      const firstTable =
+        extractFirstTableFromHtml(digest) ||
+        extractFirstTableFromHtml(content) ||
+        fetchFirstAnnotationTable(pdf);
+
+      if (firstTable && hasMeaningfulContent(firstTable)) {
+        hasAnyContent = true;
+        const pdfName = (stripEmojis(pdf.name) || 'Case Document').replace(/\.pdf$/i, '').trim() || 'Case Document';
+        const pageId = `cp${caseRegistry.length}`;
+        caseRegistry.push({ pageId, pdfName, folderPath: getFolderPathString(folder) });
+
+        casesHtml += `
+          <div class="case-section" style="page: ${pageId}; margin: 8pt 0; padding: 8pt 10pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
+            <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 5pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
+              ${pdfName}
+            </div>
+            <div class="case-digest-body" style="color: #1e293b; line-height: 1.25;">
+              ${cleanAndSanitizeHtml(firstTable)}
+            </div>
+          </div>
+        `;
+      }
+      continue;
+    }
+
     const hasDigest = hasMeaningfulContent(digest);
     const hasContent = hasMeaningfulContent(content);
 
@@ -167,7 +247,7 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = []) {
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
   for (const sf of subfolders) {
-    const subHtml = await buildFolderHTML(sf.id, depth + 1, caseRegistry);
+    const subHtml = await buildFolderHTML(sf.id, depth + 1, caseRegistry, opts);
     if (subHtml) {
       subfoldersHtml += subHtml;
       hasAnyContent = true;
@@ -186,7 +266,7 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = []) {
       folderNotes = (await window.__DESKTOP_SQLITE__.loadFolderNote(folder.id)) || '';
     } catch {}
   }
-  if (hasMeaningfulContent(folderNotes)) {
+  if (!tablesOnly && hasMeaningfulContent(folderNotes)) {
     hasAnyContent = true;
     folderNotesHtml += `
       <div class="folder-notes-section" style="${firstPageStyle} margin-bottom: 10pt; padding: 6pt 10pt; background: #f8fafc; border: 0.75pt solid #e2e8f0; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
@@ -194,6 +274,17 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = []) {
         <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderNotes)}</div>
       </div>
     `;
+  } else if (tablesOnly && !casesHtml && hasMeaningfulContent(folderNotes)) {
+    // Fallback if a folder has summary tables stored inside Folder Notes rather than per-PDF digests
+    const folderTables = extractAllTablesFromHtml(folderNotes);
+    if (folderTables && hasMeaningfulContent(folderTables)) {
+      hasAnyContent = true;
+      folderNotesHtml += `
+        <div class="folder-notes-section" style="${firstPageStyle} margin-bottom: 10pt; padding: 6pt 10pt; background: #ffffff; border: 0.75pt solid #cbd5e1; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
+          <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderTables)}</div>
+        </div>
+      `;
+    }
   }
 
   if (!hasAnyContent) return '';
@@ -224,6 +315,7 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = []) {
 export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
   const folders = Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder];
   const orientation = opts.orientation === 'landscape' ? 'landscape' : 'portrait';
+  const tablesOnly = Boolean(opts.tablesOnly);
   // 1. Flush any pending active editor notes from memory to state
   try {
     const { flushFolderDoc } = await import('./viewer.js');
@@ -234,13 +326,13 @@ export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
     await flushNotepadSave();
   } catch {}
 
-  toast('Gathering notes for export...');
+  toast(tablesOnly ? 'Gathering summary tables for export...' : 'Gathering notes for export...');
 
   const caseRegistry = [];
   const htmlParts = [];
   for (const f of folders) {
     const depth = folders.length > 1 ? 2 : 1;
-    const fHtml = await buildFolderHTML(f.id, depth, caseRegistry);
+    const fHtml = await buildFolderHTML(f.id, depth, caseRegistry, { tablesOnly });
     if (fHtml && hasMeaningfulContent(fHtml)) {
       htmlParts.push(fHtml);
     }
@@ -248,16 +340,19 @@ export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
   const htmlContent = htmlParts.join('\n');
 
   if (!htmlContent || !hasMeaningfulContent(htmlContent)) {
-    toast('No notes or digests found in the selected folder(s).');
+    toast(tablesOnly
+      ? 'No summary tables found in the selected folder(s).'
+      : 'No notes or digests found in the selected folder(s).');
     return;
   }
 
-  toast('Preparing PDF export document...');
+  toast(tablesOnly ? 'Preparing Summary Tables PDF...' : 'Preparing PDF export document...');
 
   const titleParts = folders.map(f => stripEmojis(f.name) || 'Folder');
+  const titleSuffix = tablesOnly ? 'Summary Tables Only' : 'Notes & Case Digests';
   const pageTitle = folders.length > 1
-    ? `${titleParts.join(', ')} — Notes & Case Digests`
-    : `${titleParts[0]} — Notes & Case Digests`;
+    ? `${titleParts.join(', ')} — ${titleSuffix}`
+    : `${titleParts[0]} — ${titleSuffix}`;
   const folderPath = folders.length > 1
     ? `${folders.length} Folders: ${titleParts.join(' &bull; ')}`
     : getFolderPathString(folders[0]);

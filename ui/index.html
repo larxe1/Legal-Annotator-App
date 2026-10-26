@@ -1232,6 +1232,7 @@
   <div class="ctx-item" id="lib-ctx-download">⬇ Download to PC</div>
   <div class="ctx-item" id="lib-ctx-syllabus" style="display:none">📋 Import / Order from Syllabus…</div>
   <div class="ctx-item" id="lib-ctx-export-pdf" style="display:none">📥 Export Notes to PDF</div>
+  <div class="ctx-item" id="lib-ctx-export-tables-pdf" style="display:none; color:var(--gold); font-weight:600;">📊 Export Summary Tables Only</div>
   <div class="ctx-item" id="lib-ctx-force-sync" style="color:var(--gold); font-weight:600;">☁️ Force Sync to Cloud</div>
   <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>
   <div class="ctx-item" id="lib-ctx-gdrive">☁ Open in Google Drive</div>
@@ -1283,10 +1284,27 @@
 
 <!-- Export PDF Options Modal -->
 <div id="export-opts-modal" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">
-  <div style="background:#1a2135;border:1px solid #2e3f5c;border-radius:10px;padding:24px 28px;min-width:280px;max-width:360px;box-shadow:0 12px 40px rgba(0,0,0,0.6);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8e4db;">
+  <div style="background:#1a2135;border:1px solid #2e3f5c;border-radius:10px;padding:24px 28px;min-width:300px;max-width:380px;box-shadow:0 12px 40px rgba(0,0,0,0.6);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8e4db;">
     <div id="export-opts-title" style="font-size:15px;font-weight:700;margin-bottom:6px;">📄 Export Notes to PDF</div>
-    <div id="export-opts-desc" style="font-size:11px;color:#94a3b8;margin-bottom:18px;">Choose page orientation before exporting.</div>
+    <div id="export-opts-desc" style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Choose what to include and page orientation before exporting.</div>
 
+    <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;margin-bottom:6px;">Content to Export / Print</div>
+    <div style="display:flex;gap:10px;margin-bottom:16px;">
+      <label id="export-opt-mode-all-lbl" style="flex:1;border:2px solid #2e6bd6;border-radius:8px;padding:10px 8px;cursor:pointer;text-align:center;background:rgba(46,107,214,0.12);transition:all .15s;">
+        <input type="radio" name="export-content-mode" id="export-opt-mode-all" value="all" checked style="display:none">
+        <div style="font-size:18px;margin-bottom:3px;">📝</div>
+        <div style="font-size:11.5px;font-weight:700;">Full Notes &amp; Digests</div>
+        <div style="font-size:9.5px;color:#94a3b8;margin-top:2px;">Tables, facts &amp; notes</div>
+      </label>
+      <label id="export-opt-mode-tables-lbl" style="flex:1;border:2px solid #2e3f5c;border-radius:8px;padding:10px 8px;cursor:pointer;text-align:center;background:transparent;transition:all .15s;">
+        <input type="radio" name="export-content-mode" id="export-opt-mode-tables" value="tables-only" style="display:none">
+        <div style="font-size:18px;margin-bottom:3px;">📊</div>
+        <div style="font-size:11.5px;font-weight:700;">Summary Tables Only</div>
+        <div style="font-size:9.5px;color:#94a3b8;margin-top:2px;">1st summary table per case</div>
+      </label>
+    </div>
+
+    <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;margin-bottom:6px;">Page Orientation</div>
     <div style="display:flex;gap:12px;margin-bottom:20px;">
       <label id="export-opt-portrait-lbl" style="flex:1;border:2px solid #2e6bd6;border-radius:8px;padding:12px 10px;cursor:pointer;text-align:center;background:rgba(46,107,214,0.12);transition:all .15s;">
         <input type="radio" name="export-orientation" id="export-opt-portrait" value="portrait" checked style="display:none">
@@ -1304,7 +1322,7 @@
 
     <div style="display:flex;gap:10px;">
       <button id="export-opts-cancel" style="flex:1;padding:8px;border:1px solid #2e3f5c;background:transparent;color:#94a3b8;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
-      <button id="export-opts-go" style="flex:2;padding:8px;border:none;background:#2e6bd6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">Export PDF →</button>
+      <button id="export-opts-go" style="flex:2;padding:8px;border:none;background:#2e6bd6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">Export / Print PDF →</button>
     </div>
   </div>
 </div>

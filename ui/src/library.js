@@ -39,6 +39,7 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   _ctxIsFolder = isFolder;
 
   const exportBtn = document.getElementById('lib-ctx-export-pdf');
+  const exportTablesBtn = document.getElementById('lib-ctx-export-tables-pdf');
   const forceSyncBtn = document.getElementById('lib-ctx-force-sync');
   let isMultiFolder = false;
 
@@ -51,13 +52,16 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
       target = selectedFolders; // Retains exact insertion/selection order
       isMultiFolder = true;
       if (exportBtn) exportBtn.textContent = `📥 Export ${selectedFolders.length} Folders to PDF`;
+      if (exportTablesBtn) exportTablesBtn.textContent = `📊 Export ${selectedFolders.length} Folders (Tables Only)`;
       if (forceSyncBtn) forceSyncBtn.textContent = `☁️ Force Sync ${selectedFolders.length} Folders & PDFs`;
     } else {
       if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
+      if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
       if (forceSyncBtn) forceSyncBtn.textContent = '☁️ Force Sync Folder & PDFs';
     }
   } else {
     if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
+    if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
     if (forceSyncBtn) {
       forceSyncBtn.textContent = isFolder
         ? '☁️ Force Sync Folder & PDFs'
@@ -81,6 +85,7 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   const sylBtn = document.getElementById('lib-ctx-syllabus');
   if (sylBtn) sylBtn.style.display = (isFolder && !isMultiFolder) ? 'block' : 'none';
   document.getElementById('lib-ctx-export-pdf').style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
+  if (exportTablesBtn) exportTablesBtn.style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
   if (forceSyncBtn) forceSyncBtn.style.display = 'block';
 
   // Position off-screen first so we can measure actual rendered dimensions
@@ -109,28 +114,65 @@ function hideLibCtxMenu() {
   _ctxTarget = null;
 }
 
-// ── Export options modal: lets user pick portrait / landscape before exporting ──
-function showExportOptsModal(foldersOrFolder) {
+// ── Export options modal: lets user pick content mode & portrait / landscape before exporting ──
+function showExportOptsModal(foldersOrFolder, defaultMode = 'all') {
   const folders = Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder];
   const modal = document.getElementById('export-opts-modal');
   if (!modal) {
     // Fallback: export directly without modal
-    import('./export.js').then(m => m.exportFolderToPDF(folders));
+    import('./export.js').then(m => m.exportFolderToPDF(folders, { tablesOnly: defaultMode === 'tables-only' }));
     return;
   }
 
   const titleEl = document.getElementById('export-opts-title');
   const descEl  = document.getElementById('export-opts-desc');
-  if (titleEl) {
-    titleEl.textContent = folders.length > 1
-      ? `📄 Export ${folders.length} Folders to PDF`
-      : `📄 Export Notes to PDF`;
+
+  function updateModalHeader(mode) {
+    const isTables = mode === 'tables-only';
+    if (titleEl) {
+      if (folders.length > 1) {
+        titleEl.textContent = isTables
+          ? `📊 Export ${folders.length} Folders (Tables Only)`
+          : `📄 Export ${folders.length} Folders to PDF`;
+      } else {
+        titleEl.textContent = isTables
+          ? `📊 Export Summary Tables Only`
+          : `📄 Export Notes to PDF`;
+      }
+    }
+    if (descEl) {
+      descEl.textContent = folders.length > 1
+        ? `Export order: ${folders.map((f, i) => `${i + 1}. ${f.name || 'Folder'}`).join(' → ')}`
+        : (isTables
+            ? 'Exports only the 1st summary table of each case (skips facts & notes).'
+            : 'Choose what to include and page orientation before exporting.');
+    }
   }
-  if (descEl) {
-    descEl.textContent = folders.length > 1
-      ? `Export order: ${folders.map((f, i) => `${i + 1}. ${f.name || 'Folder'}`).join(' → ')}`
-      : `Choose page orientation before exporting.`;
+
+  // Content Mode Radios
+  const modeAllRadio    = document.getElementById('export-opt-mode-all');
+  const modeTablesRadio = document.getElementById('export-opt-mode-tables');
+  const modeAllLbl      = document.getElementById('export-opt-mode-all-lbl');
+  const modeTablesLbl   = document.getElementById('export-opt-mode-tables-lbl');
+
+  function selectContentMode(val) {
+    const isTables = val === 'tables-only';
+    if (modeAllRadio)    modeAllRadio.checked    = !isTables;
+    if (modeTablesRadio) modeTablesRadio.checked = isTables;
+    if (modeAllLbl) {
+      modeAllLbl.style.border     = !isTables ? '2px solid #2e6bd6' : '2px solid #2e3f5c';
+      modeAllLbl.style.background = !isTables ? 'rgba(46,107,214,0.12)' : 'transparent';
+    }
+    if (modeTablesLbl) {
+      modeTablesLbl.style.border     = isTables ? '2px solid #c9a84c' : '2px solid #2e3f5c';
+      modeTablesLbl.style.background = isTables ? 'rgba(201,168,76,0.15)' : 'transparent';
+    }
+    updateModalHeader(val);
   }
+
+  selectContentMode(defaultMode);
+  if (modeAllLbl)    modeAllLbl.onclick    = () => selectContentMode('all');
+  if (modeTablesLbl) modeTablesLbl.onclick = () => selectContentMode('tables-only');
 
   // Reset to portrait selection each time
   const portraitRadio   = document.getElementById('export-opt-portrait');
@@ -168,9 +210,10 @@ function showExportOptsModal(foldersOrFolder) {
   if (goBtn) {
     goBtn.onclick = async () => {
       const orientation = landscapeRadio?.checked ? 'landscape' : 'portrait';
+      const tablesOnly  = Boolean(modeTablesRadio?.checked);
       cleanup();
       const { exportFolderToPDF } = await import('./export.js');
-      await exportFolderToPDF(folders, { orientation });
+      await exportFolderToPDF(folders, { orientation, tablesOnly });
     };
   }
 
@@ -311,7 +354,15 @@ export function initContextMenu() {
     if (!_ctxTarget || !_ctxIsFolder) return;
     const folder = _ctxTarget;
     hideLibCtxMenu();
-    showExportOptsModal(folder);
+    showExportOptsModal(folder, 'all');
+  });
+
+  // "Export Summary Tables Only"
+  document.getElementById('lib-ctx-export-tables-pdf')?.addEventListener('click', () => {
+    if (!_ctxTarget || !_ctxIsFolder) return;
+    const folder = _ctxTarget;
+    hideLibCtxMenu();
+    showExportOptsModal(folder, 'tables-only');
   });
 
   // "Force Sync to Cloud" (Folder + all child PDFs/Notes/Digests, or Single PDF)
