@@ -1991,11 +1991,110 @@ async fn desktop_sqlite_load_outbox(state: tauri::State<'_, AppState>) -> Result
 }
 
 const EMBEDDED_VERSION_JSON: &str = include_str!("../../version.json");
+const UPDATE_REPO: &str = "larxe1/Legal-Annotator-App";
+const UPDATE_BRANCH: &str = "main";
+const UPDATE_USER_AGENT: &str = "LegalAnnotatorDesktop-Updater";
+
+/// Runs Windows' built-in curl.exe silently (CREATE_NO_WINDOW — never shows a console).
+fn run_curl(args: &[&str]) -> Result<std::process::Output, String> {
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let curl = if cfg!(target_os = "windows") {
+        let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let p = PathBuf::from(sys_root).join("System32").join("curl.exe");
+        if p.exists() {
+            p
+        } else {
+            PathBuf::from("curl.exe")
+        }
+    } else {
+        PathBuf::from("curl")
+    };
+    let mut cmd = std::process::Command::new(&curl);
+    cmd.args(["-A", UPDATE_USER_AGENT]);
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.output()
+        .map_err(|e| format!("could not start the downloader (curl.exe): {e}"))
+}
+
+fn curl_err(output: &std::process::Output) -> String {
+    let s = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if s.is_empty() {
+        format!("downloader exit code {:?}", output.status.code())
+    } else {
+        s
+    }
+}
+
+fn parse_version_json(s: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(s.trim_start_matches('\u{feff}')).ok()
+}
+
+/// SHA of the newest commit on the release branch. Downloading files pinned to this
+/// exact commit means GitHub's CDN can never hand us a stale (older) copy.
+fn latest_release_sha() -> Option<String> {
+    let url = format!("https://api.github.com/repos/{UPDATE_REPO}/commits/{UPDATE_BRANCH}");
+    let out = run_curl(&[
+        "-fsSL",
+        "--max-time",
+        "10",
+        "-H",
+        "Accept: application/vnd.github.sha",
+        &url,
+    ])
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(sha)
+    } else {
+        None
+    }
+}
+
+/// All numbers N found as `"build": N` inside a binary (the exe embeds its version.json).
+fn embedded_build_numbers(bytes: &[u8]) -> Vec<u64> {
+    let needle: &[u8] = b"\"build\"";
+    let is_ws = |b: u8| b == b' ' || b == b'\t' || b == b'\r' || b == b'\n';
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + needle.len() < bytes.len() {
+        if bytes[i] != b'"' || &bytes[i..i + needle.len()] != needle {
+            i += 1;
+            continue;
+        }
+        let mut j = i + needle.len();
+        while j < bytes.len() && is_ws(bytes[j]) {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b':' {
+            j += 1;
+            while j < bytes.len() && is_ws(bytes[j]) {
+                j += 1;
+            }
+            let start = j;
+            while j < bytes.len() && bytes[j].is_ascii_digit() && j - start < 9 {
+                j += 1;
+            }
+            if j > start {
+                if let Ok(n) = std::str::from_utf8(&bytes[start..j]).unwrap_or("").parse::<u64>() {
+                    out.push(n);
+                }
+            }
+        }
+        i = j.max(i + 1);
+    }
+    out
+}
 
 #[tauri::command]
 async fn desktop_check_github_update() -> Result<serde_json::Value, String> {
-    let local_val: serde_json::Value =
-        serde_json::from_str(EMBEDDED_VERSION_JSON).unwrap_or_else(|_| serde_json::json!({}));
+    let local_val = parse_version_json(EMBEDDED_VERSION_JSON).unwrap_or_else(|| serde_json::json!({}));
     let local_build = local_val.get("build").and_then(|v| v.as_u64()).unwrap_or(1);
     let local_version = local_val
         .get("version")
@@ -2003,41 +2102,65 @@ async fn desktop_check_github_update() -> Result<serde_json::Value, String> {
         .unwrap_or("1.0.0")
         .to_string();
 
-    let url = format!(
-        "https://raw.githubusercontent.com/larxe1/Legal-Annotator-App/main/version.json?t={}",
-        now_ms()
-    );
+    let mut remote: Option<serde_json::Value> = None;
+    let mut download_url = String::new();
+    let mut last_err = String::new();
 
-    #[cfg(target_os = "windows")]
-    use std::os::windows::process::CommandExt;
+    // 1) Preferred: files pinned to the exact newest commit (never stale).
+    if let Some(sha) = latest_release_sha() {
+        let url = format!("https://raw.githubusercontent.com/{UPDATE_REPO}/{sha}/version.json");
+        match run_curl(&["-fsSL", "--max-time", "15", "--retry", "2", &url]) {
+            Ok(out) if out.status.success() => {
+                if let Some(v) = parse_version_json(&String::from_utf8_lossy(&out.stdout)) {
+                    remote = Some(v);
+                    download_url = format!(
+                        "https://raw.githubusercontent.com/{UPDATE_REPO}/{sha}/Legal%20Annotator.exe"
+                    );
+                }
+            }
+            Ok(out) => last_err = curl_err(&out),
+            Err(e) => last_err = e,
+        }
+    }
 
-    let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
-    cmd.args([
-        "-fsSL",
-        "--max-time",
-        "10",
-        "-H",
-        "Cache-Control: no-cache",
-        "-H",
-        "Pragma: no-cache",
-        &url,
-    ]);
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    // 2) Fallback: branch URL (can lag a few minutes behind right after publishing).
+    if remote.is_none() {
+        let url = format!(
+            "https://raw.githubusercontent.com/{UPDATE_REPO}/{UPDATE_BRANCH}/version.json?t={}",
+            now_ms()
+        );
+        match run_curl(&[
+            "-fsSL",
+            "--max-time",
+            "15",
+            "--retry",
+            "2",
+            "-H",
+            "Cache-Control: no-cache",
+            "-H",
+            "Pragma: no-cache",
+            &url,
+        ]) {
+            Ok(out) if out.status.success() => {
+                match parse_version_json(&String::from_utf8_lossy(&out.stdout)) {
+                    Some(v) => remote = Some(v),
+                    None => last_err = "GitHub returned an unreadable version.json".to_string(),
+                }
+            }
+            Ok(out) => last_err = curl_err(&out),
+            Err(e) => last_err = e,
+        }
+    }
 
-    let output = cmd.output().map_err(|e| format!("curl error: {e}"))?;
-    if !output.status.success() {
+    let Some(remote_val) = remote else {
         return Ok(serde_json::json!({
             "hasUpdate": false,
             "localBuild": local_build,
             "localVersion": local_version,
-            "error": String::from_utf8_lossy(&output.stderr).to_string()
+            "error": if last_err.is_empty() { "Could not reach GitHub".to_string() } else { last_err }
         }));
-    }
+    };
 
-    let remote_str = String::from_utf8_lossy(&output.stdout);
-    let remote_val: serde_json::Value =
-        serde_json::from_str(&remote_str).map_err(|e| format!("invalid remote version.json: {e}"))?;
     let remote_build = remote_val.get("build").and_then(|v| v.as_u64()).unwrap_or(0);
     let remote_version = remote_val
         .get("version")
@@ -2054,11 +2177,13 @@ async fn desktop_check_github_update() -> Result<serde_json::Value, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let download_url = remote_val
-        .get("downloadUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or("https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe")
-        .to_string();
+    if download_url.is_empty() {
+        download_url = remote_val
+            .get("downloadUrl")
+            .and_then(|v| v.as_str())
+            .unwrap_or("https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe")
+            .to_string();
+    }
 
     Ok(serde_json::json!({
         "hasUpdate": remote_build > local_build,
@@ -2073,28 +2198,52 @@ async fn desktop_check_github_update() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn desktop_apply_github_update(download_url: Option<String>) -> Result<String, String> {
-    let url = download_url.unwrap_or_else(|| {
-        "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe".to_string()
-    });
-    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let new_exe = current_exe.with_extension("new.exe");
-    let old_exe = current_exe.with_extension("old.exe");
+async fn desktop_apply_github_update(
+    download_url: Option<String>,
+    expected_build: Option<u64>,
+) -> Result<String, String> {
+    let mut url = download_url
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| {
+            format!("https://raw.githubusercontent.com/{UPDATE_REPO}/{UPDATE_BRANCH}/Legal%20Annotator.exe")
+        });
+    // Branch URLs may be cached by GitHub's CDN — bust the cache (commit-pinned URLs are immutable).
+    if url.contains(&format!("/{UPDATE_BRANCH}/")) && !url.contains('?') {
+        url = format!("{url}?t={}", now_ms());
+    }
 
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = current_exe
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "Could not find the app's folder.".to_string())?;
+    let new_exe = current_exe.with_extension("new.exe");
     let _ = fs::remove_file(&new_exe);
 
-    #[cfg(target_os = "windows")]
-    use std::os::windows::process::CommandExt;
+    // Make sure Windows lets us write next to the app before downloading ~33 MB.
+    let probe = exe_dir.join(".la_update_probe");
+    if fs::write(&probe, b"ok").is_err() {
+        return Err(format!(
+            "Windows won't let the app save files in its folder ({}). Move the Legal Annotator folder to Documents or Desktop, then try again.",
+            exe_dir.display()
+        ));
+    }
+    let _ = fs::remove_file(&probe);
 
     let new_exe_str = new_exe.to_string_lossy().to_string();
-    let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
-    cmd.args([
+    let output = run_curl(&[
         "-L",
         "--fail",
         "--silent",
         "--show-error",
+        "--retry",
+        "3",
+        "--retry-delay",
+        "2",
+        "--connect-timeout",
+        "20",
         "--max-time",
-        "240",
+        "600",
         "-H",
         "Cache-Control: no-cache",
         "-H",
@@ -2102,40 +2251,55 @@ async fn desktop_apply_github_update(download_url: Option<String>) -> Result<Str
         "-o",
         &new_exe_str,
         &url,
-    ]);
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
-    let output = cmd.output().map_err(|e| format!("Failed to start download: {e}"))?;
+    ])
+    .map_err(|e| format!("Failed to start download: {e}"))?;
     if !output.status.success() {
         let _ = fs::remove_file(&new_exe);
         return Err(format!(
-            "Download failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "Download failed (check your internet connection): {}",
+            curl_err(&output)
         ));
     }
 
     // Verify downloaded file is a valid Windows PE binary (> 10 MB and starts with 'MZ')
-    let meta = fs::metadata(&new_exe).map_err(|e| format!("Missing downloaded file: {e}"))?;
-    if meta.len() < 10_000_000 {
+    let bytes = fs::read(&new_exe).map_err(|e| format!("Missing downloaded file: {e}"))?;
+    if bytes.len() < 10_000_000 {
         let _ = fs::remove_file(&new_exe);
         return Err(format!(
             "Downloaded file is too small ({} bytes), aborting update for safety.",
-            meta.len()
+            bytes.len()
         ));
     }
-    let header = fs::read(&new_exe).map_err(|e| e.to_string())?;
-    if header.len() < 2 || &header[0..2] != b"MZ" {
+    if &bytes[0..2] != b"MZ" {
         let _ = fs::remove_file(&new_exe);
         return Err("Downloaded file is not a valid Windows executable.".to_string());
     }
-    drop(header);
+    // Make sure GitHub actually gave us the NEW build (not a cached older copy), otherwise
+    // the app would "update" to the same version and try again in a loop.
+    if let Some(expected) = expected_build {
+        let found = embedded_build_numbers(&bytes);
+        if !found.is_empty() && !found.contains(&expected) {
+            let _ = fs::remove_file(&new_exe);
+            return Err(format!(
+                "GitHub is still serving the previous version (build {}) instead of build {expected}. Please try again in a few minutes.",
+                found.iter().max().copied().unwrap_or(0)
+            ));
+        }
+    }
+    drop(bytes);
 
     // Swap executable in-place on Windows: rename running .exe -> .old.exe, then .new.exe -> .exe
-    let _ = fs::remove_file(&old_exe);
+    // (Windows allows renaming a running .exe, but not overwriting it.)
+    let mut old_exe = current_exe.with_extension("old.exe");
+    if old_exe.exists() && fs::remove_file(&old_exe).is_err() {
+        // A previous leftover is still locked — use a unique name instead of failing.
+        old_exe = current_exe.with_extension(format!("old-{}.exe", now_ms()));
+    }
     if let Err(rename_err) = fs::rename(&current_exe, &old_exe) {
         let _ = fs::remove_file(&new_exe);
-        return Err(format!("Could not rename running executable: {rename_err}"));
+        return Err(format!(
+            "Could not replace the app file ({rename_err}). Close any other open Legal Annotator windows and try again."
+        ));
     }
     if let Err(swap_err) = fs::rename(&new_exe, &current_exe) {
         // Rollback if swap failed
@@ -2143,28 +2307,99 @@ async fn desktop_apply_github_update(download_url: Option<String>) -> Result<Str
         return Err(format!("Could not activate new executable: {swap_err}"));
     }
 
-    // Spawn the newly updated executable and exit current process
+    // Start the updated app (it waits for this process to fully exit first), then exit.
+    let pid = std::process::id();
     let launch_exe = current_exe.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(350));
-        let _ = std::process::Command::new(&launch_exe).spawn();
-        std::process::exit(0);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let started = std::process::Command::new(&launch_exe)
+            .arg("--wait-pid")
+            .arg(pid.to_string())
+            .current_dir(&exe_dir)
+            .spawn()
+            .is_ok()
+            || std::process::Command::new(&launch_exe)
+                .current_dir(&exe_dir)
+                .spawn()
+                .is_ok();
+        // If the new copy could not be started, keep this window open; the update is
+        // already installed and will be used the next time the app is opened.
+        if started {
+            std::process::exit(0);
+        }
     });
 
     Ok("Update installed! Restarting Legal Annotator…".to_string())
 }
 
-fn main() {
-    // Clean up any leftover .old.exe from a previous self-update
-    if let Ok(cur_exe) = std::env::current_exe() {
-        let old_exe = cur_exe.with_extension("old.exe");
-        if old_exe.exists() {
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(1200));
-                let _ = fs::remove_file(old_exe);
-            });
+/// After a self-update the new copy is started with `--wait-pid <old pid>`; wait (max 15 s)
+/// for the old copy to fully close so both never run at the same time.
+fn wait_for_previous_instance_exit() {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(pos) = args.iter().position(|a| a == "--wait-pid") else {
+        return;
+    };
+    let Some(pid) = args.get(pos + 1).and_then(|s| s.parse::<u32>().ok()) else {
+        return;
+    };
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
+            fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+        }
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        unsafe {
+            let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+            if !handle.is_null() {
+                WaitForSingleObject(handle, 15_000);
+                CloseHandle(handle);
+            }
         }
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+        std::thread::sleep(std::time::Duration::from_millis(800));
+    }
+}
+
+/// Removes leftover "<app>.old.exe" / "<app>.old-<n>.exe" files from previous self-updates.
+fn cleanup_old_update_files() {
+    let Ok(cur_exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = cur_exe.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    let stem = cur_exe
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if stem.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let prefix = format!("{stem}.old");
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if name.starts_with(&prefix) && name.ends_with(".exe") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    });
+}
+
+fn main() {
+    // If we were just started by the self-updater, let the old copy close first.
+    wait_for_previous_instance_exit();
+    // Clean up any leftover .old.exe from a previous self-update
+    cleanup_old_update_files();
 
     let data_dir = resolve_data_dir();
     let sqlite_path = data_dir.join("notes_mirror.sqlite");

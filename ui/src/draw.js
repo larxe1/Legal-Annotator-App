@@ -202,7 +202,7 @@ function updateDrawToolUI() {
 
 // ── Pinch zoom ──
 export function initPinchZoom() {
-  let pinchD = null, pinchS = null;
+  let pinchD = null, pinchS = null, pinching = false;
   const sc = document.getElementById('canvas-scroll');
   sc.addEventListener('touchstart', e => {
     if (e.touches.length === 2) {
@@ -211,6 +211,7 @@ export function initPinchZoom() {
         e.touches[0].clientY - e.touches[1].clientY
       );
       pinchS = S.scale;
+      pinching = false;
     }
   }, { passive: true });
 
@@ -221,6 +222,10 @@ export function initPinchZoom() {
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY
       );
+      // Only zoom once the fingers clearly spread/close, so a plain two-finger
+      // scroll (handled in pen.js) never changes the zoom or forces a re-render.
+      if (!pinching && Math.abs(dist / pinchD - 1) < 0.12) return;
+      pinching = true;
       S.scale = Math.max(0.5, Math.min(3, Math.round(pinchS * dist / pinchD * 4) / 4));
       document.getElementById('zoom-lbl').textContent = Math.round(S.scale / 1.5 * 100) + '%';
     }
@@ -229,7 +234,9 @@ export function initPinchZoom() {
   sc.addEventListener('touchend', async e => {
     if (pinchD && e.touches.length < 2) {
       pinchD = null;
-      if (S.pdfDoc) {
+      const changed = pinching && S.scale !== pinchS;
+      pinching = false;
+      if (changed && S.pdfDoc) {
         const { reRenderAll } = await import('./viewer.js');
         reRenderAll();
       }

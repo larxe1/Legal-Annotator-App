@@ -14,6 +14,16 @@
 //    touches on the PDF area are ignored so a resting hand can't scroll/select.
 //  • Fingers are never touched when Pen is OFF, and Box mode is never touched.
 //
+//  FINGER (touchscreen laptop) highlighting — adaptive, mouse is never affected:
+//  • Every pointer reports its type (mouse / pen / touch), so each gesture is routed
+//    automatically: the mouse keeps the normal select → "✓ Highlight" flow.
+//  • Text mode + Pen OFF + Finger Highlighting ON (default): one finger dragged across
+//    text highlights it live and saves on lift (same createAnnotation path as the Pencil).
+//  • One finger starting on a blank margin / between pages scrolls natively.
+//  • Two fingers scroll (with momentum) anywhere; pinch-zoom stays in draw.js.
+//  • A quick tap is left to the browser, so tapping a highlight still opens it.
+//  • Toggle: Settings → "Touchscreen Finger Highlighting" (localStorage 'finger_highlight').
+//
 // Kill switches: toolbar toggle, or open the app with ?nopen=1.
 // Desktop testing: localStorage.setItem('pen_debug_mouse','1') makes the mouse act as a pen.
 // ═══════════════════════════════════════════════
@@ -27,6 +37,8 @@ const TAP_MAX_MS   = 450;
 const PALM_MS      = 250;    // ignore new finger touches this long after the Pencil lifts
 const STUCK_MS     = 15000;  // safety: never keep touches blocked longer than this
 const MAX_ERRORS   = 3;
+const LS_FINGER       = 'finger_highlight';
+const FINGER_TAP_MOVE = 10;  // px  — fingers jitter more than a Pencil
 
 let _enabled    = false;
 let _installed  = false;
@@ -38,6 +50,10 @@ let _penDownTs  = 0;
 let _lastPenUp  = 0;
 let _raf        = 0;
 let _scroll     = null;
+let _fingerOn   = true;       // finger highlighting (touchscreens); mouse is unaffected
+const _touchPts = new Set();  // touch pointerIds currently down on the PDF area
+let _pan        = null;       // two-finger scroll tracking { x, y, t, vx, vy }
+let _inertiaRaf = 0;
 const _sharedRange = document.createRange();
 
 const debugMouse = () => safeStorageGet('pen_debug_mouse', '0') === '1';
@@ -56,6 +72,8 @@ export function initPen() {
     buildButton(toolbar);
     attach(_scroll);
     if (safeStorageGet(LS_KEY, '0') === '1') setPenMode(true, { silent: true });
+    _fingerOn = safeStorageGet(LS_FINGER, '1') !== '0';
+    try { buildFingerSetting(); } catch (e) { console.warn('[Pen] finger setting UI failed:', e); }
   } catch (e) {
     console.warn('[Pen] init failed — pen support disabled:', e);
   }
@@ -79,6 +97,45 @@ export function setPenMode(on, { silent = false } = {}) {
       ? '✒ Pen mode ON — drag Pencil over text to highlight, fingers scroll & zoom'
       : '✒ Pen mode OFF');
   }
+}
+
+// ───────────────────────── finger highlighting toggle ─────────────────────────
+export function isFingerHighlight() { return _fingerOn; }
+
+export function setFingerHighlight(on, { silent = false } = {}) {
+  _fingerOn = !!on;
+  if (!_fingerOn && _stroke?.finger) cancelStroke();
+  safeStorageSet(LS_FINGER, _fingerOn ? '1' : '0');
+  updateFingerSettingBtn();
+  if (!silent) {
+    toast(_fingerOn
+      ? '✋ Finger highlighting ON — drag a finger over text to highlight, two fingers scroll'
+      : '✋ Finger highlighting OFF — fingers scroll and select text as before');
+  }
+}
+
+function fingerActiveForMode() { return _fingerOn && !_enabled && S.mode === 'text'; }
+
+function updateFingerSettingBtn() {
+  const b = document.getElementById('btn-finger-setting');
+  if (b) b.textContent = _fingerOn ? 'Finger Highlighting: ON (tap to turn off)' : 'Finger Highlighting: OFF (tap to turn on)';
+}
+
+// Adds a "Touchscreen Finger Highlighting" card right below the Pen card in Settings.
+function buildFingerSetting() {
+  if (document.getElementById('btn-finger-setting')) return;
+  const penCard = document.getElementById('btn-pen-setting')?.parentElement;
+  if (!penCard?.parentNode) return;
+  const card = document.createElement('div');
+  card.id = 'finger-setting-card';
+  card.style.cssText = penCard.style.cssText;
+  card.innerHTML = `
+    <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">✋ Touchscreen Finger Highlighting</div>
+    <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">The app detects mouse vs. finger automatically. With a finger: drag across text to highlight it instantly, drag on a blank margin or use two fingers to scroll, pinch to zoom, and tap a highlight to open it. The mouse keeps working exactly as before. (Pauses while Pen mode is on.)</div>
+    <button class="btn-sec" id="btn-finger-setting" type="button" style="width:100%; padding:7px 10px; font-size:12px;"></button>`;
+  penCard.parentNode.insertBefore(card, penCard.nextSibling);
+  card.querySelector('#btn-finger-setting').addEventListener('click', () => setFingerHighlight(!_fingerOn));
+  updateFingerSettingBtn();
 }
 
 function injectStyle() {
@@ -125,6 +182,9 @@ function guard(fn) {
       if (_errors >= MAX_ERRORS && _enabled) {
         setPenMode(false, { silent: true });
         toast('✒ Pen mode turned off after repeated errors — app is unaffected.');
+      } else if (_errors >= MAX_ERRORS && _fingerOn) {
+        setFingerHighlight(false, { silent: true });
+        toast('✋ Finger highlighting turned off after repeated errors — app is unaffected.');
       }
     }
   };
@@ -140,9 +200,11 @@ function attach(scroll) {
   // Non-passive touch listeners so we can stop the page scrolling for Pencil touches only.
   scroll.addEventListener('touchstart', guard(onTouchGuard), { capture: true, passive: false });
   scroll.addEventListener('touchmove',  guard(onTouchGuard), { capture: true, passive: false });
-  // No native text selection / callout while the Pencil is down.
-  document.addEventListener('selectstart', e => { if (_enabled && _penDown) e.preventDefault(); }, true);
-  scroll.addEventListener('contextmenu',   e => { if (_enabled && _penDown) e.preventDefault(); }, true);
+  scroll.addEventListener('touchend',    guard(onTouchEnd), { capture: true, passive: true });
+  scroll.addEventListener('touchcancel', guard(onTouchEnd), { capture: true, passive: true });
+  // No native text selection / callout while the Pencil (or a highlighting finger) is down.
+  document.addEventListener('selectstart', e => { if ((_enabled && _penDown) || _stroke?.finger) e.preventDefault(); }, true);
+  scroll.addEventListener('contextmenu',   e => { if ((_enabled && _penDown) || _stroke?.finger) e.preventDefault(); }, true);
   document.addEventListener('visibilitychange', () => { if (document.hidden) cancelStroke(); });
   window.addEventListener('blur', cancelStroke);
 }
@@ -150,6 +212,7 @@ function attach(scroll) {
 function penActiveForMode() { return _enabled && S.mode !== 'box'; }
 
 function onPointerDown(e) {
+  if (e.pointerType === 'touch') { onFingerDown(e); return; }
   if (!penActiveForMode() || !isPenEvent(e)) return;
 
   // Draw mode: draw.js does the drawing. We only note "pen is down" so touches are blocked.
@@ -185,6 +248,44 @@ function onPointerDown(e) {
   try { _scroll.setPointerCapture(e.pointerId); } catch {}
 }
 
+// Finger on a touchscreen. Only starts a highlight when the finger lands on text;
+// blank margins / gaps between pages keep normal one-finger scrolling.
+function onFingerDown(e) {
+  if (e.isPrimary) _touchPts.clear();         // a new gesture — drop any stale ids
+  _touchPts.add(e.pointerId);
+  stopInertia();
+  if (_touchPts.size > 1) {                   // second finger → scroll / zoom, never a highlight
+    if (_stroke?.finger) cancelStroke();
+    return;
+  }
+  if (!fingerActiveForMode() || _stroke) return;
+  const pn = pageAt(e.clientX, e.clientY);
+  if (pn == null) return;
+  const geo = buildPageSpanGeo(pn);
+  const startCaret = geo.length ? caretAt(geo, e.clientX, e.clientY, true) : null;
+  if (!startCaret) return;
+
+  // No preventDefault and no pointer capture here: a quick tap must still reach the
+  // element under the finger as a normal click (e.g. tapping a highlight opens it).
+  window.getSelection()?.removeAllRanges();
+  document.getElementById('sel-menu')?.classList.remove('open');
+  _stroke = {
+    id: e.pointerId,
+    finger: true,
+    pn,
+    x0: e.clientX,
+    y0: e.clientY,
+    curX: e.clientX,
+    curY: e.clientY,
+    maxMove: 0,
+    t0: performance.now(),
+    geo,
+    startCaret,
+    previewEl: null,
+    lastRes: null,
+  };
+}
+
 function onPointerMove(e) {
   if (!_stroke || e.pointerId !== _stroke.id) return;
   e.preventDefault();
@@ -201,6 +302,7 @@ function onPointerMove(e) {
 }
 
 function onPointerUp(e) {
+  if (e.pointerType === 'touch') _touchPts.delete(e.pointerId);
   if (isPenEvent(e)) { _penDown = false; _lastPenUp = Date.now(); }
   if (!_stroke || e.pointerId !== _stroke.id) return;
   const st = _stroke;
@@ -217,12 +319,31 @@ function onPointerUp(e) {
 }
 
 function onPointerCancel(e) {
+  if (e.pointerType === 'touch') _touchPts.delete(e.pointerId);
   if (isPenEvent(e)) { _penDown = false; _lastPenUp = Date.now(); }
   if (_stroke && e.pointerId === _stroke.id) cancelStroke();
 }
 
 // Block page scroll / selection for Pencil touches + palm rejection.
+// Also: two-finger scrolling, and no native scroll while a finger is highlighting.
 function onTouchGuard(e) {
+  if (e.type === 'touchstart') stopInertia();
+
+  // Two fingers (no Pencil involved) → smooth manual scroll. Pinch-zoom is handled in draw.js.
+  if (e.touches.length >= 2 && !stylusInvolved(e)) {
+    if (_stroke?.finger) cancelStroke();
+    if (e.cancelable) { e.preventDefault(); trackPan(e); }
+    else _pan = null;                         // browser already scrolling natively — leave it
+    return;
+  }
+
+  // One finger highlighting text → stop the page scrolling under it. (touchstart is NOT
+  // cancelled, so a quick tap still produces a normal click.)
+  if (_stroke?.finger) {
+    if (e.type === 'touchmove' && e.cancelable) e.preventDefault();
+    return;
+  }
+
   if (!penActiveForMode()) return;
   if (_penDown && Date.now() - _penDownTs > STUCK_MS) _penDown = false;   // safety release
 
@@ -236,6 +357,58 @@ function onTouchGuard(e) {
 }
 
 function markPenDown() { _penDown = true; _penDownTs = Date.now(); }
+
+// True when the Pencil is part of this touch (iPad reports it as a 'stylus' touch),
+// so two-finger scrolling never fights palm rejection while writing.
+function stylusInvolved(e) {
+  if (_penDown) return true;
+  if (_enabled && Date.now() - _lastPenUp < PALM_MS) return true;
+  for (const t of e.touches) if (t.touchType === 'stylus') return true;
+  return false;
+}
+
+// ───────────────────────── two-finger scrolling ─────────────────────────
+function trackPan(e) {
+  const t0 = e.touches[0], t1 = e.touches[1];
+  const mx = (t0.clientX + t1.clientX) / 2;
+  const my = (t0.clientY + t1.clientY) / 2;
+  const now = performance.now();
+  if (!_pan || e.type === 'touchstart') { _pan = { x: mx, y: my, t: now, vx: 0, vy: 0 }; return; }
+  const dx = mx - _pan.x, dy = my - _pan.y, dt = Math.max(1, now - _pan.t);
+  _scroll.scrollLeft -= dx;
+  _scroll.scrollTop  -= dy;
+  _pan.vx = 0.7 * (dx / dt) + 0.3 * _pan.vx;
+  _pan.vy = 0.7 * (dy / dt) + 0.3 * _pan.vy;
+  _pan.x = mx; _pan.y = my; _pan.t = now;
+}
+
+function onTouchEnd(e) {
+  if (_pan && e.touches.length < 2) {
+    const { vx, vy, t } = _pan;
+    _pan = null;
+    if (performance.now() - t < 80) startInertia(vx, vy);   // fingers were still moving → glide
+  }
+}
+
+function startInertia(vx, vy) {
+  stopInertia();
+  if (Math.hypot(vx, vy) < 0.1) return;
+  let last = performance.now();
+  const step = now => {
+    const dt = Math.min(48, now - last);
+    last = now;
+    _scroll.scrollLeft -= vx * dt;
+    _scroll.scrollTop  -= vy * dt;
+    const decay = Math.pow(0.95, dt / 16);
+    vx *= decay; vy *= decay;
+    _inertiaRaf = Math.hypot(vx, vy) > 0.02 ? requestAnimationFrame(step) : 0;
+  };
+  _inertiaRaf = requestAnimationFrame(step);
+}
+
+function stopInertia() {
+  if (_inertiaRaf) { cancelAnimationFrame(_inertiaRaf); _inertiaRaf = 0; }
+}
 
 function cancelStroke() {
   if (_stroke) removePreview(_stroke);
@@ -257,7 +430,7 @@ function schedulePreview() {
   if (_raf) return;
   _raf = requestAnimationFrame(() => {
     _raf = 0;
-    if (!_stroke || _stroke.maxMove < TAP_MAX_MOVE || !_stroke.startCaret) return;
+    if (!_stroke || _stroke.maxMove < (_stroke.finger ? FINGER_TAP_MOVE : TAP_MAX_MOVE) || !_stroke.startCaret) return;
     const pg = S.pages[_stroke.pn];
     if (!pg?.annOv || !pg.wrap) return;
 
@@ -452,7 +625,11 @@ function computeRangeHighlight(geo, wr, startCaret, endCaret) {
 
 function finishStroke(st) {
   const dur = performance.now() - st.t0;
-  if (st.maxMove < TAP_MAX_MOVE && dur < TAP_MAX_MS) {
+  if (st.finger) {
+    // Finger tap → left to the browser's own click (opens a tapped highlight).
+    // Finger held still without dragging → nothing.
+    if (st.maxMove < FINGER_TAP_MOVE) return;
+  } else if (st.maxMove < TAP_MAX_MOVE && dur < TAP_MAX_MS) {
     handleTap(st);
     return;
   }

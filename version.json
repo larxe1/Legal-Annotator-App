@@ -1,7 +1,7 @@
 {
-  "version": "1.6.0",
-  "build": 19,
-  "updatedAt": "2026-10-27T00:12:00+08:00",
-  "notes": "Add folder right-click & PDF export option to export and print ONLY the 1st summary table of each case (excluding untabled Facts, Parties, and general notes).",
+  "version": "1.7.0",
+  "build": 20,
+  "updatedAt": "2026-10-28T18:53:20+08:00",
+  "notes": "Touchscreen finger highlighting: drag a finger over text to highlight (mouse works as before, detected automatically), drag margins or use two fingers to scroll, pinch to zoom. Plus a more reliable auto-updater.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

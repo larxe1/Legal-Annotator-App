@@ -611,7 +611,7 @@ async function performAutoUpdate(info) {
     } catch {}
 
     pill.innerHTML = `<span>⏳ Downloading update from GitHub (~32 MB)… Please wait</span>`;
-    await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null });
+    await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null, expectedBuild: info.remoteBuild ?? null });
     pill.innerHTML = `<span>✅ Update installed! Restarting Legal Annotator…</span>`;
   } catch (err) {
     _isUpdating = false;
@@ -721,7 +721,7 @@ async function showDesktopStatusModal() {
       }
       btn.textContent = '⬇️ Installing Update…';
       try {
-        await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null });
+        await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null, expectedBuild: info.remoteBuild ?? null });
       } catch (err) {
         btn.disabled = false;
         btn.textContent = '🔄 Retry Update';
@@ -818,7 +818,7 @@ async function refreshSettingsVersionCard(manual) {
         e.currentTarget.disabled = true;
         e.currentTarget.textContent = '⏳ Downloading…';
         try {
-          await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null });
+          await invoke('desktop_apply_github_update', { downloadUrl: info.downloadUrl || null, expectedBuild: info.remoteBuild ?? null });
         } catch (err) {
           status.innerHTML = `<span style="color:#fca5a5;">⚠️ Update failed: ${err}</span>`;
         }
@@ -826,7 +826,7 @@ async function refreshSettingsVersionCard(manual) {
     } else if (info.remoteBuild === info.localBuild) {
       status.innerHTML = '<span style="color:#86efac;">✅ Up to date — this device has the latest published version.</span>';
     } else {
-      status.innerHTML = '<span style="color:#fcd34d;">⚠️ This copy is newer than the published version. Your other devices won\'t get it until it is published (Publish-Update-To-Laptop.bat).</span>';
+      status.innerHTML = '<span style="color:#fcd34d;">ℹ️ This copy is newer than the version on GitHub. If an update was just published, GitHub may need a few minutes to catch up — press "Check now" again shortly.</span>';
     }
   } finally {
     btn.disabled = false;
