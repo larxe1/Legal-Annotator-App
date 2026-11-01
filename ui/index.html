@@ -162,6 +162,10 @@
         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
         Links
       </button>
+      <button class="tb-btn" id="btn-tags" title="Highlight Tags & Topic Coverage">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
+        <span>Tags</span>
+      </button>
       <button class="tb-btn" id="btn-diagram" title="Legal Diagrammer & Flowcharts">
         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
         Diagram
@@ -176,6 +180,10 @@
       <span id="zoom-lbl">100%</span>
       <button class="tb-btn" id="btn-zin" title="Zoom In">
         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></svg>
+      </button>
+      <button class="tb-btn" id="btn-ocr-pdf" title="Scan to OCR (Make Scanned PDF Searchable & Selectable)">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7V4h3M20 7V4h-3M4 17v3h3M20 17v3h-3M7 12h10"/></svg>
+        <span>Scan OCR</span>
       </button>
       <button class="tb-btn" id="btn-copy-pdf-text" title="Copy Entire PDF Text to Clipboard">
         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path stroke-linecap="round" stroke-linejoin="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
@@ -513,6 +521,7 @@
 <!-- Selection confirm menu -->
 <div id="sel-menu">
   <button class="sel-btn sel-confirm" id="sel-confirm">✓ Highlight</button>
+  <button class="sel-btn sel-copy" id="sel-copy">📋 Copy Text</button>
   <button class="sel-btn sel-cancel"  id="sel-cancel">✗ Cancel</button>
 </div>
 

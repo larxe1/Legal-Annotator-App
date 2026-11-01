@@ -19,3 +19,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 rfd = "0.15"
 sha2 = "0.10"
 hex = "0.4"
+windows = { version = "0.58", features = ["Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Security_Cryptography", "Foundation", "Foundation_Collections", "Globalization"] }

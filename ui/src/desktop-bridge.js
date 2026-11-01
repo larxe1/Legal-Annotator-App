@@ -225,6 +225,21 @@ window.__DESKTOP_PDFIUM__ = {
       return null;
     }
   },
+
+  async ocrPage(docId, pageNum, widthPx = 1600, heightPx = 2200) {
+    if (!invoke) return null;
+    try {
+      return await invoke('desktop_ocr_page', {
+        docId: String(docId),
+        pageNum: Number(pageNum),
+        widthPx: Math.round(widthPx),
+        heightPx: Math.round(heightPx),
+      });
+    } catch (e) {
+      console.warn('[Desktop OCR] ocrPage error:', e);
+      return null;
+    }
+  },
 };
 
 window.__DESKTOP_SQLITE__ = {

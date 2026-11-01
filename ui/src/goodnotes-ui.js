@@ -158,16 +158,36 @@ function loadSavedTabs() {
     const raw = safeStorageGet(OPEN_TABS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) _openTabs = parsed.slice(0, 8);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        _openTabs = parsed.slice(0, 8);
+        return;
+      }
     }
   } catch {
     _openTabs = [];
   }
+
+  // Load from Supabase cloud if local tabs are empty so tabs sync across devices
+  import('./db.js').then(async m => {
+    try {
+      const cloud = await m.dbGetSetting?.('gn_open_tabs_v1');
+      if (cloud && (!_openTabs || _openTabs.length === 0)) {
+        const parsed = JSON.parse(cloud);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          _openTabs = parsed.slice(0, 8);
+          safeStorageSet(OPEN_TABS_KEY, JSON.stringify(_openTabs));
+          renderDocTabs();
+        }
+      }
+    } catch {}
+  }).catch(() => {});
 }
 
 function saveTabs() {
   try {
-    safeStorageSet(OPEN_TABS_KEY, JSON.stringify(_openTabs.slice(0, 8)));
+    const payload = JSON.stringify(_openTabs.slice(0, 8));
+    safeStorageSet(OPEN_TABS_KEY, payload);
+    dbSetSetting('gn_open_tabs_v1', payload).catch(() => {});
   } catch {}
 }
 
@@ -212,6 +232,11 @@ export function notifyTabClosedToHome() {
 
 export async function closeDocTab(tabId, e) {
   if (e) e.stopPropagation();
+  if (S.curPDF) {
+    const { flushCurrentReadingPosition, setIsJumping } = await import('./ui.js');
+    flushCurrentReadingPosition();
+    setIsJumping(true);
+  }
   const idx = _openTabs.findIndex(t => t.tabId === tabId);
   if (idx === -1) return;
   _openTabs.splice(idx, 1);
@@ -233,6 +258,12 @@ export async function closeDocTab(tabId, e) {
 }
 
 export async function activateDocTab(tabId) {
+  if (S.curPDF) {
+    const { flushCurrentReadingPosition, setIsJumping } = await import('./ui.js');
+    flushCurrentReadingPosition();
+    setIsJumping(true);
+  }
+
   if (tabId === 'home') {
     const { closeActivePDF } = await import('./viewer.js');
     await closeActivePDF();

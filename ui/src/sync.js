@@ -2,7 +2,7 @@
 // SYNC — Real-time synchronization across tabs & devices
 // ═══════════════════════════════════════════════
 import { S } from './state.js';
-import { db, dbLoad, dbLoadAnnCounts, dbLoadAnnotations, dbLoadDrawings, dbLoadBookmarks } from './db.js';
+import { db, dbLoad, dbLoadAnnCounts, dbLoadAnnotations, dbLoadDrawings } from './db.js';
 
 let _channel = null;
 let _refreshTimer = null;
@@ -44,18 +44,12 @@ async function handleAnnotationsRefresh(pdfId) {
   clearTimeout(_annTimer);
   _annTimer = setTimeout(async () => {
     try {
-      await Promise.all([
-        dbLoadAnnotations(trueId),
-        dbLoadDrawings(trueId),
-        dbLoadBookmarks(trueId),
-      ]);
-      const { redrawAllAnnotations, renderAnnPanel } = await import('./annotate.js');
+      await dbLoadAnnotations(trueId);
+      await dbLoadDrawings(trueId);
+      const { redrawAllAnnotations } = await import('./annotate.js');
       const { redrawAllDrawings }    = await import('./draw.js');
       redrawAllAnnotations();
       redrawAllDrawings();
-      if (document.getElementById('ann-panel')?.classList.contains('open')) {
-        renderAnnPanel();
-      }
     } catch (err) {
       console.error('[Sync] Annotations refresh error', err);
     }
@@ -63,26 +57,20 @@ async function handleAnnotationsRefresh(pdfId) {
 }
 
 async function handleNotepadRefresh(pdfId) {
-  const activeTrueId = S.curPDF ? (S.curPDF.linked_pdf_id || S.curPDF.id) : null;
-  const targetId = pdfId || activeTrueId;
-  if (!targetId) return;
+  if (!S.curPDF) return;
+  const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
+  if (pdfId && pdfId !== trueId) return;
+
+  // Don't overwrite if notepad panel is not open
+  const panel = document.getElementById('notepad-panel');
+  if (!panel || !panel.classList.contains('open')) return;
 
   clearTimeout(_notepadTimer);
   _notepadTimer = setTimeout(async () => {
     try {
       const { dbLoadNotepad } = await import('./db.js');
       const { updateNotepadCacheFromRemote } = await import('./notepad.js');
-      const { content, digest } = await dbLoadNotepad(targetId);
-
-      // Keep in-memory notepad cache & SQLite mirror fresh even when panel is closed
-      updateNotepadCacheFromRemote(targetId, content, digest);
-      if (content || digest) {
-        window.__DESKTOP_SQLITE__?.upsertPdfNote?.(targetId, content || '', digest || '');
-      }
-
-      const panel = document.getElementById('notepad-panel');
-      if (!panel || !panel.classList.contains('open') || targetId !== activeTrueId) return;
-
+      const { content, digest } = await dbLoadNotepad(trueId);
       const editor = document.getElementById('np-editor');
       const digestEditor = document.getElementById('np-digest-editor');
       // ANTI-WIPE GUARD: Don't overwrite non-empty editor content with empty remote data.
@@ -95,6 +83,8 @@ async function handleNotepadRefresh(pdfId) {
       if (digestEditor && document.activeElement !== digestEditor && digest !== undefined) {
         digestEditor.innerHTML = digest || '';
       }
+      // Keep in-memory notepad cache fresh so PDF switching doesn't restore stale data
+      updateNotepadCacheFromRemote(trueId, content, digest);
     } catch (err) {
       console.error('[Sync] Notepad refresh error', err);
     }
@@ -142,20 +132,51 @@ export function initRealtimeSync() {
           const pdfId = payload.new?.pdf_file_id || payload.old?.pdf_file_id;
           handleAnnotationsRefresh(pdfId);
         })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'annotation_notes' }, () => {
-          handleAnnotationsRefresh(null);
-        })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'drawings' }, (payload) => {
-          const pdfId = payload.new?.pdf_file_id || payload.old?.pdf_file_id;
-          handleAnnotationsRefresh(pdfId);
-        })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'pdf_bookmarks' }, (payload) => {
           const pdfId = payload.new?.pdf_file_id || payload.old?.pdf_file_id;
           handleAnnotationsRefresh(pdfId);
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'pdf_notes' }, (payload) => {
           const pdfId = payload.new?.pdf_id || payload.old?.pdf_id;
           handleNotepadRefresh(pdfId);
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, async (payload) => {
+          const key = payload.new?.key || payload.old?.key;
+          if (!key) return;
+          if (!S.curPDF) {
+            if (key === 'gn_open_tabs_v1') {
+              import('./goodnotes-ui.js').then(m => m.renderDocTabs?.()).catch(() => {});
+            }
+            return;
+          }
+          const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
+          if (key === 'read_pos_' + trueId && payload.new?.value) {
+            try {
+              const { parseReadPosPayload, scrollToPageAndRatio } = await import('./ui.js');
+              const { safeStorageGet, safeStorageSet } = await import('./storage.js');
+              const localRaw = safeStorageGet('read_pos_meta_' + trueId) || safeStorageGet('bookmark_' + trueId);
+              const localPos = parseReadPosPayload(localRaw);
+              const cloudPos = parseReadPosPayload(payload.new.value);
+              if (cloudPos && cloudPos.page >= 1 && cloudPos.page <= S.totalPages) {
+                if (cloudPos.updatedAt > localPos.updatedAt && (cloudPos.page !== S.curPage || Math.abs(cloudPos.ratio - (localPos.ratio || 0)) > 0.05)) {
+                  safeStorageSet('bookmark_' + trueId, cloudPos.page);
+                  if (S.curPDF.linked_pdf_id) safeStorageSet('bookmark_' + S.curPDF.id, cloudPos.page);
+                  const metaStr = JSON.stringify(cloudPos);
+                  safeStorageSet('read_pos_meta_' + trueId, metaStr);
+                  safeStorageSet('read_pos_meta_' + S.curPDF.id, metaStr);
+                  S.curPage = cloudPos.page;
+                  document.getElementById('pg-input').value = cloudPos.page;
+                  await scrollToPageAndRatio(cloudPos.page, cloudPos.ratio, true);
+                }
+              }
+            } catch (err) {
+              console.warn('[Sync] Realtime read_pos update error', err);
+            }
+          } else if (key === 'pdf_tags_v1_' + trueId) {
+            import('./tags.js').then(m => m.loadTagsForPdf?.(trueId)).catch(() => {});
+          } else if (key === 'gn_open_tabs_v1') {
+            import('./goodnotes-ui.js').then(m => m.renderDocTabs?.()).catch(() => {});
+          }
         })
         .subscribe();
     }

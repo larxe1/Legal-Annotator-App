@@ -337,6 +337,89 @@ impl PdfiumHolder {
         self.page_cache.push_back((cache_key, data_url.clone()));
         Ok(data_url)
     }
+
+    fn render_page_bgra(
+        &self,
+        doc_id: &str,
+        page_num: u32,
+        width_px: u32,
+        height_px: u32,
+    ) -> Result<(Vec<u8>, u32, u32), String> {
+        let doc = self.docs.get(doc_id).ok_or("Document not open in PDFium")?;
+        let doc_ptr = doc.handle as *mut c_void;
+        let lib = self.lib.as_ref().ok_or("pdfium.dll not loaded")?;
+
+        unsafe {
+            let load_page: Symbol<unsafe extern "C" fn(*mut c_void, c_int) -> *mut c_void> =
+                lib.get(b"FPDF_LoadPage\0").map_err(|e| e.to_string())?;
+            let close_page: Symbol<unsafe extern "C" fn(*mut c_void)> =
+                lib.get(b"FPDF_ClosePage\0").map_err(|e| e.to_string())?;
+            let bmp_create: Symbol<unsafe extern "C" fn(c_int, c_int, c_int) -> *mut c_void> =
+                lib.get(b"FPDFBitmap_Create\0").map_err(|e| e.to_string())?;
+            let bmp_fill: Symbol<
+                unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, c_int, u32),
+            > = lib
+                .get(b"FPDFBitmap_FillRect\0")
+                .map_err(|e| e.to_string())?;
+            let render_bmp: Symbol<
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    c_int,
+                    c_int,
+                    c_int,
+                    c_int,
+                    c_int,
+                    c_int,
+                ),
+            > = lib
+                .get(b"FPDF_RenderPageBitmap\0")
+                .map_err(|e| e.to_string())?;
+            let bmp_buf: Symbol<unsafe extern "C" fn(*mut c_void) -> *mut u8> = lib
+                .get(b"FPDFBitmap_GetBuffer\0")
+                .map_err(|e| e.to_string())?;
+            let bmp_stride: Symbol<unsafe extern "C" fn(*mut c_void) -> c_int> = lib
+                .get(b"FPDFBitmap_GetStride\0")
+                .map_err(|e| e.to_string())?;
+            let bmp_destroy: Symbol<unsafe extern "C" fn(*mut c_void)> = lib
+                .get(b"FPDFBitmap_Destroy\0")
+                .map_err(|e| e.to_string())?;
+
+            let page_idx = (page_num.saturating_sub(1)) as c_int;
+            let page = load_page(doc_ptr, page_idx);
+            if page.is_null() {
+                return Err(format!("FPDF_LoadPage failed for page {}", page_num));
+            }
+
+            let w = width_px.clamp(64, 4096) as c_int;
+            let h = height_px.clamp(64, 4096) as c_int;
+            let bmp = bmp_create(w, h, 0);
+            if bmp.is_null() {
+                close_page(page);
+                return Err("FPDFBitmap_Create failed".into());
+            }
+
+            bmp_fill(bmp, 0, 0, w, h, 0xFFFF_FFFF);
+            // Flags: FPDF_ANNOT (0x01) | FPDF_LCD_TEXT (0x02)
+            render_bmp(bmp, page, 0, 0, w, h, 0, 0x01 | 0x02);
+
+            let buf_ptr = bmp_buf(bmp);
+            let stride = bmp_stride(bmp) as usize;
+            let wu = w as usize;
+            let hu = h as usize;
+
+            let mut bgra = Vec::with_capacity(wu * hu * 4);
+            for y in 0..hu {
+                let row = std::slice::from_raw_parts(buf_ptr.add(y * stride), wu * 4);
+                bgra.extend_from_slice(row);
+            }
+
+            bmp_destroy(bmp);
+            close_page(page);
+
+            Ok((bgra, wu as u32, hu as u32))
+        }
+    }
 }
 
 fn sha256_hex(s: &str) -> String {
@@ -598,6 +681,189 @@ async fn pdfium_render_page(
     }
 
     Ok(data_url)
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_ocr_on_bgra(bgra: &[u8], width: u32, height: u32) -> Result<serde_json::Value, String> {
+    unsafe {
+        extern "system" {
+            fn CoInitializeEx(pv: *const std::ffi::c_void, flags: u32) -> i32;
+        }
+        let _ = CoInitializeEx(std::ptr::null(), 0);
+    }
+
+    use windows::{
+        core::HSTRING,
+        Globalization::Language,
+        Graphics::Imaging::{BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap},
+        Media::Ocr::OcrEngine,
+        Security::Cryptography::CryptographicBuffer,
+    };
+
+    let ibuf = CryptographicBuffer::CreateFromByteArray(bgra)
+        .map_err(|e| format!("CryptographicBuffer error: {e}"))?;
+
+    let bitmap = SoftwareBitmap::CreateCopyWithAlphaFromBuffer(
+        &ibuf,
+        BitmapPixelFormat::Bgra8,
+        width as i32,
+        height as i32,
+        BitmapAlphaMode::Ignore,
+    )
+    .or_else(|_| {
+        SoftwareBitmap::CreateCopyWithAlphaFromBuffer(
+            &ibuf,
+            BitmapPixelFormat::Bgra8,
+            width as i32,
+            height as i32,
+            BitmapAlphaMode::Premultiplied,
+        )
+    })
+    .map_err(|e| format!("SoftwareBitmap error: {e}"))?;
+
+    let engine = OcrEngine::TryCreateFromUserProfileLanguages()
+        .ok()
+        .or_else(|| {
+            let lang = Language::CreateLanguage(&HSTRING::from("en-US")).ok()?;
+            OcrEngine::TryCreateFromLanguage(&lang).ok()
+        })
+        .or_else(|| {
+            let langs = OcrEngine::AvailableRecognizerLanguages().ok()?;
+            let first = langs.into_iter().next()?;
+            OcrEngine::TryCreateFromLanguage(&first).ok()
+        })
+        .ok_or_else(|| "Failed to initialize Windows OCR engine (no compatible OCR language pack)".to_string())?;
+
+    let operation = engine
+        .RecognizeAsync(&bitmap)
+        .map_err(|e| format!("OcrEngine RecognizeAsync error: {e}"))?;
+
+    let result = operation
+        .get()
+        .map_err(|e| format!("OcrResult get error: {e}"))?;
+
+    let lines_view = result
+        .Lines()
+        .map_err(|e| format!("OcrResult Lines error: {e}"))?;
+
+    let w_f64 = width as f64;
+    let h_f64 = height as f64;
+
+    let mut lines_json = Vec::new();
+    for line in lines_view {
+        let words_view = line
+            .Words()
+            .map_err(|e| format!("OcrLine Words error: {e}"))?;
+
+        let mut words_json = Vec::new();
+        let mut min_x = f64::MAX;
+        let mut min_y = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut max_y = f64::MIN;
+        let mut has_words = false;
+
+        for word in words_view {
+            let w_text = word.Text().map(|h| h.to_string()).unwrap_or_default();
+            let rect = word
+                .BoundingRect()
+                .map_err(|e| format!("OcrWord BoundingRect error: {e}"))?;
+
+            let wx = rect.X as f64;
+            let wy = rect.Y as f64;
+            let ww = rect.Width as f64;
+            let wh = rect.Height as f64;
+
+            if wx < min_x { min_x = wx; }
+            if wy < min_y { min_y = wy; }
+            if wx + ww > max_x { max_x = wx + ww; }
+            if wy + wh > max_y { max_y = wy + wh; }
+            has_words = true;
+
+            let wrx = if w_f64 > 0.0 { wx / w_f64 } else { 0.0 };
+            let wry = if h_f64 > 0.0 { wy / h_f64 } else { 0.0 };
+            let wrw = if w_f64 > 0.0 { ww / w_f64 } else { 0.0 };
+            let wrh = if h_f64 > 0.0 { wh / h_f64 } else { 0.0 };
+
+            words_json.push(serde_json::json!({
+                "str": w_text,
+                "x": wx,
+                "y": wy,
+                "w": ww,
+                "h": wh,
+                "rx": wrx,
+                "ry": wry,
+                "rw": wrw,
+                "rh": wrh
+            }));
+        }
+
+        let line_text = line.Text().map(|h| h.to_string()).unwrap_or_else(|_| {
+            words_json
+                .iter()
+                .filter_map(|w| w.get("str").and_then(|s| s.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+
+        let (lx, ly, lw, lh) = if has_words {
+            (min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
+
+        let lrx = if w_f64 > 0.0 { lx / w_f64 } else { 0.0 };
+        let lry = if h_f64 > 0.0 { ly / h_f64 } else { 0.0 };
+        let lrw = if w_f64 > 0.0 { lw / w_f64 } else { 0.0 };
+        let lrh = if h_f64 > 0.0 { lh / h_f64 } else { 0.0 };
+
+        lines_json.push(serde_json::json!({
+            "str": line_text,
+            "x": lx,
+            "y": ly,
+            "w": lw,
+            "h": lh,
+            "rx": lrx,
+            "ry": lry,
+            "rw": lrw,
+            "rh": lrh,
+            "words": words_json
+        }));
+    }
+
+    let full_text = result.Text().map(|h| h.to_string()).unwrap_or_else(|_| {
+        lines_json
+            .iter()
+            .filter_map(|l| l.get("str").and_then(|s| s.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+
+    Ok(serde_json::json!({
+        "fullText": full_text,
+        "width": width,
+        "height": height,
+        "lines": lines_json
+    }))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_windows_ocr_on_bgra(_bgra: &[u8], _width: u32, _height: u32) -> Result<serde_json::Value, String> {
+    Err("Windows Native OCR is only supported on Windows".into())
+}
+
+#[tauri::command]
+async fn desktop_ocr_page(
+    state: tauri::State<'_, AppState>,
+    doc_id: String,
+    page_num: u32,
+    width_px: u32,
+    height_px: u32,
+) -> Result<serde_json::Value, String> {
+    let (bgra, w, h) = {
+        let guard = state.pdfium.lock().map_err(|e| e.to_string())?;
+        guard.render_page_bgra(&doc_id, page_num, width_px, height_px)?
+    };
+    run_windows_ocr_on_bgra(&bgra, w, h)
 }
 
 #[tauri::command]
@@ -2445,6 +2711,7 @@ fn main() {
             pdfium_open_path,
             pdfium_open_bytes,
             pdfium_render_page,
+            desktop_ocr_page,
             pdfium_pick_local_pdf,
             desktop_start_google_oauth,
             desktop_poll_google_oauth,

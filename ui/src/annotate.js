@@ -10,11 +10,24 @@ import {
 import { handlePaste, showTablePicker, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, applyEditorHighlight, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
 import { safeStorageSet, safeStorageGet } from './storage.js';
+import {
+  loadTagsForPdf, getAnnTags, addTagToAnn, removeTagFromAnn,
+  getAllTopicsForCurrentPdf, renderAnnPanelTagsSection,
+  initTagsPanel, toggleTagsPanel, redrawTagBadgeForAnn,
+  getActiveQuickTag, setActiveQuickTag, onAnnDeleted
+} from './tags.js';
+
+export {
+  loadTagsForPdf, getAnnTags, addTagToAnn, removeTagFromAnn,
+  getAllTopicsForCurrentPdf, renderAnnPanelTagsSection,
+  initTagsPanel, toggleTagsPanel, getActiveQuickTag, setActiveQuickTag
+};
 
 // ── Create annotation (text or box) ──
 export async function createAnnotation(pageNum, rects, text, mode_) {
   if (!S.curPDF) return;
   const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
+  const activeTag = getActiveQuickTag();
   const ann = {
     id: 'ann_' + Date.now(),
     pdf_file_id: trueId,
@@ -24,17 +37,21 @@ export async function createAnnotation(pageNum, rects, text, mode_) {
     hex_color: S.activeColor,
     highlight_mode: mode_,
     notes: [],
+    tags: activeTag ? [activeTag] : [],
   };
   try {
     autosave('saving');
     await dbCreateAnnotation(ann);
     S.annotations.push(ann);
+    if (activeTag) {
+      addTagToAnn(ann, activeTag, { skipSaveAnn: true });
+    }
     // Update badge count
     S.annCounts[trueId] = (S.annCounts[trueId] || 0) + 1;
     updateAnnBadge(trueId);
     drawAnnotation(ann);
     autosave('saved');
-    toast('Highlight saved');
+    toast(activeTag ? `Highlight saved (${activeTag})` : 'Highlight saved');
   } catch (e) {
     autosave('err');
     toast('Save failed — check connection');
@@ -85,7 +102,7 @@ export function wrapNoteHtml(html, type) {
 // ── Draw annotation overlay ──
 export function drawAnnotation(ann) {
   const pg = S.pages[ann.page]; if (!pg || !pg.rendered || !pg.annOv) return;
-  pg.annOv.querySelector(`[data-id="${ann.id}"]`)?.remove();
+  pg.annOv.querySelectorAll(`[data-id="${ann.id}"]`).forEach(el => el.remove());
 
   const grp = document.createElement('div');
   grp.className  = 'hi-grp';
@@ -129,10 +146,20 @@ export function drawAnnotation(ann) {
   grp.addEventListener('mouseleave', hideTip);
   grp.addEventListener('mousemove', moveTip);
   pg.annOv.appendChild(grp);
+
+  // If ann has tags, render floating tag pill badge on top-right of first highlight rect
+  const tags = getAnnTags(ann);
+  if (tags && tags.length > 0) {
+    redrawTagBadgeForAnn(ann);
+  }
 }
 
 export function redrawAllAnnotations() {
-  document.querySelectorAll('.ann-ov .hi-grp').forEach(el => el.remove());
+  document.querySelectorAll('.ann-ov .hi-grp, .ann-ov .ann-tag-pill-badge').forEach(el => el.remove());
+  if (S.curPDF) {
+    const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
+    if (trueId) loadTagsForPdf(trueId);
+  }
   for (const a of S.annotations) drawAnnotation(a);
 }
 
@@ -204,6 +231,7 @@ export function openAnnPanel(ann) {
   document.getElementById('ap-ex').textContent =
     ann.highlighted_text.length > 90 ? ann.highlighted_text.slice(0, 90) + '…' : ann.highlighted_text;
   renderAnnColors();
+  renderAnnPanelTagsSection(ann);
   renderNotes(ann);
   document.getElementById('note-editor').innerHTML = '';
   closeOtherPanels('ann-panel');
@@ -354,6 +382,7 @@ function renderNotes(ann) {
 
 // ── Wire annotation panel buttons ──
 export function initAnnPanel() {
+  initTagsPanel();
   document.getElementById('ap-close').addEventListener('click', closeAnnPanel);
 
   // Tab switching
@@ -379,6 +408,7 @@ export function initAnnPanel() {
       }
       clearAnnMark(targetAnn.id);
       closeAnnPanel();
+      onAnnDeleted(targetAnn.id);
       await dbDelAnnotation(targetAnn.id);
       autosave('saved');
       toast('Highlight deleted');

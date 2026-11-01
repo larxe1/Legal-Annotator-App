@@ -428,6 +428,11 @@ export async function closeActivePDF() {
 
 // ── Open PDF from library ──
 export async function openPDFFromLibrary(pdfFile, retries = 5) {
+  // Flush reading position for departing PDF and lock scroll listener IMMEDIATELY
+  const { flushCurrentReadingPosition, setIsJumping, parseReadPosPayload, scrollToPageAndRatio } = await import('./ui.js');
+  flushCurrentReadingPosition();
+  setIsJumping(true);
+
   // Capture #welcome template before #canvas-scroll is overwritten
   getWelcomeHTML();
   try {
@@ -541,25 +546,33 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       S.pages[p] = { wrap, rendered: false, rendering: false, viewport: vp1, textItems: [] };
     }
 
-    // Determine starting page:
+    // Determine starting page & ratio:
     // Manual folder-specific default page OVERRIDES automatic last-read bookmark!
     const manualDefault = safeStorageGet('default_page_' + pdfFile.id)
       || (pdfFile.folder_id ? safeStorageGet('default_page_f_' + pdfFile.folder_id + '_' + trueId) : null);
 
-    let startPage;
+    let startPage = 1;
+    let startRatio = 0;
     let hasManualDefault = false;
 
     if (manualDefault) {
-      const parsedDef = parseInt(manualDefault);
+      const parsedDef = parseInt(manualDefault, 10);
       if (parsedDef >= 1) {
         startPage = Math.min(S.totalPages, parsedDef);
+        startRatio = 0;
         hasManualDefault = true;
       }
     }
 
-    const savedStart = safeStorageGet('bookmark_' + trueId) || safeStorageGet('bookmark_' + pdfFile.id);
-    if (!hasManualDefault) {
-      startPage = savedStart ? Math.min(S.totalPages, Math.max(1, parseInt(savedStart))) : 1;
+    const localMetaRaw = safeStorageGet('read_pos_meta_' + trueId)
+      || safeStorageGet('read_pos_meta_' + pdfFile.id)
+      || safeStorageGet('bookmark_' + trueId)
+      || safeStorageGet('bookmark_' + pdfFile.id);
+    const localPos = parseReadPosPayload(localMetaRaw);
+
+    if (!hasManualDefault && localPos && localPos.page >= 1) {
+      startPage = Math.min(S.totalPages, Math.max(1, localPos.page));
+      startRatio = localPos.ratio || 0;
     }
 
     S.curPage = startPage;
@@ -572,9 +585,9 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     // ── INSTANT RESUME: jump to saved page before any rendering happens ──
     // All placeholders are uniform height (vp1.height) so scrollTop can be calculated
     // algebraically in 0ms — no page render required, no layout reflow needed.
-    if (startPage > 1) {
+    if (startPage > 1 || startRatio > 0) {
       const pageHeightWithGap = vp1.height + 24;
-      scroll.scrollTop = 28 + (startPage - 1) * pageHeightWithGap;
+      scroll.scrollTop = Math.max(0, 28 + (startPage - 1) * pageHeightWithGap + Math.round(startRatio * vp1.height));
 
       const targetWrap = S.pages[startPage]?.wrap;
       if (targetWrap) {
@@ -610,18 +623,13 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       _pageObserver.observe(S.pages[p].wrap);
     }
 
-    // Eagerly render just the target page so it appears as fast as possible
+    // Eagerly render target page and neighbors
     await ensurePageRendered(startPage);
     if (startPage > 1) ensurePageRendered(startPage - 1);
     if (startPage < S.totalPages) ensurePageRendered(startPage + 1);
 
-    // Re-verify alignment once target page is rendered to absorb any subpixel variance
-    if (startPage > 1) {
-      const targetWrap = S.pages[startPage]?.wrap;
-      if (targetWrap) {
-        targetWrap.scrollIntoView({ behavior: 'auto', block: 'start' });
-      }
-    }
+    // Precise sub-page alignment once target page is rendered
+    await scrollToPageAndRatio(startPage, startRatio, false);
 
     // Release _isJumping lock once initial layout and scroll have fully settled
     setTimeout(() => {
@@ -630,21 +638,27 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
 
     // Await parallel DB data queries
     const [, , , cloudDefaultPage, cloudReadPos] = await dbDataPromise;
+    const cloudPos = parseReadPosPayload(cloudReadPos);
 
     // Cross-device sync fallback:
     if (!hasManualDefault && cloudDefaultPage) {
-      const parsedCloudDef = parseInt(cloudDefaultPage);
+      const parsedCloudDef = parseInt(cloudDefaultPage, 10);
       if (parsedCloudDef >= 1 && parsedCloudDef <= S.totalPages && S.curPage !== parsedCloudDef) {
         safeStorageSet('default_page_' + pdfFile.id, parsedCloudDef);
         if (pdfFile.folder_id) safeStorageSet('default_page_f_' + pdfFile.folder_id + '_' + trueId, parsedCloudDef);
+        const { jumpToPage } = await import('./ui.js');
         jumpToPage(parsedCloudDef, false);
       }
-    } else if (!hasManualDefault && !savedStart && cloudReadPos) {
-      const cPage = parseInt(cloudReadPos);
-      if (cPage > 1 && cPage <= S.totalPages && S.curPage === 1) {
-        safeStorageSet('bookmark_' + trueId, cPage);
-        if (pdfFile.linked_pdf_id) safeStorageSet('bookmark_' + pdfFile.id, cPage);
-        jumpToPage(cPage, false);
+    } else if (!hasManualDefault && cloudPos && cloudPos.page >= 1 && cloudPos.page <= S.totalPages) {
+      if (cloudPos.updatedAt > localPos.updatedAt || !localPos.page || (localPos.updatedAt === 0 && cloudPos.page !== localPos.page)) {
+        safeStorageSet('bookmark_' + trueId, cloudPos.page);
+        if (pdfFile.linked_pdf_id) safeStorageSet('bookmark_' + pdfFile.id, cloudPos.page);
+        const metaStr = JSON.stringify(cloudPos);
+        safeStorageSet('read_pos_meta_' + trueId, metaStr);
+        safeStorageSet('read_pos_meta_' + pdfFile.id, metaStr);
+        S.curPage = cloudPos.page;
+        document.getElementById('pg-input').value = cloudPos.page;
+        await scrollToPageAndRatio(cloudPos.page, cloudPos.ratio, false);
       }
     }
 
@@ -657,6 +671,10 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
 
     // Track recent PDFs
     pushRecent(pdfFile);
+
+    // Load OCR layer & Tags for current PDF in background
+    import('./ocr.js').then(m => m.loadOcrForCurrentPdf?.(trueId)).catch(() => {});
+    import('./tags.js').then(m => m.loadTagsForPdf?.(trueId)).catch(() => {});
 
     // Start background progressive full-document renderer (ensures all pages are rendered without scrolling)
     startBackgroundDocRenderer(pdfFile.id);
@@ -755,9 +773,17 @@ export async function ensurePageRendered(pageNum, container = null) {
     pgState.viewport = vp;
 
     const wrap = pgState.wrap;
+    const prevHeight = wrap.offsetHeight || vp.height;
     wrap.style.width  = vp.width  + 'px';
     wrap.style.height = vp.height + 'px';
     wrap.innerHTML = ''; // remove placeholder
+
+    const scrollEl = document.getElementById('canvas-scroll');
+    if (scrollEl && Math.abs(vp.height - prevHeight) > 1) {
+      if (wrap.offsetTop < scrollEl.scrollTop) {
+        scrollEl.scrollTop += (vp.height - prevHeight);
+      }
+    }
 
     const pdfCanvas = document.createElement('canvas');
     pdfCanvas.width  = vp.width;
@@ -828,6 +854,11 @@ export async function ensurePageRendered(pageNum, container = null) {
     pgState.srchOv = srchOv;
     pgState.textItems = textItems;
     pgState.rendered = true;
+
+    // Apply OCR layer if page has no native text layer (scanned page)
+    if (textItems.length === 0) {
+      import('./ocr.js').then(m => m.applyOcrToRenderedPage?.(pageNum)).catch(() => {});
+    }
 
     // Setup listeners & visuals
     setupAllListeners(pageNum);

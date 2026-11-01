@@ -1265,14 +1265,14 @@ body.theme-paper {
   --gold:    #B45309;
   --gold-l:  #D97706;
   --cream:   #FFFFFF;
-  --text:    #1E293B;
-  --muted:   #64748B;
+  --text:    #0F172A;
+  --muted:   #334155;
   --gn-desk-bg: #E8E3D8;
   --gn-tab-bar-bg: #EAE5DA;
   --gn-tab-inactive: #DFD9CC;
   --gn-tab-active: #F6F3EC;
   --gn-card-bg: #FFFFFF;
-  --gn-ink: #1E293B;
+  --gn-ink: #0F172A;
   --gn-shadow: 0 2px 10px rgba(30, 41, 59, 0.06);
   background: var(--navy);
   color: var(--text);
@@ -1318,17 +1318,17 @@ body.theme-paper .lib-hd {
   border-bottom: 1px solid #DDD7C8;
 }
 body.theme-paper #app-title {
-  color: #1E293B !important;
+  color: #0F172A !important;
 }
 body.theme-paper #sync-bar,
 body.theme-paper #drive-bar {
   background: #EFECE2;
   border-bottom: 1px solid #DDD7C8;
-  color: #475569;
+  color: #1E293B;
 }
 body.theme-paper #new-subj-btn {
   background: #FFFFFF;
-  color: #1E293B;
+  color: #0F172A;
   border: 1px solid #D0C9B8;
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(0,0,0,0.04);
@@ -1343,14 +1343,14 @@ body.theme-paper .li-subj-name {
   font-weight: 600;
 }
 body.theme-paper .li-fold-hd {
-  color: #334155 !important;
+  color: #1E293B !important;
 }
 body.theme-paper .li-fold-hd:hover {
   background: rgba(30, 41, 59, 0.06);
   color: #0F172A !important;
 }
 body.theme-paper .li-pdf {
-  color: #334155 !important;
+  color: #1E293B !important;
 }
 body.theme-paper .li-pdf:hover {
   background: rgba(30, 41, 59, 0.06);
@@ -1362,7 +1362,7 @@ body.theme-paper .li-pdf.active {
   font-weight: 600;
 }
 body.theme-paper .li-act-btn {
-  color: #64748B;
+  color: #334155;
 }
 body.theme-paper .li-act-btn:hover {
   background: rgba(30, 41, 59, 0.08);
@@ -1382,7 +1382,7 @@ body.theme-paper #mode-tog {
   padding: 2px;
 }
 body.theme-paper .mode-btn {
-  color: #475569;
+  color: #1E293B;
   border-radius: 999px;
   font-weight: 500;
 }
@@ -1394,7 +1394,7 @@ body.theme-paper .mode-btn.active {
 body.theme-paper .tb-btn {
   background: #FFFFFF;
   border-color: #D6D0C2;
-  color: #334155;
+  color: #0F172A;
   border-radius: 8px;
   font-weight: 500;
 }
@@ -1406,7 +1406,7 @@ body.theme-paper .tb-btn:hover {
 body.theme-paper #pg-input {
   background: #FFFFFF;
   border-color: #D6D0C2;
-  color: #1E293B;
+  color: #0F172A;
 }
 
 /* Canvas Scroll & Clean White Editors in Paper Theme */
@@ -1430,7 +1430,7 @@ body.theme-paper #folder-doc-toolbar {
 body.theme-paper .folder-fmt-btn,
 body.theme-paper .np-fmt-btn {
   background: #FFFFFF !important;
-  color: #334155 !important;
+  color: #1E293B !important;
   border: 1px solid #D6D0C2 !important;
   border-radius: 6px;
 }
@@ -1442,7 +1442,7 @@ body.theme-paper .np-fmt-btn:hover {
 }
 body.theme-paper #folder-doc-editor {
   background: #FFFFFF !important;
-  color: #1E293B !important;
+  color: #0F172A !important;
   border: 1px solid #DDD7C8 !important;
   box-shadow: 0 8px 24px rgba(30, 41, 59, 0.07) !important;
 }
@@ -1451,23 +1451,23 @@ body.theme-paper #ann-panel,
 body.theme-paper #search-panel {
   background: #FAF8F3 !important;
   border-left: 1px solid #DDD7C8 !important;
-  color: #1E293B !important;
+  color: #0F172A !important;
 }
 body.theme-paper #np-editor,
 body.theme-paper #np-digest-wrap,
 body.theme-paper #np-summaries-list {
   background: #FFFFFF !important;
-  color: #1E293B !important;
+  color: #0F172A !important;
 }
 body.theme-paper .np-digest-field textarea,
 body.theme-paper .np-digest-field div[contenteditable="true"] {
   background: #FAF8F3 !important;
-  color: #1E293B !important;
+  color: #0F172A !important;
   border-color: #DDD7C8 !important;
 }
 body.theme-paper .modal {
   background: #FAF8F3 !important;
-  color: #1E293B !important;
+  color: #0F172A !important;
   border: 1px solid #D6D0C2 !important;
   box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16) !important;
 }
@@ -1489,7 +1489,7 @@ body.theme-paper #lib-ctx-menu {
   box-shadow: 0 10px 25px rgba(15, 23, 42, 0.12) !important;
 }
 body.theme-paper .ctx-item {
-  color: #1E293B !important;
+  color: #0F172A !important;
 }
 body.theme-paper .ctx-item:hover {
   background: #F1F5F9 !important;
@@ -1505,13 +1505,13 @@ body.theme-paper .cal-day {
   box-shadow: var(--gn-shadow);
 }
 body.theme-paper .cal-day-title {
-  color: #334155 !important;
+  color: #1E293B !important;
   border-bottom-color: #DDD7C8 !important;
 }
 body.theme-paper .cal-item {
   background: #FFFFFF !important;
   border-color: #E2E8F0;
-  color: #475569 !important;
+  color: #1E293B !important;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
 }
 body.theme-paper .cal-item strong {
@@ -1520,6 +1520,83 @@ body.theme-paper .cal-item strong {
 body.theme-paper .cal-item .cal-time {
   color: #B45309 !important;
   font-weight: 600;
+}
+
+/* Tabs & Un-overridden Light-on-Light text contrast fixes in Paper Theme */
+body.theme-paper .gn-tab {
+  color: #1E293B;
+  font-weight: 600;
+}
+body.theme-paper .gn-tab.active {
+  color: #0F172A;
+  font-weight: 600;
+}
+body.theme-paper .note-body {
+  color: #0F172A !important;
+}
+body.theme-paper .note-body h1,
+body.theme-paper .note-body h2,
+body.theme-paper .note-body h3,
+body.theme-paper #note-editor h1,
+body.theme-paper #note-editor h2,
+body.theme-paper #note-editor h3,
+body.theme-paper #edit-note-ed h1,
+body.theme-paper #edit-note-ed h2,
+body.theme-paper #edit-note-ed h3 {
+  color: #0F172A !important;
+}
+body.theme-paper #note-editor,
+body.theme-paper #edit-note-ed,
+body.theme-paper #np-editor,
+body.theme-paper #np-digest-editor,
+body.theme-paper #folder-doc-editor {
+  color: #0F172A !important;
+}
+body.theme-paper .sar-note,
+body.theme-paper .sar-quote {
+  color: #1E293B !important;
+}
+body.theme-paper #drive-user,
+body.theme-paper .li-fold-name,
+body.theme-paper .pane-pdf-name {
+  color: #1E293B !important;
+}
+body.theme-paper .recent-item {
+  color: #1E293B !important;
+}
+body.theme-paper .recent-item:hover {
+  color: #0F172A !important;
+  background: rgba(30, 41, 59, 0.06) !important;
+}
+body.theme-paper .pg-placeholder {
+  color: #334155 !important;
+}
+body.theme-paper .gn-shelf-sub,
+body.theme-paper .gn-nb-meta,
+body.theme-paper .gn-nb-time {
+  color: #334155 !important;
+}
+body.theme-paper .subj-count-pill,
+body.theme-paper .fold-prog-badge {
+  color: #1E293B !important;
+  background: rgba(30, 41, 59, 0.08) !important;
+}
+body.theme-paper .fold-prog-badge.done {
+  color: #059669 !important;
+  background: rgba(16, 185, 129, 0.16) !important;
+}
+body.theme-paper .modal-box {
+  background: #FAF8F3 !important;
+  color: #0F172A !important;
+  border: 1px solid #D6D0C2 !important;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16) !important;
+}
+body.theme-paper .modal-box input,
+body.theme-paper .modal-box textarea,
+body.theme-paper .modal-box select {
+  background: #FFFFFF !important;
+  color: #0F172A !important;
+  border: 1px solid #CBD5E1 !important;
 }
 
 /* ── 3. Top GoodNotes Document Tabs (#gn-doc-tabs) ── */
@@ -1894,3 +1971,250 @@ body.theme-paper .gn-notebook-card {
   color: var(--muted);
   font-weight: 500;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HIGHLIGHT TAGS, TOPIC NOTES, SMART COPY & OCR PROGRESS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Highlight Tag Badges ── */
+.hi-tag-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--gold);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.hi-tag-badge:hover {
+  background: rgba(245, 158, 11, 0.28);
+  border-color: var(--gold);
+}
+
+/* ── Tags / Topic Notes Slide-Out Panel ── */
+#tags-panel {
+  position: fixed;
+  top: 44px;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  max-width: 95vw;
+  background: var(--navy-l);
+  border-left: 1px solid var(--navy-b);
+  z-index: 120;
+  display: none;
+  flex-direction: column;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+#tags-panel.open {
+  display: flex;
+}
+
+/* ── Tag Group Cards & Highlight Items ── */
+.tag-group-card {
+  background: var(--navy);
+  border: 1px solid var(--navy-b);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s ease;
+}
+.tag-group-card:hover {
+  border-color: var(--gold);
+}
+.tag-group-card .tag-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tag-group-card .tag-group-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tag-group-card .tag-group-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: rgba(100, 116, 139, 0.14);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.tag-hl-item {
+  background: var(--navy-l);
+  border: 1px solid var(--navy-b);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tag-hl-item:hover {
+  border-color: var(--gold);
+  background: rgba(201, 168, 76, 0.06);
+}
+.tag-hl-item .tag-hl-text {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  font-style: italic;
+  font-family: 'Libre Baskerville', serif;
+}
+.tag-hl-item .tag-hl-meta {
+  font-size: 10.5px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ── Topic Notes Drawer ── */
+.tag-notes-drawer {
+  background: var(--navy-m);
+  border: 1px solid var(--navy-b);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tag-notes-drawer textarea {
+  width: 100%;
+  min-height: 60px;
+  box-sizing: border-box;
+  background: var(--navy-l);
+  color: var(--text);
+  border: 1px solid var(--navy-b);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+/* ── OCR Progress Bar Modal / Overlay ── */
+.ocr-modal-progress {
+  width: 100%;
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ocr-modal-progress .ocr-progress-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--navy-m);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+.ocr-modal-progress .ocr-progress-fill {
+  height: 100%;
+  background: var(--gold);
+  border-radius: 4px;
+  transition: width 0.2s ease;
+}
+.ocr-modal-progress .ocr-progress-status {
+  font-size: 11.5px;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+}
+
+/* ── Selection Menu Smart Copy Button ── */
+.sel-btn.sel-copy {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  border: 1px solid var(--navy-b);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.sel-btn.sel-copy:hover {
+  background: var(--gold);
+  color: var(--navy);
+  border-color: var(--gold);
+}
+
+/* ── Paper Theme Overrides for New Components ── */
+body.theme-paper #tags-panel {
+  background: #FAF8F3 !important;
+  border-left: 1px solid #DDD7C8 !important;
+  color: #0F172A !important;
+}
+body.theme-paper .tag-group-card {
+  background: #FFFFFF !important;
+  border-color: #DDD7C8 !important;
+  color: #0F172A !important;
+}
+body.theme-paper .tag-group-card .tag-group-title {
+  color: #0F172A !important;
+}
+body.theme-paper .tag-group-card .tag-group-count {
+  color: #1E293B !important;
+  background: rgba(15, 23, 42, 0.08) !important;
+}
+body.theme-paper .tag-hl-item {
+  background: #FAF8F3 !important;
+  border-color: #DDD7C8 !important;
+  color: #0F172A !important;
+}
+body.theme-paper .tag-hl-item:hover {
+  background: #FFFBEB !important;
+  border-color: var(--gold) !important;
+}
+body.theme-paper .tag-hl-item .tag-hl-text {
+  color: #0F172A !important;
+}
+body.theme-paper .tag-hl-item .tag-hl-meta {
+  color: #334155 !important;
+}
+body.theme-paper .tag-notes-drawer {
+  background: #F4F0E6 !important;
+  border-color: #DDD7C8 !important;
+  color: #0F172A !important;
+}
+body.theme-paper .tag-notes-drawer textarea {
+  background: #FFFFFF !important;
+  color: #0F172A !important;
+  border-color: #CBD5E1 !important;
+}
+body.theme-paper .ocr-modal-progress .ocr-progress-bar {
+  background: #E2E8F0 !important;
+}
+body.theme-paper .ocr-modal-progress .ocr-progress-status {
+  color: #334155 !important;
+}
+body.theme-paper .sel-btn.sel-copy {
+  background: #FFFFFF !important;
+  color: #0F172A !important;
+  border: 1px solid #CBD5E1 !important;
+}
+body.theme-paper .sel-btn.sel-copy:hover {
+  background: var(--gold) !important;
+  color: #FFFFFF !important;
+  border-color: var(--gold) !important;
+}
+

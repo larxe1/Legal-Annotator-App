@@ -552,6 +552,15 @@ async function copyTextToClipboard(text) {
 }
 
 export async function copyEntirePdfText() {
+  try {
+    const smartMod = await import('./smart-copy.js').catch(() => null);
+    if (smartMod?.copyEntirePdfTextSmart) {
+      return await smartMod.copyEntirePdfTextSmart();
+    }
+  } catch (err) {
+    console.warn('[copyEntirePdfText] Delegating to smart-copy failed, falling back:', err);
+  }
+
   if (_isExtractingPdfText) return;
 
   if (!S.pdfDoc || !S.totalPages || S.totalPages <= 0) {
@@ -700,13 +709,119 @@ export function setIsJumping(val) {
   _isJumping = !!val;
 }
 
-let _cloudBmTimer = null;
-function _scheduleCloudBookmarkSave(trueId, pg) {
-  if (_cloudBmTimer) clearTimeout(_cloudBmTimer);
-  _cloudBmTimer = setTimeout(() => {
-    _cloudBmTimer = null;
-    import('./db.js').then(m => m.dbSetSetting?.('read_pos_' + trueId, String(pg))).catch(() => {});
-  }, 1000);
+const _cloudBmTimers = new Map();
+
+export function parseReadPosPayload(raw) {
+  if (!raw) return { page: 1, ratio: 0, updatedAt: 0 };
+  if (typeof raw === 'object') {
+    return {
+      page: Number(raw.page) || 1,
+      ratio: Number(raw.ratio) || 0,
+      updatedAt: Number(raw.updatedAt) || 0
+    };
+  }
+  const str = String(raw).trim();
+  if (!str) return { page: 1, ratio: 0, updatedAt: 0 };
+  if (str.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(str);
+      return {
+        page: Number(parsed.page) || 1,
+        ratio: Number(parsed.ratio) || 0,
+        updatedAt: Number(parsed.updatedAt) || 0
+      };
+    } catch {}
+  }
+  const pg = parseInt(str, 10);
+  return {
+    page: !isNaN(pg) && pg >= 1 ? pg : 1,
+    ratio: 0,
+    updatedAt: 0
+  };
+}
+
+export function saveReadingPosition(pdfFile, pageNum, scrollRatio = null, immediateCloud = false) {
+  if (!pdfFile || !pageNum) return;
+  const trueId = pdfFile.linked_pdf_id || pdfFile.id;
+  let ratio = 0;
+  if (scrollRatio === null) {
+    const wrap = S.pages?.[pageNum]?.wrap;
+    const scrollEl = document.getElementById('canvas-scroll');
+    ratio = (wrap && scrollEl && wrap.offsetHeight > 0)
+      ? Math.max(0, Math.min(0.95, (scrollEl.scrollTop - wrap.offsetTop) / wrap.offsetHeight))
+      : 0;
+  } else {
+    ratio = Math.max(0, Math.min(0.95, Number(scrollRatio) || 0));
+  }
+
+  const payload = {
+    page: pageNum,
+    ratio: Number(ratio.toFixed(4)),
+    updatedAt: Date.now()
+  };
+  const payloadStr = JSON.stringify(payload);
+
+  // Backwards-compatible legacy bookmark keys
+  safeStorageSet('bookmark_' + pdfFile.id, pageNum);
+  if (pdfFile.linked_pdf_id) safeStorageSet('bookmark_' + pdfFile.linked_pdf_id, pageNum);
+
+  // Rich metadata keys
+  safeStorageSet('read_pos_meta_' + trueId, payloadStr);
+  safeStorageSet('read_pos_meta_' + pdfFile.id, payloadStr);
+
+  // Cloud sync
+  if (immediateCloud) {
+    if (_cloudBmTimers.has(trueId)) {
+      clearTimeout(_cloudBmTimers.get(trueId));
+      _cloudBmTimers.delete(trueId);
+    }
+    import('./db.js').then(m => m.dbSetSetting?.('read_pos_' + trueId, payloadStr)).catch(() => {});
+  } else {
+    if (_cloudBmTimers.has(trueId)) {
+      clearTimeout(_cloudBmTimers.get(trueId));
+    }
+    const timer = setTimeout(() => {
+      _cloudBmTimers.delete(trueId);
+      import('./db.js').then(m => m.dbSetSetting?.('read_pos_' + trueId, payloadStr)).catch(() => {});
+    }, 1000);
+    _cloudBmTimers.set(trueId, timer);
+  }
+}
+
+export function flushCurrentReadingPosition() {
+  if (S.curPDF && S.curPage && !_isJumping) {
+    saveReadingPosition(S.curPDF, S.curPage, null, true);
+  }
+}
+
+export async function scrollToPageAndRatio(pageNum, ratio = 0, smooth = false) {
+  if (!S.totalPages || pageNum < 1 || pageNum > S.totalPages) return;
+  _isJumping = true;
+
+  const { ensurePageRendered } = await import('./viewer.js');
+  await ensurePageRendered(pageNum);
+  if (pageNum > 1) ensurePageRendered(pageNum - 1);
+
+  const scrollEl = document.getElementById('canvas-scroll');
+  const wrap = S.pages?.[pageNum]?.wrap;
+  if (wrap && scrollEl) {
+    const exactTop = Math.max(0, wrap.offsetTop - 16 + Math.round((ratio || 0) * (wrap.offsetHeight || 0)));
+    if (smooth && scrollEl.scrollTo) {
+      scrollEl.scrollTo({ top: exactTop, behavior: 'smooth' });
+    } else {
+      scrollEl.scrollTop = exactTop;
+    }
+    requestAnimationFrame(() => {
+      if (Math.abs(scrollEl.scrollTop - exactTop) > 8) scrollEl.scrollTop = exactTop;
+    });
+    setTimeout(() => {
+      if (Math.abs(scrollEl.scrollTop - exactTop) > 8) scrollEl.scrollTop = exactTop;
+    }, 120);
+  }
+
+  setTimeout(() => {
+    _isJumping = false;
+  }, 280);
 }
 
 // ── Page navigation ──
@@ -759,10 +874,7 @@ export function initNavButtons() {
         S.curPage = foundPage;
         document.getElementById('pg-input').value = foundPage;
         if (S.curPDF) {
-          safeStorageSet('bookmark_' + S.curPDF.id, foundPage);
-          if (S.curPDF.linked_pdf_id) safeStorageSet('bookmark_' + S.curPDF.linked_pdf_id, foundPage);
-          const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
-          _scheduleCloudBookmarkSave(trueId, foundPage);
+          saveReadingPosition(S.curPDF, foundPage, null, false);
         }
 
         // Efficient thumbnail highlight: only toggle previous and current thumbnail instead of scanning all items
@@ -786,10 +898,7 @@ export async function jumpToPage(pg, smooth = false) {
   S.curPage = pg;
   document.getElementById('pg-input').value = pg;
   if (S.curPDF) {
-    safeStorageSet('bookmark_' + S.curPDF.id, pg);
-    if (S.curPDF.linked_pdf_id) safeStorageSet('bookmark_' + S.curPDF.linked_pdf_id, pg);
-    const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
-    _scheduleCloudBookmarkSave(trueId, pg);
+    saveReadingPosition(S.curPDF, pg, 0, false);
   }
 
   // Efficient thumbnail highlight
@@ -803,26 +912,7 @@ export async function jumpToPage(pg, smooth = false) {
   }
 
   updateAppTitle();
-  
-  const pageState = S.pages?.[pg];
-  if (pageState?.wrap) {
-    _isJumping = true;
-
-    // 1. Ensure target page is rendered first so dimensions are exact
-    const { ensurePageRendered } = await import('./viewer.js');
-    await ensurePageRendered(pg);
-
-    // 2. Use native scrollIntoView on the page element
-    pageState.wrap.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
-
-    // 3. Re-align after a tick to absorb any layout reflow from adjacent page renders
-    setTimeout(() => {
-      if (pageState?.wrap) {
-        pageState.wrap.scrollIntoView({ behavior: 'auto', block: 'start' });
-      }
-      setTimeout(() => { _isJumping = false; }, 250);
-    }, 100);
-  }
+  await scrollToPageAndRatio(pg, 0, smooth);
 }
 
 // ── Keyboard shortcuts ──

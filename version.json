@@ -1,7 +1,7 @@
 {
-  "version": "1.7.0",
-  "build": 20,
-  "updatedAt": "2026-10-28T18:53:20+08:00",
-  "notes": "Touchscreen finger highlighting: drag a finger over text to highlight (mouse works as before, detected automatically), drag margins or use two fingers to scroll, pinch to zoom. Plus a more reliable auto-updater.",
+  "version": "1.8.0",
+  "build": 21,
+  "updatedAt": "2026-11-01T09:48:00+08:00",
+  "notes": "Added 100% local Windows Native Scan-to-OCR (embeds searchable text layer into PDF + Drive sync), separate Smart Copy Text (retains formatting & strips page numbers), Highlight Tags with quick-scroll & openable Topic Notes workspace for outside laws, cross-device cloud reading position sync + tab switch fix, and high-contrast Paper theme text.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

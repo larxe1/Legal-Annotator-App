@@ -13,7 +13,8 @@ import { initDrawControls, initPinchZoom } from './draw.js';
 import {
   initModals, initSidebar, initZoom, initNavButtons,
   initKeyboard, exportAnnotations, toast, syncErr,
-  openModal, closeModal, autosave, updateAppTitle
+  openModal, closeModal, autosave, updateAppTitle,
+  flushCurrentReadingPosition
 } from './ui.js';
 import { initNotepad } from './notepad.js';
 import { initPanelFind } from './panel-find.js';
@@ -23,7 +24,7 @@ import { initRealtimeSync } from './sync.js';
 import { initOutbox } from './outbox.js';
 import { initDiagramStudio } from './diagram.js';
 import { initGlobalPdfLinks } from './pdflink.js';
-import { initStorageManager, safeStorageSet, safeStorageGet, safeStorageRemove } from './storage.js';
+import { initStorageManager, safeStorageGet, safeStorageSet, safeStorageRemove } from './storage.js';
 import { initGoodNotesUI, openSubjectBinderByTitle } from './goodnotes-ui.js';
 
 // Global Error Boundary to prevent tab-freezing crashes
@@ -114,25 +115,56 @@ async function init() {
   safeInit(updateAppTitle, 'AppTitle');
   safeInit(initDiagramStudio, 'DiagramStudio');
   safeInit(initGlobalPdfLinks, 'GlobalPdfLinks');
+  safeInit(() => import('./ocr.js').then(m => m.initOcrTool?.()).catch(e => console.warn('[Init] OcrTool unavailable:', e)), 'OcrTool');
+  safeInit(() => import('./smart-copy.js').then(m => m.initSmartCopy?.()).catch(e => console.warn('[Init] SmartCopy unavailable:', e)), 'SmartCopy');
+  safeInit(() => import('./tags.js').then(m => m.initTagsPanel?.()).catch(e => console.warn('[Init] TagsPanel unavailable:', e)), 'TagsPanel');
 
-  // ── Save reading position on tab hide / close ──
-  // The scroll handler has a 60ms debounce — these cover the case where the user
-  // closes the tab or navigates away before that debounce fires.
+  document.getElementById('btn-ocr-pdf')?.addEventListener('click', () => {
+    import('./ocr.js').then(m => m.openOcrToolModal?.()).catch(e => console.warn('[OCR] openOcrToolModal error:', e));
+  });
+  document.getElementById('btn-tags')?.addEventListener('click', () => {
+    import('./tags.js').then(m => m.toggleTagsPanel?.()).catch(e => console.warn('[Tags] toggleTagsPanel error:', e));
+  });
+
+  // ── Save reading position on tab hide / close & auto-sync when returning ──
   const _saveReadingPos = () => {
-    if (S.curPDF && S.curPage) {
-      safeStorageSet('bookmark_' + S.curPDF.id, S.curPage);
-      if (S.curPDF.linked_pdf_id) {
-        safeStorageSet('bookmark_' + S.curPDF.linked_pdf_id, S.curPage);
+    flushCurrentReadingPosition();
+  };
+
+  const _checkCloudReadingPos = async () => {
+    if (!S.curPDF || !S.curPage) return;
+    const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
+    try {
+      const { parseReadPosPayload, scrollToPageAndRatio } = await import('./ui.js');
+      const localRaw = safeStorageGet('read_pos_meta_' + trueId) || safeStorageGet('bookmark_' + trueId);
+      const localPos = parseReadPosPayload(localRaw);
+      const cloudRaw = await dbGetSetting('read_pos_' + trueId);
+      if (!cloudRaw) return;
+      const cloudPos = parseReadPosPayload(cloudRaw);
+      if (cloudPos && cloudPos.page >= 1 && cloudPos.page <= S.totalPages) {
+        if (cloudPos.updatedAt > localPos.updatedAt && (cloudPos.page !== S.curPage || Math.abs(cloudPos.ratio - (localPos.ratio || 0)) > 0.05)) {
+          safeStorageSet('bookmark_' + trueId, cloudPos.page);
+          if (S.curPDF.linked_pdf_id) safeStorageSet('bookmark_' + S.curPDF.id, cloudPos.page);
+          const metaStr = JSON.stringify(cloudPos);
+          safeStorageSet('read_pos_meta_' + trueId, metaStr);
+          safeStorageSet('read_pos_meta_' + S.curPDF.id, metaStr);
+          S.curPage = cloudPos.page;
+          document.getElementById('pg-input').value = cloudPos.page;
+          await scrollToPageAndRatio(cloudPos.page, cloudPos.ratio, true);
+        }
       }
-      const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
-      dbSetSetting('read_pos_' + trueId, String(S.curPage)).catch(() => {});
+    } catch (e) {
+      console.warn('[Sync] Focus reading position sync check error:', e);
     }
   };
+
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') _saveReadingPos();
+    else if (document.visibilityState === 'visible') _checkCloudReadingPos();
   });
   window.addEventListener('beforeunload', _saveReadingPos);
   window.addEventListener('pagehide', _saveReadingPos); // iOS Safari
+  window.addEventListener('focus', _checkCloudReadingPos);
 
   // Mode buttons
   document.querySelectorAll('.mode-btn').forEach(btn =>

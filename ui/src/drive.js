@@ -597,7 +597,6 @@ export async function driveOrganizeAll({ silent = false } = {}) {
 
       const dFile = fileById.get(driveId);
       if (!dFile || dFile.trashed) continue;
-
       const desiredName = pdf.name.toLowerCase().endsWith('.pdf') ? _cleanDriveName(pdf.name) : `${_cleanDriveName(pdf.name)}.pdf`;
       const currentParents = dFile.parents || [];
       const needsMove = !currentParents.includes(targetFolderId) || currentParents.length !== 1;
@@ -848,6 +847,86 @@ export async function driveUploadPDF(file, targetFolderId) {
   const data = await resp.json();
   syncOK('Uploaded to Drive');
   return data; // { id, name }
+}
+
+// ── Update PDF in RAM cache, IndexedDB, Desktop Vault, and Google Drive ──
+export async function driveUpdatePDF(driveFileId, modifiedBlob, pdfName = 'document.pdf') {
+  if (driveFileId) S.pdfCache[driveFileId] = modifiedBlob;
+  await setCachedPDF(driveFileId, modifiedBlob, pdfName);
+
+  if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__?.invoke && driveFileId && modifiedBlob) {
+    try {
+      const buf = await modifiedBlob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      const chunk = 0x8000;
+      const parts = [];
+      for (let i = 0; i < bytes.length; i += chunk) {
+        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunk)));
+      }
+      const base64 = btoa(parts.join(''));
+      await window.__TAURI_INTERNALS__.invoke('desktop_cache_save_pdf', { fileId: String(driveFileId), base64 });
+    } catch (e) {
+      console.warn('[Drive] Desktop vault cache save failed:', e);
+    }
+  }
+
+  let updatedDrive = false;
+  if (!S.driveToken) {
+    await ensureDriveTokenFresh().catch(() => {});
+  }
+
+  if (S.driveToken && driveFileId) {
+    try {
+      syncSpin('Updating PDF on Drive…');
+      const meta = {
+        name: pdfName,
+        mimeType: 'application/pdf',
+      };
+      const buildForm = () => {
+        const f = new FormData();
+        f.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
+        f.append('file', modifiedBlob);
+        return f;
+      };
+
+      let res = await fetch(
+        `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(driveFileId)}?uploadType=multipart`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${S.driveToken}` },
+          body: buildForm(),
+        }
+      );
+
+      if (res.status === 401) {
+        try {
+          await _requestToken(true, true);
+          res = await fetch(
+            `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(driveFileId)}?uploadType=multipart`,
+            {
+              method: 'PATCH',
+              headers: { Authorization: `Bearer ${S.driveToken}` },
+              body: buildForm(),
+            }
+          );
+        } catch {
+          _onSessionExpired();
+        }
+      }
+
+      updatedDrive = !!res?.ok;
+      if (updatedDrive) {
+        syncOK('PDF updated on Drive');
+      } else {
+        syncErr('Drive update failed');
+      }
+    } catch (err) {
+      console.warn('[Drive] driveUpdatePDF failed:', err);
+      syncErr('Drive update failed');
+    }
+  }
+
+  return { updatedDrive };
 }
 
 // ── Fetch PDF bytes from Drive (with RAM + IndexedDB disk cache) ──
