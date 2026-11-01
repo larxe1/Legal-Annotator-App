@@ -34,6 +34,35 @@ let _folderNotesId = null;
 let _ctxTarget = null;
 let _ctxIsFolder = false;
 
+function ensureLibCtxMenuItems() {
+  const menu = document.getElementById('lib-ctx-menu');
+  if (!menu) return;
+  const linkBtn = document.getElementById('lib-ctx-link');
+  if (!document.getElementById('ctx-move-folder')) {
+    const moveItem = document.createElement('div');
+    moveItem.className = 'ctx-item';
+    moveItem.id = 'ctx-move-folder';
+    moveItem.textContent = '📂 Move to Folder…';
+    if (linkBtn && linkBtn.nextSibling) {
+      menu.insertBefore(moveItem, linkBtn.nextSibling);
+    } else {
+      menu.appendChild(moveItem);
+    }
+  }
+  if (!document.getElementById('ctx-set-syllabus')) {
+    const sylItem = document.createElement('div');
+    sylItem.className = 'ctx-item';
+    sylItem.id = 'ctx-set-syllabus';
+    sylItem.textContent = '📌 Set as Subject Syllabus';
+    const moveItem = document.getElementById('ctx-move-folder');
+    if (moveItem && moveItem.nextSibling) {
+      menu.insertBefore(sylItem, moveItem.nextSibling);
+    } else {
+      menu.appendChild(sylItem);
+    }
+  }
+}
+
 function showLibCtxMenu(item, x, y, isFolder = false) {
   let target = item;
   _ctxIsFolder = isFolder;
@@ -70,6 +99,7 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   }
 
   _ctxTarget = target;
+  ensureLibCtxMenuItems();
   const menu = document.getElementById('lib-ctx-menu');
   if (!menu) return;
 
@@ -79,6 +109,10 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   const setPageBtn = document.getElementById('lib-ctx-set-page');
   if (setPageBtn) setPageBtn.style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   document.getElementById('lib-ctx-link').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
+  const moveFolderBtn = document.getElementById('ctx-move-folder');
+  if (moveFolderBtn) moveFolderBtn.style.display = isMultiFolder ? 'none' : 'block';
+  const setSylBtn = document.getElementById('ctx-set-syllabus');
+  if (setSylBtn) setSylBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
   document.getElementById('lib-ctx-offline').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   document.getElementById('lib-ctx-download').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   document.getElementById('lib-ctx-gdrive').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
@@ -224,6 +258,7 @@ function showExportOptsModal(foldersOrFolder, defaultMode = 'all') {
 export function initContextMenu() {
   const menu = document.getElementById('lib-ctx-menu');
   if (!menu) return;
+  ensureLibCtxMenuItems();
 
   // "Open" — normal open in primary pane
   document.getElementById('lib-ctx-open').addEventListener('click', () => {
@@ -268,6 +303,42 @@ export function initContextMenu() {
     const pdf = _ctxTarget;
     hideLibCtxMenu();
     openLinkPdfModal(pdf);
+  });
+
+  // "Move to Folder…"
+  document.getElementById('ctx-move-folder')?.addEventListener('click', () => {
+    if (!_ctxTarget) return;
+    const target = Array.isArray(_ctxTarget) ? _ctxTarget[0] : _ctxTarget;
+    const isFolder = _ctxIsFolder;
+    hideLibCtxMenu();
+    openMoveToFolderModal(target, isFolder);
+  });
+
+  // "Set as Subject Syllabus"
+  document.getElementById('ctx-set-syllabus')?.addEventListener('click', async () => {
+    if (!_ctxTarget || _ctxIsFolder) return;
+    const pdf = Array.isArray(_ctxTarget) ? _ctxTarget[0] : _ctxTarget;
+    hideLibCtxMenu();
+    if (typeof window.__setSubjectSyllabusPdf === 'function') {
+      window.__setSubjectSyllabusPdf(pdf);
+    } else {
+      const folder = S.folders.find(f => f.id === pdf.folder_id);
+      let subjectId = folder ? folder.subject_id : null;
+      let cur = folder;
+      let depth = 0;
+      while (cur && !subjectId && cur.parent_folder_id && depth < 20) {
+        cur = S.folders.find(f => f.id === cur.parent_folder_id);
+        if (cur?.subject_id) subjectId = cur.subject_id;
+        depth++;
+      }
+      if (subjectId) {
+        safeStorageSet(`subject_syllabus_pdf_${subjectId}`, pdf.id);
+        const subj = S.subjects.find(s => s.id === subjectId);
+        toast(`📌 "${pdf.name}" set as syllabus for ${subj ? subj.name : 'subject'}`);
+      } else {
+        toast(`📌 Set "${pdf.name}" as subject syllabus`);
+      }
+    }
   });
 
   // "Open in Google Drive" — opens file directly in Google Drive in new tab
@@ -448,6 +519,55 @@ export function updateSelectionUI() {
       el.classList.remove('li-selected');
     }
   });
+}
+
+// ── Drag & Drop Hint & Visual Helper ──
+function getOrCreateDropHint() {
+  let hint = document.getElementById('lib-drop-hint');
+  if (!hint) {
+    hint = document.createElement('div');
+    hint.id = 'lib-drop-hint';
+    hint.style.cssText = 'position: fixed; pointer-events: none; z-index: 9999; padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; background: #0f172a; color: #f59e0b; border: 1px solid #f59e0b; box-shadow: 0 4px 12px rgba(0,0,0,0.35); display: none;';
+    document.body.appendChild(hint);
+  }
+  return hint;
+}
+
+function showDropHint(text, clientX, clientY) {
+  const hint = getOrCreateDropHint();
+  hint.textContent = text;
+  hint.style.display = 'block';
+  const x = Math.min(clientX + 14, window.innerWidth - 220);
+  const y = Math.min(clientY + 14, window.innerHeight - 40);
+  hint.style.left = `${Math.max(10, x)}px`;
+  hint.style.top = `${Math.max(10, y)}px`;
+}
+
+function hideDropHint() {
+  const hint = document.getElementById('lib-drop-hint');
+  if (hint) hint.style.display = 'none';
+}
+
+let _autoOpenTimer = null;
+let _autoOpenFolderId = null;
+function clearAutoOpenTimer() {
+  if (_autoOpenTimer) {
+    clearTimeout(_autoOpenTimer);
+    _autoOpenTimer = null;
+  }
+  _autoOpenFolderId = null;
+}
+
+export function clearAllDragVisuals() {
+  hideDropHint();
+  clearAutoOpenTimer();
+  document.querySelectorAll('.li-fold, .li-fold-hd, .li-pdf, .li-subj-hd').forEach(el => {
+    el.classList.remove('drag-over', 'drop-above', 'drop-inside', 'drop-below');
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('dragend', clearAllDragVisuals);
 }
 
 // ── Unified Drag & Drop Logic ──
@@ -664,13 +784,20 @@ function buildSubjectEl(subj, idx = 0) {
   hd.addEventListener('dragover', e => {
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    hd.classList.add('drag-over');
+    hd.classList.remove('drop-above', 'drop-below');
+    hd.classList.add('drop-inside');
+    showDropHint(`📚 Move to root of "${subj.name}"`, e.clientX, e.clientY);
   });
-  hd.addEventListener('dragleave', () => hd.classList.remove('drag-over'));
+  hd.addEventListener('dragleave', e => {
+    if (!hd.contains(e.relatedTarget)) {
+      hd.classList.remove('drop-inside', 'drag-over');
+      hideDropHint();
+    }
+  });
   hd.addEventListener('drop', async e => {
     e.preventDefault();
     e.stopPropagation();
-    hd.classList.remove('drag-over');
+    clearAllDragVisuals();
     const rawData = e.dataTransfer ? e.dataTransfer.getData('text/plain') : null;
     if (!rawData) return;
     let payload;
@@ -726,6 +853,7 @@ function buildFolderEl(fold) {
         <button class="li-act-btn" title="Import / Auto-Order from Syllabus" data-act="syllabus">📋</button>
         <button class="li-act-btn" title="Add subfolder" data-act="subfolder">📁+</button>
         <button class="li-act-btn" title="Add PDF" data-act="upload">📄+</button>
+        <button class="li-act-btn" title="Move folder" data-act="move">📂</button>
         <button class="li-act-btn" title="Rename" data-act="rename">✏</button>
         <button class="li-act-btn del" title="Delete" data-act="del">✕</button>
       </div>
@@ -785,6 +913,11 @@ function buildFolderEl(fold) {
   w.querySelector('[data-act="upload"]').addEventListener('click', e => {
     e.stopPropagation();
     triggerPDFUpload(fold.id);
+  });
+
+  w.querySelector('[data-act="move"]').addEventListener('click', e => {
+    e.stopPropagation();
+    openMoveToFolderModal(fold, true);
   });
 
   w.querySelector('[data-act="rename"]').addEventListener('click', e => {
@@ -848,20 +981,78 @@ function buildFolderEl(fold) {
   });
   w.addEventListener('dragend', () => { 
     document.querySelectorAll('.li-selected').forEach(el => el.style.opacity = '');
+    clearAllDragVisuals();
   });
 
   hd.addEventListener('dragover', e => {
-    if (!S.selectedIds.has(fold.id)) {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      hd.classList.add('drag-over');
+    if (S.selectedIds.has(fold.id)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+
+    // Distinguish 3 clear zones by cursor Y within hd.getBoundingClientRect()
+    const rect = hd.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+
+    const isDraggingOnlyPdfs = S.selectedIds.size > 0 && Array.from(S.selectedIds).every(id => {
+      const cleanId = id.startsWith('pdf:') ? id.slice(4) : id;
+      return S.pdfs.some(p => p.id === cleanId) || cleanId.startsWith('pdf_');
+    });
+
+    const allowReorder = !isDraggingOnlyPdfs || Boolean(fold.parent_folder_id);
+
+    if (allowReorder && y < rect.height * 0.22) {
+      hd.classList.remove('drop-inside', 'drop-below');
+      w.classList.remove('drag-over');
+      hd.classList.add('drop-above');
+      clearAutoOpenTimer();
+      showDropHint(`↑ Place above "${fold.name}"`, e.clientX, e.clientY);
+    } else if (allowReorder && y > rect.height * 0.78) {
+      hd.classList.remove('drop-inside', 'drop-above');
+      w.classList.remove('drag-over');
+      hd.classList.add('drop-below');
+      clearAutoOpenTimer();
+      showDropHint(`↓ Place below "${fold.name}"`, e.clientX, e.clientY);
+    } else {
+      hd.classList.remove('drop-above', 'drop-below');
+      hd.classList.add('drop-inside');
+      w.classList.add('drag-over');
+      showDropHint(`📂 Move inside "${fold.name}"`, e.clientX, e.clientY);
+
+      // Auto-open if hovering in drop-inside on a collapsed folder for 650ms
+      if (!S.expandedFold[fold.id]) {
+        if (_autoOpenFolderId !== fold.id) {
+          clearAutoOpenTimer();
+          _autoOpenFolderId = fold.id;
+          _autoOpenTimer = setTimeout(() => {
+            if (_autoOpenFolderId === fold.id) {
+              S.expandedFold[fold.id] = true;
+              chev.classList.remove('closed');
+              ch.style.display = 'flex';
+              w.classList.add('open');
+            }
+          }, 650);
+        }
+      } else {
+        clearAutoOpenTimer();
+      }
     }
   });
-  hd.addEventListener('dragleave', () => hd.classList.remove('drag-over'));
+
+  hd.addEventListener('dragleave', e => {
+    if (!hd.contains(e.relatedTarget)) {
+      hd.classList.remove('drop-above', 'drop-below', 'drop-inside');
+      w.classList.remove('drag-over');
+      clearAutoOpenTimer();
+      hideDropHint();
+    }
+  });
+
   hd.addEventListener('drop', async e => {
     e.preventDefault();
     e.stopPropagation();
-    hd.classList.remove('drag-over');
+    clearAllDragVisuals();
+
     const rawData = e.dataTransfer ? e.dataTransfer.getData('text/plain') : null;
     if (!rawData) return;
     
@@ -871,26 +1062,19 @@ function buildFolderEl(fold) {
 
     if (draggedIds.includes(fold.id)) return;
 
-    const pdfIds = draggedIds
-      .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
-      .filter(id => S.pdfs.some(p => p.id === id) || id.startsWith('pdf_'));
-    const foldIds = draggedIds
-      .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
-      .filter(id => !pdfIds.includes(id));
-
-    // When dragging ONLY PDFs onto a folder, user's intent is ALWAYS to move into the folder
-    if (pdfIds.length > 0 && foldIds.length === 0) {
-      await handleMoveInto(fold.id, draggedIds);
-      return;
-    }
-
-    // Check intent based on mouse Y coordinate
     const rect = hd.getBoundingClientRect();
     const y = e.clientY - rect.top;
-    
-    if (y < rect.height * 0.25) {
+
+    const isDraggingOnlyPdfs = draggedIds.every(id => {
+      const cleanId = id.startsWith('pdf:') ? id.slice(4) : id;
+      return S.pdfs.some(p => p.id === cleanId) || cleanId.startsWith('pdf_');
+    });
+
+    const allowReorder = !isDraggingOnlyPdfs || Boolean(fold.parent_folder_id);
+
+    if (allowReorder && y < rect.height * 0.22) {
       await handleReorder(fold.id, 'folder', draggedIds, false);
-    } else if (y > rect.height * 0.75) {
+    } else if (allowReorder && y > rect.height * 0.78) {
       await handleReorder(fold.id, 'folder', draggedIds, true);
     } else {
       await handleMoveInto(fold.id, draggedIds);
@@ -901,12 +1085,19 @@ function buildFolderEl(fold) {
     if (e.target === ch && !S.selectedIds.has(fold.id)) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      showDropHint(`📂 Move inside "${fold.name}"`, e.clientX, e.clientY);
+    }
+  });
+  ch.addEventListener('dragleave', e => {
+    if (!ch.contains(e.relatedTarget)) {
+      hideDropHint();
     }
   });
   ch.addEventListener('drop', async e => {
     if (e.target !== ch) return;
     e.preventDefault();
     e.stopPropagation();
+    clearAllDragVisuals();
     const rawData = e.dataTransfer ? e.dataTransfer.getData('text/plain') : null;
     if (!rawData) return;
     let payload;
@@ -946,6 +1137,7 @@ function buildPdfEl(pdf) {
     ${defBadgeHtml}
     <span class="ann-badge" style="${count ? '' : 'display:none'}">${count}</span>
     <div class="li-acts">
+      <button class="li-act-btn" title="Move to folder" data-act="move">📂</button>
       <button class="li-act-btn" title="Create Shortcut in another folder" data-act="link">🔗</button>
       <button class="li-act-btn" title="Rename" data-act="rename">✏</button>
       <button class="li-act-btn del" title="Delete" data-act="del">✕</button>
@@ -987,21 +1179,36 @@ function buildPdfEl(pdf) {
   });
   el.addEventListener('dragend', () => { 
     document.querySelectorAll('.li-selected').forEach(el => el.style.opacity = '');
+    clearAllDragVisuals();
   });
 
   el.addEventListener('dragover', e => {
     e.preventDefault();
     e.stopPropagation(); // prevent folder from also highlighting
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    el.classList.add('drag-over');
+
+    const rect = el.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    if (y < rect.height / 2) {
+      el.classList.remove('drop-below', 'drag-over');
+      el.classList.add('drop-above');
+      showDropHint(`↑ Place above "${pdf.name}"`, e.clientX, e.clientY);
+    } else {
+      el.classList.remove('drop-above', 'drag-over');
+      el.classList.add('drop-below');
+      showDropHint(`↓ Place below "${pdf.name}"`, e.clientX, e.clientY);
+    }
   });
   el.addEventListener('dragleave', e => {
-    if (!el.contains(e.relatedTarget)) el.classList.remove('drag-over');
+    if (!el.contains(e.relatedTarget)) {
+      el.classList.remove('drop-above', 'drop-below', 'drag-over');
+      hideDropHint();
+    }
   });
   el.addEventListener('drop', async e => {
     e.preventDefault();
     e.stopPropagation();
-    el.classList.remove('drag-over');
+    clearAllDragVisuals();
 
     const rawData = e.dataTransfer ? e.dataTransfer.getData('text/plain') : null;
     if (!rawData) return;
@@ -1045,6 +1252,11 @@ function buildPdfEl(pdf) {
       openDefaultPageModal(pdf);
     });
   }
+
+  el.querySelector('[data-act="move"]')?.addEventListener('click', e => {
+    e.stopPropagation();
+    openMoveToFolderModal(pdf, false);
+  });
 
   el.querySelector('[data-act="link"]').addEventListener('click', e => {
     e.stopPropagation();
@@ -1929,6 +2141,243 @@ export function openLinkPdfModal(pdf) {
 
   import('./ui.js').then(m => m.openModal('mo-link-pdf'));
   setTimeout(() => searchInput?.focus(), 80);
+}
+
+// ── Move to Folder Modal (Strictly Within That Same Subject) ──
+function ensureMoveToFolderModal() {
+  if (document.getElementById('mo-move-to-folder')) return;
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.id = 'mo-move-to-folder';
+  modal.innerHTML = `
+    <div class="modal" style="max-width: 460px; width: 92vw; max-height: 85vh; display: flex; flex-direction: column;">
+      <div class="modal-hd">
+        <h3 id="move-folder-modal-title">📂 Move to Folder…</h3>
+        <button class="modal-close" id="close-move-folder-modal" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 10px; overflow: hidden; flex: 1; padding: 12px 16px;">
+        <div style="font-size: 12px; color: var(--muted);" id="move-folder-target-desc">
+          Item: <strong id="move-folder-item-name" style="color: #e8e4db;"></strong>
+        </div>
+        <input type="text" id="move-folder-search" class="mo-input" placeholder="🔍 Filter folders in this subject…" style="width: 100%; box-sizing: border-box;" />
+        <div id="move-folder-tree" class="lft-container" style="flex: 1; min-height: 220px; max-height: 380px;"></div>
+      </div>
+      <div class="modal-ft" style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn btn-ghost" id="cancel-move-folder-modal">Cancel</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const closeBtn = document.getElementById('close-move-folder-modal');
+  const cancelBtn = document.getElementById('cancel-move-folder-modal');
+  if (closeBtn) closeBtn.onclick = () => closeModal('mo-move-to-folder');
+  if (cancelBtn) cancelBtn.onclick = () => closeModal('mo-move-to-folder');
+  modal.onclick = e => { if (e.target === modal) closeModal('mo-move-to-folder'); };
+}
+
+export function openMoveToFolderModal(item, isFolder) {
+  if (!item) return;
+  ensureMoveToFolderModal();
+
+  const titleEl = document.getElementById('move-folder-modal-title');
+  const nameEl = document.getElementById('move-folder-item-name');
+  const searchInput = document.getElementById('move-folder-search');
+  const treeContainer = document.getElementById('move-folder-tree');
+
+  if (titleEl) titleEl.textContent = isFolder ? '📂 Move Folder…' : '📂 Move PDF to Folder…';
+  if (nameEl) nameEl.textContent = (isFolder ? '📁 ' : '📄 ') + (item.name || 'Item');
+  if (searchInput) searchInput.value = '';
+
+  // 1. Resolve Subject by walking up folder_id / parent_folder_id -> subject_id
+  let subjectId = null;
+  if (isFolder) {
+    let cur = item;
+    let depth = 0;
+    while (cur && !subjectId && depth < 20) {
+      if (cur.subject_id) { subjectId = cur.subject_id; break; }
+      cur = cur.parent_folder_id ? S.folders.find(f => f.id === cur.parent_folder_id) : null;
+      depth++;
+    }
+  } else {
+    let cur = S.folders.find(f => f.id === item.folder_id);
+    let depth = 0;
+    while (cur && !subjectId && depth < 20) {
+      if (cur.subject_id) { subjectId = cur.subject_id; break; }
+      cur = cur.parent_folder_id ? S.folders.find(f => f.id === cur.parent_folder_id) : null;
+      depth++;
+    }
+  }
+
+  const subj = S.subjects.find(s => s.id === subjectId);
+  const subjectName = subj ? subj.name : 'Current Subject';
+
+  // 2. Identify forbidden IDs (prevent cycle when moving folder into itself or its descendants)
+  const forbiddenFolderIds = new Set();
+  if (isFolder) {
+    forbiddenFolderIds.add(item.id);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const f of S.folders) {
+        if (f.parent_folder_id && forbiddenFolderIds.has(f.parent_folder_id) && !forbiddenFolderIds.has(f.id)) {
+          forbiddenFolderIds.add(f.id);
+          added = true;
+        }
+      }
+    }
+  }
+
+  // 3. Current folder location
+  const currentParentId = isFolder ? (item.parent_folder_id || null) : (item.folder_id || null);
+
+  // 4. Get all folders strictly in this subject
+  const subjectFolders = S.folders.filter(f => {
+    let cur = f;
+    let depth = 0;
+    while (cur && depth < 20) {
+      if (cur.subject_id === subjectId) return true;
+      if (!cur.parent_folder_id) break;
+      cur = S.folders.find(p => p.id === cur.parent_folder_id);
+      depth++;
+    }
+    return false;
+  });
+
+  treeContainer.innerHTML = '';
+
+  const icons = { codal: '📜', cases: '⚖', laws: '📋', others: '📁', custom: '📂' };
+
+  // If moving a folder, include top level option (Make Root Folder)
+  if (isFolder) {
+    const isRootCurrent = currentParentId === null;
+    const rootRow = document.createElement('div');
+    rootRow.className = 'lft-fold-row' + (isRootCurrent ? ' current' : '');
+    rootRow.style.marginBottom = '6px';
+    rootRow.style.border = '1px dashed rgba(201,168,76,0.4)';
+    rootRow.title = isRootCurrent ? 'Already at top level' : `Move to Top Level of ${subjectName}`;
+    rootRow.innerHTML = `
+      <span class="lft-fold-icon">📚</span>
+      <span class="lft-fold-name" style="font-weight:600;">Top Level of "${subjectName}" (Make Root Folder)</span>
+      ${isRootCurrent ? '<span class="lft-badge-current">Current</span>' : ''}
+    `;
+
+    if (!isRootCurrent) {
+      rootRow.addEventListener('click', async () => {
+        closeModal('mo-move-to-folder');
+        snapshotMove();
+        await dbMoveFolder(item.id, null, subjectId);
+        item.parent_folder_id = null;
+        item.subject_id = subjectId;
+        renderLibrary();
+        toast(`✅ Moved "${item.name}" to top level of ${subjectName}`);
+      });
+    }
+    treeContainer.appendChild(rootRow);
+  }
+
+  // Build recursive tree for subject folders
+  const rootFolds = subjectFolders
+    .filter(f => !f.parent_folder_id && !forbiddenFolderIds.has(f.id))
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name));
+
+  if (!rootFolds.length && !isFolder) {
+    treeContainer.innerHTML = `<div class="lft-empty">No folders available in "${subjectName}".<br>Create a folder first.</div>`;
+    openModal('mo-move-to-folder');
+    return;
+  }
+
+  function buildFolderNode(folder) {
+    const isCurrent = folder.id === currentParentId;
+    const foldEl = document.createElement('div');
+    foldEl.className = 'lft-fold';
+    foldEl.dataset.folderId = folder.id;
+    foldEl.dataset.folderName = folder.name.toLowerCase();
+
+    const childFolds = subjectFolders
+      .filter(f => f.parent_folder_id === folder.id && !forbiddenFolderIds.has(f.id))
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name));
+    const hasChildren = childFolds.length > 0;
+
+    const row = document.createElement('div');
+    row.className = 'lft-fold-row' + (isCurrent ? ' current' : '');
+    row.title = isCurrent ? 'Current location' : `Move to: ${folder.name}`;
+    row.innerHTML = `
+      <span class="lft-chev" style="${hasChildren ? '' : 'visibility:hidden; width:12px'}">▼</span>
+      <span class="lft-fold-icon">${icons[folder.folder_type] || '📁'}</span>
+      <span class="lft-fold-name">${folder.name}</span>
+      ${isCurrent ? '<span class="lft-badge-current">Current</span>' : ''}
+    `;
+
+    if (!isCurrent) {
+      row.addEventListener('click', async e => {
+        if (e.target.closest('.lft-chev')) return;
+        closeModal('mo-move-to-folder');
+        await handleMoveInto(folder.id, [item.id]);
+        toast(`✅ Moved "${item.name}" to "${folder.name}"`);
+      });
+    }
+
+    let childContainer = null;
+    if (hasChildren) {
+      childContainer = document.createElement('div');
+      childContainer.className = 'lft-fold-ch';
+      for (const ch of childFolds) {
+        childContainer.appendChild(buildFolderNode(ch));
+      }
+
+      const chevEl = row.querySelector('.lft-chev');
+      chevEl.addEventListener('click', e => {
+        e.stopPropagation();
+        const isClosed = chevEl.classList.toggle('closed');
+        childContainer.style.display = isClosed ? 'none' : 'flex';
+      });
+    }
+
+    foldEl.appendChild(row);
+    if (childContainer) foldEl.appendChild(childContainer);
+    return foldEl;
+  }
+
+  for (const rf of rootFolds) {
+    treeContainer.appendChild(buildFolderNode(rf));
+  }
+
+  // Filter functionality
+  if (searchInput) {
+    searchInput.oninput = () => {
+      const q = searchInput.value.trim().toLowerCase();
+      const allFolds = treeContainer.querySelectorAll('.lft-fold');
+      if (!q) {
+        allFolds.forEach(f => {
+          f.style.display = 'flex';
+          const ch = f.querySelector('.lft-fold-ch');
+          if (ch) ch.style.display = 'flex';
+          f.querySelector('.lft-chev')?.classList.remove('closed');
+        });
+        return;
+      }
+      allFolds.forEach(f => {
+        const name = f.dataset.folderName || '';
+        const matches = name.includes(q);
+        const hasMatchingChild = Array.from(f.querySelectorAll('.lft-fold')).some(child => 
+          (child.dataset.folderName || '').includes(q)
+        );
+        if (matches || hasMatchingChild) {
+          f.style.display = 'flex';
+          const ch = f.querySelector('.lft-fold-ch');
+          if (ch) ch.style.display = 'flex';
+          f.querySelector('.lft-chev')?.classList.remove('closed');
+        } else {
+          f.style.display = 'none';
+        }
+      });
+    };
+  }
+
+  openModal('mo-move-to-folder');
+  setTimeout(() => { if (searchInput) searchInput.focus(); }, 60);
 }
 
 export function openNewFolderModal(id) {

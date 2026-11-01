@@ -511,7 +511,16 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     // Convert Blob → ArrayBuffer once here for PDF.js (unavoidable).
     // All storage (RAM cache + IndexedDB) remains Blob — this is the only copy.
     const buf = await blob.arrayBuffer();
+    const rawCopy = buf.slice(0);
+    if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.openPdf) {
+      window.__DESKTOP_PDFIUM__.openPdf(trueId, rawCopy.slice(0), pdfFile._localPath || null).catch(() => {});
+      if (targetDriveId && targetDriveId !== trueId) {
+        window.__DESKTOP_PDFIUM__.openPdf(targetDriveId, rawCopy.slice(0), pdfFile._localPath || null).catch(() => {});
+      }
+    }
     S.pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+    S.pdfDoc._desktopDocId = trueId;
+    S.pdfDoc._rawPdfBytes = rawCopy;
     S.totalPages = S.pdfDoc.numPages;
     document.getElementById('pg-total').textContent = S.totalPages;
     document.getElementById('pg-input').value = 1;
@@ -855,10 +864,8 @@ export async function ensurePageRendered(pageNum, container = null) {
     pgState.textItems = textItems;
     pgState.rendered = true;
 
-    // Apply OCR layer if page has no native text layer (scanned page)
-    if (textItems.length === 0) {
-      import('./ocr.js').then(m => m.applyOcrToRenderedPage?.(pageNum)).catch(() => {});
-    }
+    // Apply OCR layer if OCR data exists for this page or page is scanned
+    import('./ocr.js').then(m => m.applyOcrToRenderedPage?.(pageNum)).catch(() => {});
 
     // Setup listeners & visuals
     setupAllListeners(pageNum);

@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
 import { safeStorageGet, safeStorageSet, safeStorageRemove, initStorageManager } from './storage.js';
-import { dbSetSetting } from './db.js';
+import { dbSetSetting, dbGetSetting } from './db.js';
 import { toast } from './ui.js';
 
 const THEME_KEY = 'app_ui_theme';
@@ -12,6 +12,9 @@ const OPEN_TABS_KEY = 'gn_open_tabs_v1';
 const LEGACY_RECENT_V1 = 'gn_recent_pdf_ids_v1';
 const LEGACY_RECENT_V2 = 'gn_recent_reads_v2';
 const RECENT_READS_KEY = 'gn_recent_reads_v3';
+
+export const AUTO_CLOSE_TABS_KEY = 'auto_close_tabs_10m';
+export const INACTIVE_TAB_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 // Authoritative in-memory recent reads list so opening/dismissing works 100% of the time
 // even if localStorage is full
@@ -29,8 +32,41 @@ const BINDER_PALETTE = [
   '#4F46E5', // Indigo
 ];
 
-let _openTabs = []; // [{ tabId, type: 'pdf'|'folder', id, name }]
+let _openTabs = []; // [{ tabId, type: 'pdf'|'folder', id, name, lastActiveAt }]
 let _activeTabId = 'home';
+
+export function isAutoCloseTabsEnabled() {
+  const val = safeStorageGet(AUTO_CLOSE_TABS_KEY);
+  if (val === null || val === undefined || val === '') return true;
+  return val !== 'false';
+}
+
+export function setAutoCloseTabsEnabled(enabled) {
+  const strVal = enabled ? 'true' : 'false';
+  safeStorageSet(AUTO_CLOSE_TABS_KEY, strVal);
+  dbSetSetting(AUTO_CLOSE_TABS_KEY, strVal).catch(() => {});
+  if (enabled) {
+    pruneInactiveTabs();
+  }
+}
+
+export function pruneInactiveTabs() {
+  if (!isAutoCloseTabsEnabled()) return;
+  const now = Date.now();
+  const beforeCount = _openTabs.length;
+  _openTabs = _openTabs.filter(t => {
+    if (t.tabId === _activeTabId) {
+      t.lastActiveAt = now;
+      return true;
+    }
+    const elapsed = now - (t.lastActiveAt || now);
+    return elapsed < INACTIVE_TAB_TIMEOUT_MS;
+  });
+  if (_openTabs.length !== beforeCount) {
+    saveTabs();
+    renderDocTabs();
+  }
+}
 
 // ── 1. Theme System (Default: GoodNotes Warm Paper) ─────────────────────────
 export function getAppTheme() {
@@ -154,12 +190,23 @@ export async function openCaseDigestForPdf(pdf) {
 
 // ── 4. Multi-Case Document Tabs at the Top (#gn-doc-tabs) ───────────────────
 function loadSavedTabs() {
+  // Sync the user's auto-close preference from cloud in the background
+  dbGetSetting(AUTO_CLOSE_TABS_KEY).then(cloudPref => {
+    if (cloudPref !== null && cloudPref !== undefined && cloudPref !== '') {
+      safeStorageSet(AUTO_CLOSE_TABS_KEY, cloudPref);
+    }
+  }).catch(() => {});
+
   try {
     const raw = safeStorageGet(OPEN_TABS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
+        const now = Date.now();
         _openTabs = parsed.slice(0, 8);
+        for (const t of _openTabs) {
+          t.lastActiveAt = t.lastActiveAt || now;
+        }
         return;
       }
     }
@@ -168,18 +215,21 @@ function loadSavedTabs() {
   }
 
   // Load from Supabase cloud if local tabs are empty so tabs sync across devices
-  import('./db.js').then(async m => {
-    try {
-      const cloud = await m.dbGetSetting?.('gn_open_tabs_v1');
-      if (cloud && (!_openTabs || _openTabs.length === 0)) {
+  dbGetSetting('gn_open_tabs_v1').then(cloud => {
+    if (cloud && (!_openTabs || _openTabs.length === 0)) {
+      try {
         const parsed = JSON.parse(cloud);
         if (Array.isArray(parsed) && parsed.length > 0) {
+          const now = Date.now();
           _openTabs = parsed.slice(0, 8);
+          for (const t of _openTabs) {
+            t.lastActiveAt = t.lastActiveAt || now;
+          }
           safeStorageSet(OPEN_TABS_KEY, JSON.stringify(_openTabs));
           renderDocTabs();
         }
-      }
-    } catch {}
+      } catch {}
+    }
   }).catch(() => {});
 }
 
@@ -192,6 +242,13 @@ function saveTabs() {
 }
 
 export function notifyTabOpened(item, type = 'pdf') {
+  const now = Date.now();
+  // Refresh lastActiveAt on previously active tab right as user switches away from it
+  const prevTab = _openTabs.find(t => t.tabId === _activeTabId);
+  if (prevTab) {
+    prevTab.lastActiveAt = now;
+  }
+
   if (!item || !item.id) {
     _activeTabId = 'home';
     renderDocTabs();
@@ -204,12 +261,14 @@ export function notifyTabOpened(item, type = 'pdf') {
   const existing = _openTabs.find(t => t.tabId === tabId);
   if (existing) {
     existing.name = item.name || existing.name;
+    existing.lastActiveAt = now;
   } else {
     _openTabs.push({
       tabId,
       type,
       id: item.id,
       name: item.name || 'Untitled',
+      lastActiveAt: now,
     });
     if (_openTabs.length > 8) {
       _openTabs.shift();
@@ -258,6 +317,19 @@ export async function closeDocTab(tabId, e) {
 }
 
 export async function activateDocTab(tabId) {
+  const now = Date.now();
+  // Before switching away from previous tab, update departing tab's lastActiveAt
+  const departingTab = _openTabs.find(t => t.tabId === _activeTabId);
+  if (departingTab) {
+    departingTab.lastActiveAt = now;
+  }
+
+  // Set newly activated tab's lastActiveAt
+  const activatedTab = _openTabs.find(t => t.tabId === tabId);
+  if (activatedTab) {
+    activatedTab.lastActiveAt = now;
+  }
+
   if (S.curPDF) {
     const { flushCurrentReadingPosition, setIsJumping } = await import('./ui.js');
     flushCurrentReadingPosition();
@@ -600,7 +672,9 @@ export function renderStudyDesk() {
     shelf.style.display = 'none';
   }
 
-  // 3. Enhance Class Schedule Cards (.cal-item) with Subject Spine Colors & Quick Actions
+  // 3. Connect Study Desk Schedule to schedule.js & Enhance Class Schedule Cards
+  import('./schedule.js').then(m => m.renderEditableSchedule?.()).catch(() => {});
+
   cal.querySelectorAll('.cal-item').forEach(item => {
     const strong = item.querySelector('strong');
     if (!strong) return;
@@ -612,7 +686,7 @@ export function renderStudyDesk() {
       const bar = document.createElement('div');
       bar.className = 'gn-cal-actions';
       bar.innerHTML = `
-        <span class="gn-cal-open-binder" title="Open ${subjTitle} binder in Library">📚 Open Binder ↗</span>
+        <span class="gn-cal-open-binder" title="Open ${subjTitle} binder in Library">📖 Open Syllabus ↗</span>
         <button class="gn-cal-note-btn" type="button" title="Open quick class notes for ${subjTitle}">📝 Note</button>
       `;
       item.appendChild(bar);
@@ -633,4 +707,15 @@ export function initGoodNotesUI() {
   renderStudyDesk();
 
   document.getElementById('btn-theme-toggle')?.addEventListener('click', cycleAppTheme);
+
+  // Background timer to prune inactive tabs every 20 seconds and on window focus/visibility change
+  setInterval(pruneInactiveTabs, 20000);
+  window.addEventListener('focus', () => {
+    pruneInactiveTabs();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      pruneInactiveTabs();
+    }
+  });
 }

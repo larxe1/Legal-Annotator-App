@@ -197,6 +197,24 @@ html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; b
 .li-pdf:hover { background: rgba(255,255,255,.05); color: #e8e4db; }
 .li-pdf:hover .li-acts { display: flex; }
 .li-subj.drag-over > .li-subj-hd, .li-fold.drag-over > .li-fold-hd, .li-pdf.drag-over { background: rgba(201,168,76,.15); }
+.drop-above { border-top: 2.5px solid var(--gold) !important; }
+.drop-below { border-bottom: 2.5px solid var(--gold) !important; }
+.drop-inside { background: rgba(245, 158, 11, 0.18) !important; outline: 2px dashed var(--gold) !important; border-radius: 6px; }
+#lib-drop-hint {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: #0f172a;
+  color: #f59e0b;
+  border: 1px solid #f59e0b;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+  display: none;
+  white-space: nowrap;
+}
 .li-pdf.active { background: rgba(201,168,76,.1); color: var(--gold); border-left: 2px solid var(--gold); }
 .li-pdf.li-selected, .li-fold.li-selected > .li-fold-hd { background: rgba(201,168,76,.2) !important; border-left: 2px solid var(--gold); }
 .selection-marquee {

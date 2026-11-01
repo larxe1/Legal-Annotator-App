@@ -321,65 +321,90 @@ export function applyOcrToRenderedPage(pageNum, trueId = null) {
     return false;
   }
 
-  // Determine whether page needs OCR overlay:
-  // Either native text layer is empty (scanned page) or already populated with OCR spans
-  const hasNativeText = pgState.textItems && pgState.textItems.length > 0 && !pgState.textItems.some(i => i.ocr);
-  if (hasNativeText) {
-    // Page has native digital text; do not overwrite unless no text is present
+  // Only skip if page already has abundant native non-OCR text items (> 25 items and more than OCR lines)
+  const nativeItems = (pgState.textItems || []).filter(i => !i.ocr && i.str && i.str.trim());
+  const ocrWordCount = ocrData.lines.reduce((sum, l) => sum + (Array.isArray(l.words) && l.words.length ? l.words.length : 1), 0);
+  if (nativeItems.length > 25 && nativeItems.length > ocrWordCount * 1.2) {
     return false;
   }
 
   const scale = S.scale || 1.5;
   const txtLayer = pgState.txtLayer;
 
-  // Clear existing OCR spans to avoid duplication
-  const oldOcrSpans = txtLayer.querySelectorAll('[data-ocr="true"]');
-  oldOcrSpans.forEach(el => el.remove());
-
-  // Also clear empty native spans if this is a scanned page with blank spans
-  if (!hasNativeText && (!pgState.textItems || pgState.textItems.length === 0 || pgState.textItems.every(i => i.ocr))) {
-    txtLayer.innerHTML = '';
-  }
+  // Clear existing spans so OCR layer is clean and unambiguous
+  txtLayer.innerHTML = '';
 
   const newTextItems = [];
   const fragment = document.createDocumentFragment();
+  const fontFam = 'sans-serif';
 
   for (const line of ocrData.lines) {
     if (!line.str || !line.str.trim()) continue;
 
-    const sx = (line.x || 0) * scale;
-    const sy = (line.y || 0) * scale;
-    const sw = (line.w || 0) * scale;
-    const sh = (line.h || 14) * scale;
-    const fh = Math.max(9, Math.round(sh * 0.82));
-    const fontFam = 'sans-serif';
-    const scaleX = computeSpanScaleX(line.str, fh, fontFam, sw);
+    // Prefer word-level spans when available for precision selection, or line-level spans
+    const words = Array.isArray(line.words) && line.words.length > 0 ? line.words : null;
+    if (words) {
+      for (let wi = 0; wi < words.length; wi++) {
+        const wObj = words[wi];
+        if (!wObj.str || !wObj.str.trim()) continue;
+        const textWithSpace = wi < words.length - 1 ? (wObj.str + ' ') : wObj.str;
+        const sx = (wObj.x || 0) * scale;
+        const sy = (wObj.y || 0) * scale;
+        const sw = Math.max(4, (wObj.w || 12) * scale);
+        const sh = Math.max(8, (wObj.h || line.h || 14) * scale);
+        const fh = Math.max(8, Math.round(sh * 0.84));
+        const scaleX = computeSpanScaleX(wObj.str, fh, fontFam, sw);
 
-    const span = document.createElement('span');
-    span.textContent = line.str;
-    span.dataset.ocr = 'true';
-    span.style.cssText = `position:absolute;left:${sx}px;top:${sy}px;width:${sw}px;height:${sh}px;font-size:${fh}px;line-height:${sh}px;font-family:${fontFam};color:transparent;white-space:pre;transform-origin:0% 0%;pointer-events:all;user-select:text;-webkit-user-select:text;cursor:text;`;
+        const span = document.createElement('span');
+        span.textContent = textWithSpace;
+        span.dataset.ocr = 'true';
+        span.style.cssText = `left:${sx}px;top:${sy}px;font-size:${fh}px;font-family:${fontFam};`;
+        if (scaleX && Math.abs(scaleX - 1) > 0.01) {
+          span.style.transform = `scaleX(${scaleX})`;
+        }
+        fragment.appendChild(span);
 
-    if (scaleX && Math.abs(scaleX - 1) > 0.005) {
-      span.style.transform = `scaleX(${scaleX})`;
+        newTextItems.push({
+          str: wObj.str,
+          x: sx,
+          y: sy,
+          w: sw,
+          h: sh,
+          ocr: true,
+        });
+      }
+    } else {
+      const sx = (line.x || 0) * scale;
+      const sy = (line.y || 0) * scale;
+      const sw = Math.max(10, (line.w || 80) * scale);
+      const sh = Math.max(8, (line.h || 14) * scale);
+      const fh = Math.max(8, Math.round(sh * 0.84));
+      const scaleX = computeSpanScaleX(line.str, fh, fontFam, sw);
+
+      const span = document.createElement('span');
+      span.textContent = line.str;
+      span.dataset.ocr = 'true';
+      span.style.cssText = `left:${sx}px;top:${sy}px;font-size:${fh}px;font-family:${fontFam};`;
+      if (scaleX && Math.abs(scaleX - 1) > 0.01) {
+        span.style.transform = `scaleX(${scaleX})`;
+      }
+      fragment.appendChild(span);
+
+      newTextItems.push({
+        str: line.str,
+        x: sx,
+        y: sy,
+        w: sw,
+        h: sh,
+        ocr: true,
+      });
     }
-
-    fragment.appendChild(span);
-
-    newTextItems.push({
-      str: line.str,
-      x: sx,
-      y: sy,
-      w: sw,
-      h: sh,
-      ocr: true,
-    });
   }
 
   txtLayer.appendChild(fragment);
   pgState.textItems = newTextItems;
 
-  // Ensure text selection layer respects current interaction mode
+  // Ensure text selection layer is interactive when in text mode
   if (S.mode === 'text') {
     txtLayer.classList.add('sel');
   }
@@ -490,28 +515,54 @@ export async function scanPage(pageNum, options = {}) {
   if (!tid) throw new Error('No active PDF open to scan');
   if (!S.pdfDoc) throw new Error('No PDF document loaded');
 
-  const isDesktopOcr = typeof window !== 'undefined' && typeof window.__DESKTOP_PDFIUM__?.ocrPage === 'function';
+  const isDesktopOcr = typeof window !== 'undefined' && (
+    typeof window.__DESKTOP_PDFIUM__?.ocrPage === 'function' ||
+    typeof window.__DESKTOP_PDFIUM__?.ocrPng === 'function'
+  );
 
   let lines = [];
   let fullText = '';
 
   if (isDesktopOcr) {
-    if (onProgress) onProgress({ status: 'recognizing_native', page: pageNum, pct: 25 });
+    if (onProgress) onProgress({ status: 'recognizing_native', page: pageNum, pct: 20 });
     const docId = S.pdfDoc._desktopDocId || tid;
-    const raw = await window.__DESKTOP_PDFIUM__.ocrPage(docId, pageNum, 1600, 2200);
+    const driveId = S.curPDF?.drive_file_id || tid;
 
-    if (onProgress) onProgress({ status: 'parsing', page: pageNum, pct: 70 });
+    // 1. Try direct PDFium -> Windows Native OCR first
+    let raw = null;
+    if (typeof window.__DESKTOP_PDFIUM__?.ocrPage === 'function') {
+      raw = await window.__DESKTOP_PDFIUM__.ocrPage(docId, pageNum, 1600, 2200);
+      if ((!raw || !Array.isArray(raw.lines) || raw.lines.length === 0) && driveId && driveId !== docId) {
+        raw = await window.__DESKTOP_PDFIUM__.ocrPage(driveId, pageNum, 1600, 2200);
+      }
+    }
+
+    // 2. Guaranteed Fallback: Render page via PDF.js offscreen canvas and pass PNG to Windows Native OCR!
+    if ((!raw || !Array.isArray(raw.lines) || raw.lines.length === 0) && typeof window.__DESKTOP_PDFIUM__?.ocrPng === 'function') {
+      if (onProgress) onProgress({ status: 'rendering_canvas', page: pageNum, pct: 35 });
+      const { canvas } = await renderPageToOffscreenCanvas(pageNum, 2.0);
+      const pngDataUrl = canvas.toDataURL('image/png');
+      if (onProgress) onProgress({ status: 'recognizing_native_png', page: pageNum, pct: 55 });
+      raw = await window.__DESKTOP_PDFIUM__.ocrPng(pngDataUrl).catch(err => {
+        console.warn(`[OCR] desktop_ocr_png warning on page ${pageNum}:`, err);
+        return null;
+      });
+    }
+
+    if (onProgress) onProgress({ status: 'parsing', page: pageNum, pct: 75 });
     const page = await S.pdfDoc.getPage(pageNum);
     const vp1 = page.getViewport({ scale: 1.0 });
+    const rawW = (raw && raw.width > 0) ? raw.width : 1600;
+    const rawH = (raw && raw.height > 0) ? raw.height : 2200;
 
     const rawLines = Array.isArray(raw?.lines) ? raw.lines : (Array.isArray(raw) ? raw : []);
     for (const rLine of rawLines) {
       const str = (rLine.str || rLine.text || '').replace(/\r?\n/g, ' ').trim();
       if (!str) continue;
-      const rx = typeof rLine.rx === 'number' ? rLine.rx : (typeof rLine.x === 'number' ? rLine.x : 0);
-      const ry = typeof rLine.ry === 'number' ? rLine.ry : (typeof rLine.y === 'number' ? rLine.y : 0);
-      const rw = typeof rLine.rw === 'number' ? rLine.rw : (typeof rLine.w === 'number' ? rLine.w : 0);
-      const rh = typeof rLine.rh === 'number' ? rLine.rh : (typeof rLine.h === 'number' ? rLine.h : 0);
+      const rx = typeof rLine.rx === 'number' ? rLine.rx : (typeof rLine.x === 'number' ? rLine.x / rawW : 0);
+      const ry = typeof rLine.ry === 'number' ? rLine.ry : (typeof rLine.y === 'number' ? rLine.y / rawH : 0);
+      const rw = typeof rLine.rw === 'number' ? rLine.rw : (typeof rLine.w === 'number' ? rLine.w / rawW : 0);
+      const rh = typeof rLine.rh === 'number' ? rLine.rh : (typeof rLine.h === 'number' ? rLine.h / rawH : 0);
 
       const x = Math.round(rx * vp1.width * 10) / 10;
       const y = Math.round(ry * vp1.height * 10) / 10;
@@ -520,10 +571,10 @@ export async function scanPage(pageNum, options = {}) {
 
       const rawWords = Array.isArray(rLine.words) ? rLine.words : [];
       const words = rawWords.map(wItem => {
-        const wrx = typeof wItem.rx === 'number' ? wItem.rx : (typeof wItem.x === 'number' ? wItem.x : rx);
-        const wry = typeof wItem.ry === 'number' ? wItem.ry : (typeof wItem.y === 'number' ? wItem.y : ry);
-        const wrw = typeof wItem.rw === 'number' ? wItem.rw : (typeof wItem.w === 'number' ? wItem.w : rw);
-        const wrh = typeof wItem.rh === 'number' ? wItem.rh : (typeof wItem.h === 'number' ? wItem.h : rh);
+        const wrx = typeof wItem.rx === 'number' ? wItem.rx : (typeof wItem.x === 'number' ? wItem.x / rawW : rx);
+        const wry = typeof wItem.ry === 'number' ? wItem.ry : (typeof wItem.y === 'number' ? wItem.y / rawH : ry);
+        const wrw = typeof wItem.rw === 'number' ? wItem.rw : (typeof wItem.w === 'number' ? wItem.w / rawW : rw);
+        const wrh = typeof wItem.rh === 'number' ? wItem.rh : (typeof wItem.h === 'number' ? wItem.h / rawH : rh);
         return {
           str: (wItem.str || wItem.text || '').trim(),
           x: Math.round(wrx * vp1.width * 10) / 10,
@@ -537,6 +588,18 @@ export async function scanPage(pageNum, options = {}) {
     }
 
     fullText = (raw?.fullText || raw?.text || lines.map(l => l.str).join('\n')).trim();
+
+    // 3. Final fallback to Tesseract if Windows Native OCR returned 0 lines on a non-blank page
+    if (lines.length === 0 && !fullText) {
+      try {
+        const { canvas, renderScale } = await renderPageToOffscreenCanvas(pageNum, 2.0);
+        const localResult = await runTesseractEngine(canvas, renderScale);
+        lines = localResult.lines;
+        fullText = localResult.fullText;
+      } catch (tessErr) {
+        console.warn(`[OCR] Fallback Tesseract notice on page ${pageNum}:`, tessErr);
+      }
+    }
   } else {
     // Web Fallback: Local Tesseract.js v5
     if (onProgress) onProgress({ status: 'rendering', page: pageNum, pct: 10 });
@@ -554,12 +617,16 @@ export async function scanPage(pageNum, options = {}) {
     fullText = localResult.fullText;
   }
 
-  // Persist and apply
-  if (onProgress) onProgress({ status: 'saving', page: pageNum, pct: 95 });
-  await saveOcrPageData(tid, pageNum, { lines, fullText });
+  const wordCount = lines.reduce((sum, l) => sum + (Array.isArray(l.words) && l.words.length ? l.words.length : (l.str ? l.str.split(/\s+/).length : 0)), 0);
+
+  // Only persist if actual text was recognized (never overwrite or mark a failed empty scan as "scanned")
+  if (lines.length > 0 || fullText.length > 0) {
+    if (onProgress) onProgress({ status: 'saving', page: pageNum, pct: 95 });
+    await saveOcrPageData(tid, pageNum, { lines, fullText });
+  }
 
   if (onProgress) onProgress({ status: 'done', page: pageNum, pct: 100 });
-  return { pageNum, lines, fullText };
+  return { pageNum, lines, fullText, wordCount };
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -579,26 +646,31 @@ export async function embedOcrIntoPdfAndSync(trueId = null) {
   // 1. Load pdf-lib on demand
   const { PDFDocument, StandardFonts } = await loadPdfLib();
 
-  // 2. Fetch current PDF bytes via driveFetchPDF
+  // 2. Fetch current PDF bytes (prefer non-detached _rawPdfBytes in memory first!)
   const targetDriveId = S.curPDF?.drive_file_id ||
     (S.curPDF?.linked_pdf_id ? S.pdfs.find(p => p.id === S.curPDF.linked_pdf_id)?.drive_file_id : null) ||
     tid;
 
   let pdfBytes = null;
-  try {
-    const blobOrBuf = await driveFetchPDF(targetDriveId, null, S.curPDF?.name || 'document.pdf');
-    if (blobOrBuf instanceof Blob) {
-      pdfBytes = await blobOrBuf.arrayBuffer();
-    } else if (blobOrBuf instanceof ArrayBuffer) {
-      pdfBytes = blobOrBuf;
-    } else if (blobOrBuf?.buffer instanceof ArrayBuffer) {
-      pdfBytes = blobOrBuf.buffer;
-    }
-  } catch (err) {
-    console.warn('[OCR] driveFetchPDF notice in embedOcrIntoPdfAndSync, checking fallback cache:', err);
-    if (S.pdfCache[targetDriveId]) {
-      const b = S.pdfCache[targetDriveId];
-      pdfBytes = (b instanceof Blob) ? await b.arrayBuffer() : b;
+  if (S.pdfDoc?._rawPdfBytes && S.pdfDoc._rawPdfBytes.byteLength > 0) {
+    pdfBytes = S.pdfDoc._rawPdfBytes.slice(0);
+  }
+  if (!pdfBytes) {
+    try {
+      const blobOrBuf = await driveFetchPDF(targetDriveId, null, S.curPDF?.name || 'document.pdf');
+      if (blobOrBuf instanceof Blob) {
+        pdfBytes = await blobOrBuf.arrayBuffer();
+      } else if (blobOrBuf instanceof ArrayBuffer) {
+        pdfBytes = blobOrBuf.slice(0);
+      } else if (blobOrBuf?.buffer instanceof ArrayBuffer) {
+        pdfBytes = blobOrBuf.buffer.slice(0);
+      }
+    } catch (err) {
+      console.warn('[OCR] driveFetchPDF notice in embedOcrIntoPdfAndSync, checking fallback cache:', err);
+      if (S.pdfCache[targetDriveId]) {
+        const b = S.pdfCache[targetDriveId];
+        pdfBytes = (b instanceof Blob) ? await b.arrayBuffer() : b;
+      }
     }
   }
 
@@ -611,7 +683,7 @@ export async function embedOcrIntoPdfAndSync(trueId = null) {
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const totalDocPages = pdfDoc.getPageCount();
 
-  // 4. Iterate over every page that has OCR data
+  // 4. Iterate over every page that has OCR data and draw word-level calibrated text
   let embeddedCount = 0;
   for (const [pgStr, pData] of Object.entries(pageDataMap)) {
     const pageNum = Number(pgStr);
@@ -620,29 +692,69 @@ export async function embedOcrIntoPdfAndSync(trueId = null) {
     if (!lines.length) continue;
 
     const page = pdfDoc.getPage(pageNum - 1); // 0-indexed in pdf-lib
-    const { width: pageWidth, height: pageHeight } = page.getSize();
+    const { height: pageHeight } = page.getSize();
 
     for (const line of lines) {
-      const str = sanitizeForPdfLib(line.str);
-      if (!str) continue;
+      const words = Array.isArray(line.words) && line.words.length > 0 ? line.words : null;
+      if (words) {
+        for (let wi = 0; wi < words.length; wi++) {
+          const wObj = words[wi];
+          const wStr = sanitizeForPdfLib(wObj.str);
+          if (!wStr) continue;
 
-      const x = typeof line.x === 'number' ? line.x : 0;
-      const y = typeof line.y === 'number' ? line.y : 0;
-      const h = (typeof line.h === 'number' && line.h > 0) ? line.h : 14;
+          const wx = typeof wObj.x === 'number' ? wObj.x : 0;
+          const wy = typeof wObj.y === 'number' ? wObj.y : 0;
+          const ww = (typeof wObj.w === 'number' && wObj.w > 0) ? wObj.w : 24;
+          const wh = (typeof wObj.h === 'number' && wObj.h > 0) ? wObj.h : (line.h || 12);
 
-      const fontSize = Math.max(6, Math.min(24, h * 0.85));
-      const pdfY = pageHeight - y - h;
+          let unitW = 0.5;
+          try {
+            unitW = font.widthOfTextAtSize(wStr, 1.0) || 0.5;
+          } catch {}
+          const fitSize = ww / unitW;
+          const fontSize = Math.max(4.5, Math.min(32, Math.min(wh * 1.15, fitSize)));
+          const pdfY = Math.max(0, pageHeight - wy - wh * 0.85);
 
-      try {
-        page.drawText(str, {
-          x: Math.max(0, x),
-          y: Math.max(0, pdfY),
-          size: fontSize,
-          font: font,
-          opacity: 0.001, // invisible to the eye, 100% selectable and searchable
-        });
-      } catch (drawErr) {
-        console.warn(`[OCR] drawText skipped unencodable line on page ${pageNum}:`, drawErr.message);
+          try {
+            page.drawText(wi < words.length - 1 ? (wStr + ' ') : wStr, {
+              x: Math.max(0, wx),
+              y: pdfY,
+              size: fontSize,
+              font,
+              opacity: 0.001, // invisible to the eye, 100% selectable/searchable/editable in all PDF apps
+            });
+          } catch (drawErr) {
+            console.warn(`[OCR] drawText skipped word on page ${pageNum}:`, drawErr.message);
+          }
+        }
+      } else {
+        const str = sanitizeForPdfLib(line.str);
+        if (!str) continue;
+
+        const x = typeof line.x === 'number' ? line.x : 0;
+        const y = typeof line.y === 'number' ? line.y : 0;
+        const w = (typeof line.w === 'number' && line.w > 0) ? line.w : 100;
+        const h = (typeof line.h === 'number' && line.h > 0) ? line.h : 14;
+
+        let unitW = 0.5;
+        try {
+          unitW = font.widthOfTextAtSize(str, 1.0) || 0.5;
+        } catch {}
+        const fitSize = w / unitW;
+        const fontSize = Math.max(5, Math.min(28, Math.min(h * 1.1, fitSize)));
+        const pdfY = Math.max(0, pageHeight - y - h * 0.85);
+
+        try {
+          page.drawText(str, {
+            x: Math.max(0, x),
+            y: pdfY,
+            size: fontSize,
+            font,
+            opacity: 0.001,
+          });
+        } catch (drawErr) {
+          console.warn(`[OCR] drawText skipped line on page ${pageNum}:`, drawErr.message);
+        }
       }
     }
     embeddedCount++;
@@ -650,13 +762,90 @@ export async function embedOcrIntoPdfAndSync(trueId = null) {
 
   // 5. Save modified PDF bytes and wrap in Blob
   const modifiedBytes = await pdfDoc.save();
-  const modifiedBlob = new Blob([modifiedBytes], { type: 'application/pdf' });
+  const modifiedArrayBuf = modifiedBytes.buffer.slice(
+    modifiedBytes.byteOffset,
+    modifiedBytes.byteOffset + modifiedBytes.byteLength
+  );
+  S._lastOcrModifiedBytes = modifiedArrayBuf.slice(0);
+  const modifiedBlob = new Blob([modifiedArrayBuf], { type: 'application/pdf' });
   const pdfName = S.curPDF?.name || 'document.pdf';
 
-  // 6. Overwrite RAM cache, IndexedDB, Desktop Vault, and Google Drive
+  // 6. Overwrite RAM cache, IndexedDB, Desktop Vault, Local Path (if local), and Google Drive
   const syncRes = await driveUpdatePDF(targetDriveId, modifiedBlob, pdfName);
+  if (typeof window !== 'undefined' && S.curPDF?._localPath && window.__DESKTOP_PDFIUM__?.saveSearchablePdf) {
+    window.__DESKTOP_PDFIUM__.saveSearchablePdf(pdfName, modifiedArrayBuf.slice(0), S.curPDF._localPath).catch(() => {});
+  }
+
+  // 7. Hot-reload S.pdfDoc in memory so native getTextContent(), Ctrl+F search, and selection immediately see the modified PDF!
+  try {
+    if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.openPdf) {
+      window.__DESKTOP_PDFIUM__.openPdf(tid, modifiedArrayBuf.slice(0), S.curPDF?._localPath || null).catch(() => {});
+    }
+    const newPdfDoc = await pdfjsLib.getDocument({ data: modifiedArrayBuf.slice(0) }).promise;
+    newPdfDoc._desktopDocId = tid;
+    newPdfDoc._rawPdfBytes = modifiedArrayBuf.slice(0);
+    S.pdfDoc = newPdfDoc;
+
+    // Refresh rendered pages and search index
+    for (const [pgStr] of Object.entries(pageDataMap)) {
+      const pNum = Number(pgStr);
+      if (S.pages?.[pNum]) {
+        S.pages[pNum].textItems = [];
+        if (S.pages[pNum].rendered) {
+          applyOcrToRenderedPage(pNum, tid);
+        }
+      }
+    }
+    import('./search.js').then(m => m.indexAllPagesText?.(S.pdfDoc)).catch(() => {});
+  } catch (reloadErr) {
+    console.warn('[OCR] Hot-reload S.pdfDoc notice:', reloadErr);
+  }
 
   return { ok: true, embeddedPages: embeddedCount, updatedDrive: syncRes?.updatedDrive };
+}
+
+// ── Export / Save Modified Searchable PDF File Directly to User's Computer ──
+export async function exportSearchablePdfFile() {
+  const tid = getTruePdfId();
+  if (!tid || !S.curPDF) {
+    toast('⚠️ Please open a PDF first.');
+    return;
+  }
+  toast('⏳ Preparing OCR-Ready Searchable PDF file…');
+  try {
+    await embedOcrIntoPdfAndSync(tid);
+    const bytes = S._lastOcrModifiedBytes || S.pdfDoc?._rawPdfBytes;
+    if (!bytes) {
+      toast('⚠️ Could not generate searchable PDF bytes. Please run OCR scan first.');
+      return;
+    }
+    const baseName = (S.curPDF.name || 'Document').replace(/\.pdf$/i, '');
+    const outName = `${baseName}_OCR_Searchable.pdf`;
+
+    if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.saveSearchablePdf) {
+      const res = await window.__DESKTOP_PDFIUM__.saveSearchablePdf(outName, bytes.slice(0), null);
+      if (res?.ok) {
+        toast(`✅ Saved OCR-Ready Searchable PDF to: ${res.path}`);
+      } else if (!res?.cancelled) {
+        toast('⚠️ Could not save PDF file.');
+      }
+      return;
+    }
+
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = outName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast(`✅ Downloaded ${outName} (searchable & editable in all PDF apps)!`);
+  } catch (err) {
+    console.error('[OCR] exportSearchablePdfFile error:', err);
+    toast(`❌ Failed to export searchable PDF: ${err.message || err}`);
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -699,8 +888,9 @@ export async function detectScannedPages(doc = S.pdfDoc, maxPages = S.totalPages
     try {
       const page = await doc.getPage(p);
       const tc = await page.getTextContent();
-      const hasText = tc.items && tc.items.some(i => i.str && i.str.trim().length > 0);
-      if (!hasText) {
+      const fullStr = (tc.items || []).map(i => i.str || '').join(' ').trim();
+      const wordCount = fullStr ? fullStr.split(/\s+/).filter(Boolean).length : 0;
+      if (wordCount < 15) {
         scanned.push(p);
       }
     } catch {
@@ -803,10 +993,15 @@ export function initOcrTool() {
       </div>
 
       <!-- Modal Footer / Actions -->
-      <div style="display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--navy-b,#22334d);padding-top:14px;margin-top:4px;">
-        <button id="ocr-btn-download" style="padding:7px 12px;font-size:12px;background:var(--navy-m,#162032);border:1px solid var(--navy-b,#22334d);color:var(--text,#e2e8f0);border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:6px;" title="Download recognized text report as a text file">
-          <span>📄</span> Download Text Report
-        </button>
+      <div style="display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--navy-b,#22334d);padding-top:14px;margin-top:4px;flex-wrap:wrap;gap:8px;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button id="ocr-btn-save-pdf" style="padding:7px 11px;font-size:12px;background:var(--navy-m,#162032);border:1px solid var(--gold,#c9a84c);color:var(--gold,#c9a84c);border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:5px;font-weight:600;" title="Save OCR-Ready Searchable & Editable PDF file to your computer">
+            <span>💾</span> Save OCR PDF
+          </button>
+          <button id="ocr-btn-download" style="padding:7px 11px;font-size:12px;background:var(--navy-m,#162032);border:1px solid var(--navy-b,#22334d);color:var(--text,#e2e8f0);border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:5px;" title="Download recognized text report as a text file">
+            <span>📄</span> Text Report
+          </button>
+        </div>
 
         <div style="display:flex;gap:8px;">
           <button id="ocr-btn-cancel" class="btn-sec" style="padding:7px 14px;font-size:12px;border-radius:6px;cursor:pointer;">Close</button>
@@ -872,6 +1067,13 @@ function wireOcrToolModalEvents() {
   // Download Report handler
   btnDownload?.addEventListener('click', () => {
     downloadOcrReport();
+  });
+
+  // Save OCR-Ready PDF file handler
+  const btnSavePdf = document.getElementById('ocr-btn-save-pdf');
+  btnSavePdf?.addEventListener('click', async () => {
+    if (_isScanning) return;
+    await exportSearchablePdfFile();
   });
 }
 
@@ -1047,7 +1249,7 @@ async function executeOcrWorkflow() {
           : `Running Local in-browser OCR on page ${batch[0]}…`;
       }
 
-      await Promise.all(batch.map(pNum => scanPage(pNum, {
+      const results = await Promise.all(batch.map(pNum => scanPage(pNum, {
         onProgress: info => {
           if (_scanCancelled) return;
           const pageContrib = (info.pct / 100) * (100 / totalCount);
@@ -1057,7 +1259,11 @@ async function executeOcrWorkflow() {
         }
       })));
 
-      completedCount += batch.length;
+      for (const r of results) {
+        if (r && (r.lines?.length > 0 || r.fullText?.length > 0)) {
+          completedCount++;
+        }
+      }
       // Yield to main thread for responsive UI & cancel button handling
       await new Promise(r => setTimeout(r, 16));
     }
@@ -1067,8 +1273,8 @@ async function executeOcrWorkflow() {
 
     // Step 5: Embed OCR into PDF binary and sync across caches + Drive!
     if (completedCount > 0) {
-      if (progressLabel) progressLabel.textContent = 'Embedding text into PDF…';
-      if (progressDetail) progressDetail.textContent = 'Embedding invisible searchable text layer into PDF & syncing to Drive…';
+      if (progressLabel) progressLabel.textContent = 'Embedding searchable text into PDF…';
+      if (progressDetail) progressDetail.textContent = 'Writing word-aligned OCR text layer into PDF & syncing to Drive…';
       try {
         await embedOcrIntoPdfAndSync(tid);
       } catch (embErr) {
@@ -1077,18 +1283,29 @@ async function executeOcrWorkflow() {
     }
 
     if (!_scanCancelled) {
-      if (progressLabel) progressLabel.textContent = '✅ Scan complete!';
-      if (progressDetail) progressDetail.textContent = `Successfully processed ${completedCount} page${completedCount === 1 ? '' : 's'}. PDF is now 100% searchable and selectable!`;
-      toast(`✅ OCR complete for ${completedCount} page${completedCount === 1 ? '' : 's'}!`);
+      if (completedCount > 0) {
+        if (progressLabel) progressLabel.textContent = '✅ Scan & PDF Embed Complete!';
+        if (progressDetail) progressDetail.textContent = `Recognized & embedded searchable text on ${completedCount} page${completedCount === 1 ? '' : 's'}. You can now search (Ctrl+F), highlight, copy text, or click "Save OCR PDF"!`;
+        toast(`✅ OCR complete for ${completedCount} page${completedCount === 1 ? '' : 's'}! PDF is now searchable & editable.`);
+      } else {
+        if (progressLabel) progressLabel.textContent = '⚠️ No text detected on selected page(s)';
+        if (progressDetail) progressDetail.textContent = 'The OCR engine ran but found 0 readable words on the selected page(s).';
+        toast('⚠️ No readable words detected on the selected page(s).');
+      }
     } else {
       if (progressLabel) progressLabel.textContent = 'Scan stopped';
       if (progressDetail) progressDetail.textContent = `Processed ${completedCount} page${completedCount === 1 ? '' : 's'} before stopping.`;
     }
 
-    // Enable download report button
+    // Enable download report & save PDF buttons
     if (btnDownload) {
       btnDownload.disabled = false;
       btnDownload.style.opacity = '1';
+    }
+    const btnSavePdf = document.getElementById('ocr-btn-save-pdf');
+    if (btnSavePdf) {
+      btnSavePdf.disabled = false;
+      btnSavePdf.style.opacity = '1';
     }
 
   } catch (err) {

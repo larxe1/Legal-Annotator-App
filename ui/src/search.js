@@ -53,7 +53,7 @@ export function initSearch() {
   document.getElementById('snext').addEventListener('click', () => nextSearchResult(1));
   document.getElementById('sprev').addEventListener('click', () => nextSearchResult(-1));
 
-  // Native Desktop Ctrl+F shortcut -> opens PDF & Annotation Search panel
+  // Ctrl+F shortcut -> opens PDF & Annotation Search panel
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && S.curPDF) {
       e.preventDefault();
@@ -83,8 +83,8 @@ export async function extractPageText(doc, pageNum) {
   const trueId = S.curPDF?.linked_pdf_id || S.curPDF?.id || null;
   const scaleKey = String(Math.round((S.scale || 1.5) * 100));
 
-  // 1. Check Disk Page Vault on D: drive first (instant lock-free JSON read)
-  if (trueId && window.__DESKTOP_PDFIUM__?.getPageText) {
+  // 1. Check Disk Page Vault on D: drive if running in Desktop App
+  if (trueId && typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.getPageText) {
     const cached = await window.__DESKTOP_PDFIUM__.getPageText(trueId, pageNum, scaleKey);
     if (cached && Array.isArray(cached.textItems) && cached.textItems.length) {
       if (S.pages[pageNum]) S.pages[pageNum].textItems = cached.textItems;
@@ -122,8 +122,32 @@ export async function extractPageText(doc, pageNum) {
         h: (item.height || fh) * S.scale,
       });
     }
+
+    // 2. Fallback to OCR cache if page is scanned or has more OCR lines than native tokens
+    try {
+      const { getOcrPageData } = await import('./ocr.js');
+      const ocrData = getOcrPageData(trueId, pageNum);
+      if (ocrData && Array.isArray(ocrData.lines) && ocrData.lines.length > 0 && textItems.length < ocrData.lines.length) {
+        const scale = S.scale || 1.5;
+        const ocrItems = ocrData.lines
+          .filter(l => l && l.str && l.str.trim())
+          .map(l => ({
+            str: l.str,
+            x: (l.x || 0) * scale,
+            y: (l.y || 0) * scale,
+            w: (l.w || 60) * scale,
+            h: (l.h || 14) * scale,
+            ocr: true,
+          }));
+        if (ocrItems.length > 0) {
+          if (S.pages[pageNum]) S.pages[pageNum].textItems = ocrItems;
+          return ocrItems;
+        }
+      }
+    } catch {}
+
     if (S.pages[pageNum]) S.pages[pageNum].textItems = textItems;
-    if (trueId && window.__DESKTOP_PDFIUM__?.savePageText) {
+    if (trueId && textItems.length > 0 && typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.savePageText) {
       window.__DESKTOP_PDFIUM__.savePageText(trueId, pageNum, scaleKey, {
         w: vp.width,
         h: vp.height,
@@ -137,7 +161,7 @@ export async function extractPageText(doc, pageNum) {
   }
 }
 
-// Background indexer for all pages when PDF opens (polite idle batching for desktop)
+// Background indexer for all pages when PDF opens (polite idle batching)
 export async function indexAllPagesText(doc) {
   if (!doc || !S.totalPages) return;
   const total = S.totalPages;

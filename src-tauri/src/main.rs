@@ -860,10 +860,98 @@ async fn desktop_ocr_page(
     height_px: u32,
 ) -> Result<serde_json::Value, String> {
     let (bgra, w, h) = {
-        let guard = state.pdfium.lock().map_err(|e| e.to_string())?;
+        let mut guard = state.pdfium.lock().map_err(|e| e.to_string())?;
+        if !guard.docs.contains_key(&doc_id) {
+            let safe_id = sanitize_cache_id(&doc_id);
+            let candidate = state.pdf_cache_dir.join(format!("{}.pdf", safe_id));
+            if candidate.exists() {
+                let _ = guard.open_path(doc_id.clone(), &candidate.to_string_lossy());
+            }
+        }
         guard.render_page_bgra(&doc_id, page_num, width_px, height_px)?
     };
     run_windows_ocr_on_bgra(&bgra, w, h)
+}
+
+#[tauri::command]
+async fn desktop_ocr_png(png_base64: String) -> Result<serde_json::Value, String> {
+    let clean_b64 = if let Some(stripped) = png_base64.strip_prefix("data:image/png;base64,") {
+        stripped
+    } else if let Some(stripped) = png_base64.strip_prefix("data:image/jpeg;base64,") {
+        stripped
+    } else {
+        &png_base64
+    };
+
+    let raw_bytes = BASE64
+        .decode(clean_b64.trim().as_bytes())
+        .map_err(|e| format!("Base64 decode failed: {e}"))?;
+
+    let dynamic_img = image::load_from_memory(&raw_bytes)
+        .map_err(|e| format!("Failed to load image: {e}"))?;
+    let rgba = dynamic_img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+
+    let raw_slice = rgba.as_raw();
+    let mut bgra = Vec::with_capacity(raw_slice.len());
+    for px in raw_slice.chunks_exact(4) {
+        bgra.push(px[2]); // B
+        bgra.push(px[1]); // G
+        bgra.push(px[0]); // R
+        bgra.push(px[3]); // A
+    }
+
+    run_windows_ocr_on_bgra(&bgra, w, h)
+}
+
+#[tauri::command]
+async fn desktop_save_searchable_pdf(
+    default_name: String,
+    base64: String,
+    overwrite_path: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let clean_b64 = base64
+        .strip_prefix("data:application/pdf;base64,")
+        .unwrap_or(&base64);
+    let bytes = BASE64
+        .decode(clean_b64.trim().as_bytes())
+        .map_err(|e| format!("Base64 decode failed: {e}"))?;
+
+    if let Some(ref p) = overwrite_path {
+        let p_buf = PathBuf::from(p);
+        if p_buf.exists() {
+            fs::write(&p_buf, &bytes).map_err(|e| format!("Failed to overwrite PDF: {e}"))?;
+            return Ok(serde_json::json!({
+                "ok": true,
+                "path": p,
+                "overwritten": true
+            }));
+        }
+    }
+
+    let safe_default = if default_name.ends_with(".pdf") {
+        default_name
+    } else {
+        format!("{default_name}.pdf")
+    };
+
+    let picked = rfd::FileDialog::new()
+        .set_title("Save OCR-Ready Searchable PDF")
+        .set_file_name(&safe_default)
+        .add_filter("PDF Document", &["pdf"])
+        .save_file();
+
+    let Some(path_buf) = picked else {
+        return Ok(serde_json::json!({ "ok": false, "cancelled": true }));
+    };
+
+    let path_str = path_buf.to_string_lossy().to_string();
+    fs::write(&path_buf, &bytes).map_err(|e| format!("Failed to write PDF: {e}"))?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "path": path_str,
+        "overwritten": false
+    }))
 }
 
 #[tauri::command]
@@ -2712,6 +2800,8 @@ fn main() {
             pdfium_open_bytes,
             pdfium_render_page,
             desktop_ocr_page,
+            desktop_ocr_png,
+            desktop_save_searchable_pdf,
             pdfium_pick_local_pdf,
             desktop_start_google_oauth,
             desktop_poll_google_oauth,

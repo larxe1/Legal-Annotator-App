@@ -236,9 +236,28 @@ window.__DESKTOP_PDFIUM__ = {
         heightPx: Math.round(heightPx),
       });
     } catch (e) {
-      console.warn('[Desktop OCR] ocrPage error:', e);
+      console.warn('[Desktop OCR] ocrPage notice (will fallback to ocrPng):', e);
       return null;
     }
+  },
+
+  async ocrPng(pngBase64) {
+    if (!invoke || !pngBase64) return null;
+    return await invoke('desktop_ocr_png', {
+      pngBase64: String(pngBase64),
+    });
+  },
+
+  async saveSearchablePdf(defaultName, arrayBufferOrBase64, overwritePath = null) {
+    if (!invoke) return { ok: false, error: 'Desktop bridge unavailable' };
+    const b64 = typeof arrayBufferOrBase64 === 'string'
+      ? arrayBufferOrBase64
+      : arrayBufferToBase64(arrayBufferOrBase64);
+    return await invoke('desktop_save_searchable_pdf', {
+      defaultName: String(defaultName || 'Document_OCR.pdf'),
+      base64: b64,
+      overwritePath: overwritePath ? String(overwritePath) : null,
+    });
   },
 };
 

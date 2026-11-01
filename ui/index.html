@@ -697,6 +697,110 @@
   </div>
 </div>
 
+<!-- Edit Class Schedule Modal -->
+<div class="modal-ov" id="mo-edit-schedule">
+  <div class="modal-box" style="width:520px; max-width:94vw; max-height:90vh; display:flex; flex-direction:column;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 id="mo-edit-sched-title" style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">✏️ Edit Class Schedule</h3>
+      <button class="btn-sec" data-close="mo-edit-schedule" style="padding:4px 8px;">✕</button>
+    </div>
+
+    <!-- Active Class Form -->
+    <div id="sched-form-container" style="background:var(--navy); border:1px solid var(--navy-b); border-radius:8px; padding:12px; margin-bottom:12px;">
+      <input type="hidden" id="sched-entry-id">
+      
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+        <div>
+          <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:4px;">Day of Week</label>
+          <select id="sched-input-day" style="width:100%; padding:7px 8px; font-size:12px; background:var(--navy-l); border:1px solid var(--navy-b); color:#e8e4db; border-radius:5px;">
+            <option value="MON">Monday (MON)</option>
+            <option value="TUE">Tuesday (TUE)</option>
+            <option value="WED">Wednesday (WED)</option>
+            <option value="THU">Thursday (THU)</option>
+            <option value="FRI">Friday (FRI)</option>
+            <option value="SAT">Saturday (SAT)</option>
+            <option value="SUN">Sunday (SUN)</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:4px;">Class Time</label>
+          <input type="text" id="sched-input-time" placeholder="e.g. 5:30 – 7:30 PM" style="width:100%; padding:7px 8px; font-size:12px; background:var(--navy-l); border:1px solid var(--navy-b); color:#e8e4db; border-radius:5px; box-sizing:border-box;">
+        </div>
+      </div>
+
+      <div style="margin-bottom:10px;">
+        <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:4px;">Subject Name</label>
+        <div style="display:flex; gap:6px;">
+          <input type="text" id="sched-input-subject" placeholder="e.g. 103: Sales or Civil Procedure" style="flex:1; padding:7px 8px; font-size:12px; background:var(--navy-l); border:1px solid var(--navy-b); color:#e8e4db; border-radius:5px; box-sizing:border-box;">
+          <select id="sched-select-subject-quick" style="max-width:140px; padding:7px 6px; font-size:11px; background:var(--navy-l); border:1px solid var(--navy-b); color:var(--gold); border-radius:5px;" title="Quick pick from Library Subjects">
+            <option value="">Pick Subject…</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-bottom:10px;">
+        <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:4px;">Professor &amp; Room / Online</label>
+        <input type="text" id="sched-input-prof" placeholder="e.g. Atty. Ryan Anthony Malit · Room 321" style="width:100%; padding:7px 8px; font-size:12px; background:var(--navy-l); border:1px solid var(--navy-b); color:#e8e4db; border-radius:5px; box-sizing:border-box;">
+      </div>
+
+      <div style="margin-bottom:6px;">
+        <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:4px;">Linked Syllabus PDF</label>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <select id="sched-select-syllabus" style="flex:1; padding:7px 8px; font-size:12px; background:var(--navy-l); border:1px solid var(--navy-b); color:#e8e4db; border-radius:5px;">
+            <option value="">(No Syllabus Linked)</option>
+          </select>
+          <button type="button" id="sched-btn-clear-syllabus" class="btn-sec" style="padding:6px 9px; font-size:11px; color:var(--red);" title="Unlink syllabus">✕</button>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; padding-top:10px; border-top:1px solid var(--navy-b);">
+        <button type="button" id="sched-btn-delete" class="btn-sec" style="color:var(--red); border-color:rgba(239,68,68,0.3); font-size:11px; padding:6px 10px;">🗑 Delete Class</button>
+        <div style="display:flex; gap:6px;">
+          <button type="button" id="sched-btn-cancel-form" class="btn-sec" style="font-size:11px; padding:6px 10px;">Clear Form</button>
+          <button type="button" id="sched-btn-save-entry" class="btn-gold" style="font-size:11px; padding:6px 14px; font-weight:700;">Save Class</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- All Classes List -->
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <div style="font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Scheduled Classes (<span id="sched-count">0</span>)</div>
+      <div style="display:flex; gap:6px;">
+        <button type="button" id="sched-btn-new-class" class="btn-sec" style="font-size:11px; padding:3px 8px; color:var(--gold);">➕ New Class</button>
+        <button type="button" id="sched-btn-reset-default" class="btn-sec" style="font-size:11px; padding:3px 8px; color:var(--muted);" title="Reset schedule back to semester default">Reset to Default</button>
+      </div>
+    </div>
+
+    <div id="sched-list-container" style="flex:1; overflow-y:auto; max-height:220px; display:flex; flex-direction:column; gap:6px; padding-right:4px;">
+      <!-- populated dynamically -->
+    </div>
+
+    <div class="modal-acts" style="margin-top:12px; display:flex; justify-content:flex-end;">
+      <button class="btn-sec" data-close="mo-edit-schedule">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Choose Subject Syllabus Modal -->
+<div class="modal-ov" id="mo-choose-syllabus">
+  <div class="modal-box" style="width:460px; max-width:92vw; max-height:85vh; display:flex; flex-direction:column;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <h3 id="mo-choose-syl-title" style="margin:0; font-family:'Libre Baskerville',serif; font-size:15px; color:var(--gold);">📌 Choose Syllabus PDF</h3>
+      <button class="btn-sec" data-close="mo-choose-syllabus" style="padding:4px 8px;">✕</button>
+    </div>
+    <div id="mo-choose-syl-sub" style="font-size:11px; color:var(--muted); margin-bottom:10px;">Select a PDF from your library to set as the Syllabus. It will open automatically from your schedule where you last left off.</div>
+    <div style="margin-bottom:10px;">
+      <input type="text" id="choose-syl-search" placeholder="Filter PDFs…" style="width:100%; padding:7px 10px; font-size:12px; background:var(--navy); border:1px solid var(--navy-b); color:#e8e4db; border-radius:6px; box-sizing:border-box;">
+    </div>
+    <div id="choose-syl-list" style="flex:1; overflow-y:auto; max-height:280px; display:flex; flex-direction:column; gap:4px;">
+      <!-- dynamically populated PDF items -->
+    </div>
+    <div class="modal-acts" style="margin-top:12px;">
+      <button class="btn-sec" data-close="mo-choose-syllabus">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- Link PDF Modal -->
 <div class="modal-ov" id="mo-link-pdf">
   <div class="modal-box" style="width:480px; max-width:92vw; max-height:86vh; display:flex; flex-direction:column; padding:22px;">
@@ -1039,6 +1143,16 @@
         <a class="btn-sec" href="pen-debug.html" target="_blank" rel="noopener" style="display:block; box-sizing:border-box; width:100%; padding:7px 10px; font-size:12px; text-align:center; text-decoration:none;">Open Pen Diagnostic Page (for testing the Pencil)</a>
       </div>
 
+      <!-- Auto-Close Inactive Tabs -->
+      <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+          <div style="font-size:13px; font-weight:600; color:#e8e4db;">🗂️ Auto-Close Inactive Tabs (10m)</div>
+          <span id="auto-close-tabs-badge" style="font-size:11px; padding:2px 7px; border-radius:4px; background:rgba(34,197,94,0.18); color:#4ade80; font-weight:600;">Enabled</span>
+        </div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Automatically removes top document tabs that haven't been opened or touched for 10 minutes (your currently open tab stays open).</div>
+        <button class="btn-sec" id="btn-auto-close-tabs-setting" style="width:100%; padding:7px 10px; font-size:12px;">Toggle Auto-Close Inactive Tabs</button>
+      </div>
+
       <!-- Gemini AI API Key (for AI Table of Contents) -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
         <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">✨ Gemini AI API Key</div>
@@ -1236,6 +1350,8 @@
   <div class="ctx-item" id="lib-ctx-open">📖 Open</div>
   <div class="ctx-item" id="lib-ctx-reference">📑 Open as Reference</div>
   <div class="ctx-item" id="lib-ctx-set-page">📌 Set Default Opening Page…</div>
+  <div class="ctx-item" id="ctx-set-syllabus" style="display:none">📌 Set as Subject Syllabus</div>
+  <div class="ctx-item" id="ctx-move-folder">📂 Move to Folder…</div>
   <div class="ctx-item" id="lib-ctx-link">🔗 Create Shortcut…</div>
   <div class="ctx-item" id="lib-ctx-offline">💾 Save for Offline</div>
   <div class="ctx-item" id="lib-ctx-download">⬇ Download to PC</div>

@@ -26,6 +26,7 @@ import { initDiagramStudio } from './diagram.js';
 import { initGlobalPdfLinks } from './pdflink.js';
 import { initStorageManager, safeStorageGet, safeStorageSet, safeStorageRemove } from './storage.js';
 import { initGoodNotesUI, openSubjectBinderByTitle } from './goodnotes-ui.js';
+import { initEditableSchedule, renderEditableSchedule, openSubjectSyllabus } from './schedule.js';
 
 // Global Error Boundary to prevent tab-freezing crashes
 function setupGlobalErrorBoundary() {
@@ -109,6 +110,7 @@ async function init() {
   safeInit(initDualView, 'DualView');
   safeInit(initContextMenu, 'ContextMenu');
   safeInit(initCalendar, 'Calendar');
+  safeInit(initEditableSchedule, 'EditableSchedule');
   safeInit(initLinks, 'Links');
   safeInit(initRealtimeSync, 'RealtimeSync');
   safeInit(() => initOutbox(db), 'OutboxSync');
@@ -612,10 +614,53 @@ RULES:
     }
   }
 
+  const refreshAutoCloseTabsSetting = async () => {
+    const badge = document.getElementById('auto-close-tabs-badge');
+    const btn = document.getElementById('btn-auto-close-tabs-setting');
+    if (!badge && !btn) return;
+    try {
+      const gn = await import('./goodnotes-ui.js');
+      const enabled = typeof gn.isAutoCloseTabsEnabled === 'function'
+        ? gn.isAutoCloseTabsEnabled()
+        : (safeStorageGet('gn_auto_close_tabs_enabled') !== 'false');
+      if (badge) {
+        badge.textContent = enabled ? 'Enabled' : 'Disabled';
+        badge.style.background = enabled ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.18)';
+        badge.style.color = enabled ? '#4ade80' : '#f87171';
+      }
+      if (btn) {
+        btn.textContent = enabled ? 'Disable Auto-Close (Keep all tabs)' : 'Enable Auto-Close Inactive Tabs';
+      }
+    } catch (e) {
+      console.warn('[Settings] refreshAutoCloseTabsSetting error:', e);
+    }
+  };
+
+  document.getElementById('btn-auto-close-tabs-setting')?.addEventListener('click', async () => {
+    try {
+      const gn = await import('./goodnotes-ui.js');
+      let nextState;
+      if (typeof gn.isAutoCloseTabsEnabled === 'function' && typeof gn.setAutoCloseTabsEnabled === 'function') {
+        nextState = !gn.isAutoCloseTabsEnabled();
+        gn.setAutoCloseTabsEnabled(nextState);
+      } else {
+        const cur = safeStorageGet('gn_auto_close_tabs_enabled') !== 'false';
+        nextState = !cur;
+        safeStorageSet('gn_auto_close_tabs_enabled', String(nextState));
+        try { await dbSetSetting('gn_auto_close_tabs_enabled', String(nextState)); } catch {}
+      }
+      toast(nextState ? '✓ Auto-close inactive tabs (10m) enabled' : 'Auto-close inactive tabs disabled');
+      refreshAutoCloseTabsSetting();
+    } catch (e) {
+      console.warn('[Settings] toggle auto-close error:', e);
+    }
+  });
+
   document.getElementById('btn-settings')?.addEventListener('click', () => {
     openModal('mo-settings');
     refreshCacheStats();
     refreshGeminiKey();
+    refreshAutoCloseTabsSetting();
   });
 
   document.getElementById('settings-btn-save-gemini')?.addEventListener('click', async () => {
@@ -744,6 +789,10 @@ function initCalendar() {
   document.addEventListener('click', e => {
     const item = e.target.closest('.cal-item');
     if (!item) return;
+
+    // If edit button was clicked, let schedule modal handler process it
+    if (e.target.closest('.cal-edit-btn')) return;
+
     const strong = item.querySelector('strong');
     if (!strong) return;
     curSubj = strong.textContent.trim();
@@ -758,14 +807,8 @@ function initCalendar() {
       return;
     }
 
-    // Otherwise, clicking the schedule card opens the corresponding Subject binder in the Library!
-    const opened = openSubjectBinderByTitle(curSubj);
-    if (!opened) {
-      document.getElementById('mo-subj-notes-title').textContent = curSubj + ' Notes';
-      const notes = safeStorageGet('subj_notes_' + curSubj, '') || '';
-      document.getElementById('subj-notes-ta').value = notes;
-      openModal('mo-subj-notes');
-    }
+    // Clicking the schedule card or "📖 Open Syllabus ↗" calls openSubjectSyllabus(curSubj)!
+    openSubjectSyllabus(curSubj);
   });
 
   // Dynamically set title on hover to show notes
