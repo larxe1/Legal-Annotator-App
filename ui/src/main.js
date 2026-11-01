@@ -49,6 +49,15 @@ async function init() {
   // 0. Storage health check (prevent quota exceeded crashes & prune old cache)
   try { initStorageManager(); } catch (e) { console.warn('[Init] StorageManager error:', e); }
 
+  // 0b. If launched as standalone "Legal OCR & Compressor Studio" (Legal OCR Studio.exe / --ocr-studio),
+  // boot directly into the dedicated Studio interface and skip loading the main reader UI.
+  try {
+    const { checkAndBootOcrStudioApp } = await import('./ocr-studio.js');
+    if (await checkAndBootOcrStudioApp()) return;
+  } catch (e) {
+    console.warn('[Init] OCR Studio check warning:', e);
+  }
+
   // 1. Setup crash boundary and pre-flight reset
   setupGlobalErrorBoundary();
   document.querySelectorAll('#ann-panel, #notepad-panel, #search-panel')
@@ -118,6 +127,7 @@ async function init() {
   safeInit(initDiagramStudio, 'DiagramStudio');
   safeInit(initGlobalPdfLinks, 'GlobalPdfLinks');
   safeInit(() => import('./ocr.js').then(m => m.initOcrTool?.()).catch(e => console.warn('[Init] OcrTool unavailable:', e)), 'OcrTool');
+  safeInit(() => import('./ocr-studio.js').then(m => m.initReaderOcrStatusPill?.()).catch(e => console.warn('[Init] OcrStatusPill unavailable:', e)), 'OcrStatusPill');
   safeInit(() => import('./smart-copy.js').then(m => m.initSmartCopy?.()).catch(e => console.warn('[Init] SmartCopy unavailable:', e)), 'SmartCopy');
   safeInit(() => import('./tags.js').then(m => m.initTagsPanel?.()).catch(e => console.warn('[Init] TagsPanel unavailable:', e)), 'TagsPanel');
 

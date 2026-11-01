@@ -61,6 +61,18 @@ function ensureLibCtxMenuItems() {
       menu.appendChild(sylItem);
     }
   }
+  if (!document.getElementById('ctx-ocr-studio')) {
+    const ocrItem = document.createElement('div');
+    ocrItem.className = 'ctx-item';
+    ocrItem.id = 'ctx-ocr-studio';
+    ocrItem.textContent = '🗜️ OCR & Compress PDF (Studio)…';
+    const sylItem = document.getElementById('ctx-set-syllabus');
+    if (sylItem && sylItem.nextSibling) {
+      menu.insertBefore(ocrItem, sylItem.nextSibling);
+    } else {
+      menu.appendChild(ocrItem);
+    }
+  }
 }
 
 function showLibCtxMenu(item, x, y, isFolder = false) {
@@ -113,6 +125,8 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   if (moveFolderBtn) moveFolderBtn.style.display = isMultiFolder ? 'none' : 'block';
   const setSylBtn = document.getElementById('ctx-set-syllabus');
   if (setSylBtn) setSylBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
+  const ocrStudioBtn = document.getElementById('ctx-ocr-studio');
+  if (ocrStudioBtn) ocrStudioBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
   document.getElementById('lib-ctx-offline').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   document.getElementById('lib-ctx-download').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   document.getElementById('lib-ctx-gdrive').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
@@ -339,6 +353,15 @@ export function initContextMenu() {
         toast(`📌 Set "${pdf.name}" as subject syllabus`);
       }
     }
+  });
+
+  // "OCR & Compress PDF (Studio)…"
+  document.getElementById('ctx-ocr-studio')?.addEventListener('click', async () => {
+    if (!_ctxTarget || _ctxIsFolder) return;
+    const pdf = Array.isArray(_ctxTarget) ? _ctxTarget[0] : _ctxTarget;
+    hideLibCtxMenu();
+    const { launchLinkedOcrStudioForPdf } = await import('./ocr-studio.js');
+    await launchLinkedOcrStudioForPdf(pdf, 'balanced', false);
   });
 
   // "Open in Google Drive" — opens file directly in Google Drive in new tab
@@ -1122,6 +1145,10 @@ function buildPdfEl(pdf) {
   const defPage = safeStorageGet('default_page_' + pdf.id)
     || (pdf.folder_id ? safeStorageGet('default_page_f_' + pdf.folder_id + '_' + trueId) : null);
   const defBadgeHtml = defPage ? `<span class="def-page-badge" title="Opens at page ${defPage} by default (Click to change)">p.${defPage}</span>` : '';
+  const hasOcrBadge = !!(safeStorageGet('ocr_ready_badge_' + trueId) || safeStorageGet('ocr_cache_' + trueId));
+  const ocrBadgeHtml = hasOcrBadge
+    ? `<span class="ocr-lib-badge" title="OCR Ready & Searchable PDF" style="font-size:9.5px;font-weight:700;padding:1px 5px;border-radius:4px;background:rgba(34,197,94,0.16);color:#4ade80;border:1px solid rgba(74,222,128,0.4);margin-left:4px;flex-shrink:0;">OCR</span>`
+    : '';
 
   const statusIcon = digested ? '⚖️' : '📄';
   const statusTitle = digested
@@ -1134,6 +1161,7 @@ function buildPdfEl(pdf) {
       ${pdf.linked_pdf_id ? '<span style="color:var(--gold);margin-right:4px" title="Shortcut">🔗</span>' : ''}
       ${pdf.name}
     </span>
+    ${ocrBadgeHtml}
     ${defBadgeHtml}
     <span class="ann-badge" style="${count ? '' : 'display:none'}">${count}</span>
     <div class="li-acts">

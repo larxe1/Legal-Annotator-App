@@ -347,6 +347,8 @@ export async function loadOcrForCurrentPdf(trueId = null) {
     }
   }
 
+  import('./ocr-studio.js').then(m => m.updateReaderOcrStatusPill?.()).catch(() => {});
+
   return pdfOcr;
 }
 
@@ -982,6 +984,21 @@ export function initOcrTool() {
         <button id="ocr-btn-close-x" style="background:none;border:none;color:var(--muted,#8ea0b8);font-size:18px;cursor:pointer;padding:4px;" title="Close">✕</button>
       </div>
 
+      <!-- Companion App Launcher: Legal OCR & Compressor Studio -->
+      <div id="ocr-studio-promo-box" style="background:linear-gradient(135deg, rgba(201,168,76,0.16) 0%, rgba(16,185,129,0.14) 100%);border:1.5px solid rgba(201,168,76,0.5);border-radius:10px;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:210px;">
+          <div style="font-size:13px;font-weight:700;color:var(--gold,#c9a84c);display:flex;align-items:center;gap:6px;">
+            <span>🗜️</span> Legal OCR &amp; Compressor Studio (Separate Linked App)
+          </div>
+          <div style="font-size:11.5px;color:var(--text,#e2e8f0);margin-top:3px;line-height:1.35;">
+            Best for 500-page / 100 MB codals: runs in an isolated process, shrinks file size by <b>~75–85%</b>, embeds searchable text, and auto-syncs back here!
+          </div>
+        </div>
+        <button id="ocr-btn-launch-studio" type="button" style="padding:8px 13px;border-radius:7px;border:1px solid var(--gold,#c9a84c);background:linear-gradient(135deg,#c9a84c,#a68529);color:#090d16;font-size:12px;font-weight:800;cursor:pointer;white-space:nowrap;box-shadow:0 3px 10px rgba(0,0,0,0.3);">
+          🚀 Open in OCR &amp; Compressor Studio
+        </button>
+      </div>
+
       <!-- Scope Options -->
       <div style="display:flex;flex-direction:column;gap:8px;">
         <label style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted,#8ea0b8);letter-spacing:0.5px;">1. Select Pages to Scan</label>
@@ -1130,6 +1147,13 @@ function wireOcrToolModalEvents() {
   btnSavePdf?.addEventListener('click', async () => {
     if (_isScanning) return;
     await exportSearchablePdfFile();
+  });
+
+  // Launch Separate Linked "Legal OCR & Compressor Studio" App
+  const btnLaunchStudio = document.getElementById('ocr-btn-launch-studio');
+  btnLaunchStudio?.addEventListener('click', async () => {
+    const { launchLinkedOcrStudioForPdf } = await import('./ocr-studio.js');
+    await launchLinkedOcrStudioForPdf(S.curPDF, 'balanced', false);
   });
 }
 
@@ -1305,6 +1329,14 @@ async function executeOcrWorkflow() {
           : `Running Local in-browser OCR on page ${batch[0]}…`;
       }
 
+      import('./ocr-studio.js').then(m => m.updateReaderOcrStatusPill?.({
+        state: 'running',
+        isStudio: false,
+        currentPage: Math.min(i + batch.length, totalCount),
+        totalPages: totalCount,
+        pct: overallBase,
+      })).catch(() => {});
+
       const results = await Promise.all(batch.map(pNum => scanPage(pNum, {
         deferCloudFlush: true,
         onProgress: info => {
@@ -1360,14 +1392,26 @@ async function executeOcrWorkflow() {
         if (progressLabel) progressLabel.textContent = '✅ Scan & PDF Embed Complete!';
         if (progressDetail) progressDetail.textContent = `Recognized & embedded searchable text on ${completedCount} page${completedCount === 1 ? '' : 's'}. You can now search (Ctrl+F), highlight, copy text, or click "Save OCR PDF"!`;
         toast(`✅ OCR complete for ${completedCount} page${completedCount === 1 ? '' : 's'}! PDF is now searchable & editable.`);
+        import('./ocr-studio.js').then(m => {
+          m.setSavedOcrBadgeMeta?.(tid, { pages: Object.keys(_ocrCache[tid] || {}).length || completedCount });
+          m.updateReaderOcrStatusPill?.({ state: 'ready', pages: Object.keys(_ocrCache[tid] || {}).length || completedCount });
+          m.showPersistentOcrCompletionBanner?.({
+            pages: completedCount,
+            totalPages: S.totalPages || totalCount,
+            fromStudio: false,
+          });
+        }).catch(() => {});
+        import('./library.js').then(m => m.renderLibrary?.()).catch(() => {});
       } else {
         if (progressLabel) progressLabel.textContent = '⚠️ No text detected on selected page(s)';
         if (progressDetail) progressDetail.textContent = 'The OCR engine ran but found 0 readable words on the selected page(s).';
         toast('⚠️ No readable words detected on the selected page(s).');
+        import('./ocr-studio.js').then(m => m.updateReaderOcrStatusPill?.()).catch(() => {});
       }
     } else {
       if (progressLabel) progressLabel.textContent = 'Scan stopped';
       if (progressDetail) progressDetail.textContent = `Processed ${completedCount} page${completedCount === 1 ? '' : 's'} before stopping.`;
+      import('./ocr-studio.js').then(m => m.updateReaderOcrStatusPill?.()).catch(() => {});
     }
 
     // Enable download report & save PDF buttons

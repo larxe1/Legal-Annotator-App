@@ -451,6 +451,8 @@ export async function closeActivePDF() {
   document.getElementById('pg-total').textContent = '0';
   document.getElementById('pg-input').value = '1';
   document.getElementById('zoom-lbl').textContent = '100%';
+  document.getElementById('ocr-completion-banner')?.remove();
+  import('./ocr-studio.js').then(m => m.updateReaderOcrStatusPill?.()).catch(() => {});
 
   updateActivePDF();
   notifyTabClosedToHome();
@@ -713,6 +715,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
 
     // Load OCR layer & Tags for current PDF in background
     import('./ocr.js').then(m => m.loadOcrForCurrentPdf?.(trueId)).catch(() => {});
+    import('./ocr-studio.js').then(m => m.updateReaderOcrStatusPill?.()).catch(() => {});
     import('./tags.js').then(m => m.loadTagsForPdf?.(trueId)).catch(() => {});
 
     // Start background progressive full-document renderer (ensures all pages are rendered without scrolling)

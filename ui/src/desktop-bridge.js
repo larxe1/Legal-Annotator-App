@@ -266,6 +266,99 @@ window.__DESKTOP_PDFIUM__ = {
       overwritePath: overwritePath ? String(overwritePath) : null,
     });
   },
+
+  async getStudioMode() {
+    if (!invoke) return { isStudio: false };
+    try {
+      return await invoke('desktop_get_studio_mode');
+    } catch {
+      return { isStudio: false };
+    }
+  },
+
+  async launchOcrStudio({ docId = null, driveId = null, filePath = null, pdfName = null, preset = 'balanced', autoStart = false } = {}) {
+    if (!invoke) return { ok: false, error: 'Desktop bridge unavailable' };
+    return await invoke('desktop_launch_ocr_studio', {
+      docId: docId ? String(docId) : null,
+      driveId: driveId ? String(driveId) : null,
+      filePath: filePath ? String(filePath) : null,
+      pdfName: pdfName ? String(pdfName) : null,
+      preset: preset ? String(preset) : 'balanced',
+      autoStart: !!autoStart,
+    });
+  },
+
+  async pickPdfPathOnly() {
+    if (!invoke) return null;
+    return await invoke('desktop_pick_pdf_path_only');
+  },
+
+  async startOcrCompressJob({ docId = null, driveId = null, inputPath = null, pdfName = null, preset = 'balanced' } = {}) {
+    if (!invoke) throw new Error('Desktop bridge unavailable');
+    return await invoke('desktop_start_ocr_compress_job', {
+      docId: docId ? String(docId) : null,
+      driveId: driveId ? String(driveId) : null,
+      inputPath: inputPath ? String(inputPath) : null,
+      pdfName: pdfName ? String(pdfName) : null,
+      preset: preset ? String(preset) : 'balanced',
+    });
+  },
+
+  async getOcrCompressStatus(docId = null) {
+    if (!invoke) return null;
+    try {
+      return await invoke('desktop_get_ocr_compress_status', {
+        docId: docId ? String(docId) : null,
+      });
+    } catch {
+      return null;
+    }
+  },
+
+  async cancelOcrCompressJob(docId) {
+    if (!invoke || !docId) return false;
+    try {
+      return await invoke('desktop_cancel_ocr_compress_job', { docId: String(docId) });
+    } catch {
+      return false;
+    }
+  },
+
+  async exportCompressedPdfAs(docId = null, defaultName = null) {
+    if (!invoke) return { ok: false, error: 'Desktop bridge unavailable' };
+    return await invoke('desktop_export_compressed_pdf_as', {
+      docId: docId ? String(docId) : null,
+      defaultName: defaultName ? String(defaultName) : null,
+    });
+  },
+
+  async getPdfOcrSummary(docId, totalPages = 0) {
+    if (!invoke || !docId) return null;
+    try {
+      return await invoke('desktop_get_pdf_ocr_summary', {
+        docId: String(docId),
+        totalPages: Number(totalPages) || 0,
+      });
+    } catch {
+      return null;
+    }
+  },
+
+  async readCachedPdfBytes(fileId) {
+    if (!invoke || !fileId) return null;
+    try {
+      const b64 = await invoke('desktop_cache_read_pdf', { fileId: String(fileId) });
+      if (!b64 || typeof b64 !== 'string') return null;
+      const binStr = atob(b64);
+      const bytes = new Uint8Array(binStr.length);
+      for (let i = 0; i < binStr.length; i++) {
+        bytes[i] = binStr.charCodeAt(i);
+      }
+      return bytes;
+    } catch {
+      return null;
+    }
+  },
 };
 
 window.__DESKTOP_SQLITE__ = {

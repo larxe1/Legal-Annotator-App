@@ -19,6 +19,8 @@ use std::{
 };
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod ocr_studio;
+
 struct RawPdfDoc {
     handle: usize,
     _backing_bytes: Option<PinVec>,
@@ -26,7 +28,7 @@ struct RawPdfDoc {
 
 struct PinVec(#[allow(dead_code)] Box<[u8]>);
 
-struct PdfiumHolder {
+pub(crate) struct PdfiumHolder {
     lib: Option<Library>,
     docs: HashMap<String, RawPdfDoc>,
     page_cache: VecDeque<(String, String)>, // (cache_key, data_url)
@@ -34,17 +36,17 @@ struct PdfiumHolder {
 
 unsafe impl Send for PdfiumHolder {}
 
-struct AppState {
-    pdfium: Mutex<PdfiumHolder>,
-    sqlite_path: PathBuf,
-    pdf_cache_dir: PathBuf,
-    page_vault_dir: PathBuf,
-    oauth_path: PathBuf,
-    oauth_token: Arc<Mutex<Option<String>>>,
-    oauth_status: Arc<Mutex<String>>,
-    syllabus_oauth_path: PathBuf,
-    syllabus_oauth_token: Arc<Mutex<Option<String>>>,
-    syllabus_oauth_status: Arc<Mutex<String>>,
+pub(crate) struct AppState {
+    pub(crate) pdfium: Mutex<PdfiumHolder>,
+    pub(crate) sqlite_path: PathBuf,
+    pub(crate) pdf_cache_dir: PathBuf,
+    pub(crate) page_vault_dir: PathBuf,
+    pub(crate) oauth_path: PathBuf,
+    pub(crate) oauth_token: Arc<Mutex<Option<String>>>,
+    pub(crate) oauth_status: Arc<Mutex<String>>,
+    pub(crate) syllabus_oauth_path: PathBuf,
+    pub(crate) syllabus_oauth_token: Arc<Mutex<Option<String>>>,
+    pub(crate) syllabus_oauth_status: Arc<Mutex<String>>,
 }
 
 #[derive(Serialize)]
@@ -84,7 +86,7 @@ struct PickedPdfResponse {
 
 const EMBEDDED_PDFIUM_DLL: &[u8] = include_bytes!("../bin/pdfium.dll");
 
-fn resolve_data_dir() -> PathBuf {
+pub(crate) fn resolve_data_dir() -> PathBuf {
     let dev_d_drive = PathBuf::from(r"D:\Code\legal-annotator-desktop\data");
     if dev_d_drive.exists() {
         return dev_d_drive;
@@ -107,7 +109,7 @@ fn resolve_data_dir() -> PathBuf {
     fallback
 }
 
-fn find_pdfium_dll(data_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn find_pdfium_dll(data_dir: &Path) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -684,7 +686,7 @@ async fn pdfium_render_page(
 }
 
 #[cfg(target_os = "windows")]
-fn run_windows_ocr_on_bgra(bgra: &[u8], width: u32, height: u32) -> Result<serde_json::Value, String> {
+pub(crate) fn run_windows_ocr_on_bgra(bgra: &[u8], width: u32, height: u32) -> Result<serde_json::Value, String> {
     unsafe {
         extern "system" {
             fn CoInitializeEx(pv: *const std::ffi::c_void, flags: u32) -> i32;
@@ -847,7 +849,7 @@ fn run_windows_ocr_on_bgra(bgra: &[u8], width: u32, height: u32) -> Result<serde
 }
 
 #[cfg(not(target_os = "windows"))]
-fn run_windows_ocr_on_bgra(_bgra: &[u8], _width: u32, _height: u32) -> Result<serde_json::Value, String> {
+pub(crate) fn run_windows_ocr_on_bgra(_bgra: &[u8], _width: u32, _height: u32) -> Result<serde_json::Value, String> {
     Err("Windows Native OCR is only supported on Windows".into())
 }
 
@@ -1419,7 +1421,7 @@ async fn desktop_clear_google_oauth(
     Ok(true)
 }
 
-fn sanitize_cache_id(file_id: &str) -> String {
+pub(crate) fn sanitize_cache_id(file_id: &str) -> String {
     file_id
         .chars()
         .map(|c| {
@@ -1611,6 +1613,9 @@ async fn desktop_gdrive_download_file(
         if let Ok(out) = cmd.output() {
             if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
                 diag.push(format!("{}: Downloaded valid PDF ({} bytes)", label, out.stdout.len()));
+                let cache_dir = resolve_data_dir().join("pdf_cache");
+                let _ = fs::create_dir_all(&cache_dir);
+                let _ = fs::write(cache_dir.join(format!("{}.pdf", safe_id)), &out.stdout);
                 return Ok(serde_json::json!({
                     "ok": true,
                     "base64": BASE64.encode(&out.stdout),
@@ -1631,6 +1636,9 @@ async fn desktop_gdrive_download_file(
                 exp_cmd.creation_flags(0x08000000);
                 if let Ok(exp_out) = exp_cmd.output() {
                     if exp_out.stdout.len() > 100 && &exp_out.stdout[0..4] == b"%PDF" {
+                        let cache_dir = resolve_data_dir().join("pdf_cache");
+                        let _ = fs::create_dir_all(&cache_dir);
+                        let _ = fs::write(cache_dir.join(format!("{}.pdf", safe_id)), &exp_out.stdout);
                         return Ok(serde_json::json!({
                             "ok": true,
                             "base64": BASE64.encode(&exp_out.stdout),
@@ -1685,6 +1693,9 @@ async fn desktop_gdrive_download_file(
         if let Ok(out) = cmd.output() {
             if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
                 diag.push(format!("{}: Succeeded ({} bytes)", label, out.stdout.len()));
+                let cache_dir = resolve_data_dir().join("pdf_cache");
+                let _ = fs::create_dir_all(&cache_dir);
+                let _ = fs::write(cache_dir.join(format!("{}.pdf", safe_id)), &out.stdout);
                 return Ok(serde_json::json!({
                     "ok": true,
                     "base64": BASE64.encode(&out.stdout),
@@ -2794,6 +2805,14 @@ fn main() {
 
     tauri::Builder::default()
         .manage(app_state)
+        .setup(|app| {
+            if ocr_studio::is_ocr_studio_process() {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_title("Legal OCR & Compressor Studio — Linked with Legal Annotator");
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             desktop_system_status,
             pdfium_open_path,
@@ -2802,6 +2821,14 @@ fn main() {
             desktop_ocr_page,
             desktop_ocr_png,
             desktop_save_searchable_pdf,
+            ocr_studio::desktop_get_studio_mode,
+            ocr_studio::desktop_launch_ocr_studio,
+            ocr_studio::desktop_pick_pdf_path_only,
+            ocr_studio::desktop_start_ocr_compress_job,
+            ocr_studio::desktop_get_ocr_compress_status,
+            ocr_studio::desktop_cancel_ocr_compress_job,
+            ocr_studio::desktop_export_compressed_pdf_as,
+            ocr_studio::desktop_get_pdf_ocr_summary,
             pdfium_pick_local_pdf,
             desktop_start_google_oauth,
             desktop_poll_google_oauth,
