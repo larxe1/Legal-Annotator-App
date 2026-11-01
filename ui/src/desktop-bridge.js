@@ -365,6 +365,19 @@ window.__DESKTOP_PDFIUM__ = {
     }
   },
 
+  async closeStudioWindow() {
+    if (!invoke) {
+      window.close();
+      return false;
+    }
+    try {
+      return await invoke('desktop_close_studio_window');
+    } catch {
+      window.close();
+      return false;
+    }
+  },
+
   async readCachedPdfBytes(fileId) {
     if (!invoke || !fileId) return null;
     try {

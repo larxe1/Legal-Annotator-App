@@ -2151,3 +2151,9 @@ pub async fn desktop_get_pdf_ocr_summary(
         "studioJob": job_opt,
     }))
 }
+
+#[tauri::command]
+pub async fn desktop_close_studio_window(app: tauri::AppHandle) -> Result<bool, String> {
+    app.exit(0);
+    Ok(true)
+}

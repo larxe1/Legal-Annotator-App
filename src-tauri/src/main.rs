@@ -2830,6 +2830,7 @@ fn main() {
             ocr_studio::desktop_export_compressed_pdf_as,
             ocr_studio::desktop_split_pdf_to_folder,
             ocr_studio::desktop_get_pdf_ocr_summary,
+            ocr_studio::desktop_close_studio_window,
             pdfium_pick_local_pdf,
             desktop_start_google_oauth,
             desktop_poll_google_oauth,

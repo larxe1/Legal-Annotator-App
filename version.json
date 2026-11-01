@@ -1,7 +1,7 @@
 {
-  "version": "1.10.1",
-  "build": 25,
-  "updatedAt": "2026-11-01T12:20:00+08:00",
-  "notes": "Fixed Study Desk click bug, upgraded OCR Studio compression (adaptive paper-floor whitening + per-page byte budget + compact text layer + Page Vault OCR cache), and added Multi-File PDF Folder Splitter for external exports.",
+  "version": "1.10.2",
+  "build": 26,
+  "updatedAt": "2026-11-01T12:29:00+08:00",
+  "notes": "Fixed Legal OCR Studio 'Return to Legal Annotator' button so it cleanly exits the standalone window instead of leaving a white screen.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

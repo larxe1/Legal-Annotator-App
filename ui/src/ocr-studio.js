@@ -999,8 +999,12 @@ function renderStandaloneOcrStudioUI(studioInfo) {
     }
   });
 
-  document.getElementById('studio-btn-close-win')?.addEventListener('click', () => {
-    window.close();
+  document.getElementById('studio-btn-close-win')?.addEventListener('click', async () => {
+    if (window.__DESKTOP_PDFIUM__?.closeStudioWindow) {
+      await window.__DESKTOP_PDFIUM__.closeStudioWindow();
+    } else {
+      window.close();
+    }
   });
 
   if (studioInfo.autoStart && (state.filePath || state.docId || state.driveId)) {
