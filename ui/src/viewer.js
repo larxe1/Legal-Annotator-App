@@ -546,7 +546,8 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     const byteLen = buf.byteLength;
     const onlyCopyIfSmall = byteLen <= 35 * 1024 * 1024 ? buf.slice(0) : null;
     if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.openPdf) {
-      window.__DESKTOP_PDFIUM__.openPdf(trueId, onlyCopyIfSmall, pdfFile._localPath || null, targetDriveId).catch(() => {});
+      // Pass `onlyCopyIfSmall || blob` so 100MB+ PDFs stream to disk cache in 4MB slices from `blob` without duplicating `buf`
+      window.__DESKTOP_PDFIUM__.openPdf(trueId, onlyCopyIfSmall || blob, pdfFile._localPath || null, targetDriveId).catch(() => {});
     }
     S.pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
     S.pdfDoc._desktopDocId = trueId;

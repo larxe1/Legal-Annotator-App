@@ -103,28 +103,79 @@ window.__DESKTOP_PDFIUM__ = {
           return true;
         }
       }
-      // 2. Otherwise persist once to disk cache (only for files <= 35 MB to prevent Base64 OOM)
-      if (arrayBuffer && arrayBuffer.byteLength <= 35 * 1024 * 1024) {
-        const b64 = arrayBufferToBase64(arrayBuffer);
-        const savedPath = await invoke('desktop_cache_save_pdf', {
-          fileId: String(driveFileId || docId),
-          base64: b64,
-        }).catch(() => null);
+      // 2. Otherwise persist to disk cache in 4 MB chunks (handles 100 MB+ PDFs safely without Base64 OOM)
+      if (arrayBuffer) {
+        const savedPath = await this.savePdfBlobToCacheChunked(docId, arrayBuffer, driveFileId).catch(() => null);
         if (savedPath) {
           const res = await invoke('pdfium_open_path', { docId: String(docId), path: savedPath });
           if (res?.ok) {
             _openNativeDocs.add(String(docId));
+            if (driveFileId && String(driveFileId) !== String(docId)) {
+              await invoke('pdfium_open_path', { docId: String(driveFileId), path: savedPath }).catch(() => {});
+              _openNativeDocs.add(String(driveFileId));
+            }
             return true;
           }
         }
-        const res = await invoke('pdfium_open_bytes', { docId: String(docId), base64: b64 });
-        if (res?.ok) _openNativeDocs.add(String(docId));
-        return !!res?.ok;
+        if (arrayBuffer.byteLength && arrayBuffer.byteLength <= 35 * 1024 * 1024) {
+          const b64 = arrayBufferToBase64(arrayBuffer);
+          const res = await invoke('pdfium_open_bytes', { docId: String(docId), base64: b64 });
+          if (res?.ok) _openNativeDocs.add(String(docId));
+          return !!res?.ok;
+        }
       }
     } catch (e) {
       console.warn('[Desktop PDFium] openPdf warning:', e);
     }
     return false;
+  },
+
+  async savePdfBlobToCacheChunked(docId, blobOrBuffer, driveFileId = null) {
+    if (!invoke || !docId || !blobOrBuffer) return null;
+    try {
+      let existing = await invoke('desktop_cache_get_path', { fileId: String(docId) }).catch(() => null);
+      if (existing) return existing;
+
+      const isBlob = typeof Blob !== 'undefined' && blobOrBuffer instanceof Blob;
+      const totalBytes = isBlob
+        ? blobOrBuffer.size
+        : (blobOrBuffer.byteLength || 0);
+      if (!totalBytes || totalBytes < 100) return null;
+
+      const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB per IPC chunk
+      let savedPath = null;
+      for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
+        const end = Math.min(totalBytes, offset + CHUNK_SIZE);
+        let sliceBuf;
+        if (isBlob) {
+          sliceBuf = await blobOrBuffer.slice(offset, end).arrayBuffer();
+        } else if (blobOrBuffer instanceof ArrayBuffer) {
+          sliceBuf = blobOrBuffer.slice(offset, end);
+        } else if (ArrayBuffer.isView(blobOrBuffer)) {
+          sliceBuf = blobOrBuffer.buffer.slice(
+            blobOrBuffer.byteOffset + offset,
+            blobOrBuffer.byteOffset + end
+          );
+        } else {
+          return null;
+        }
+        const b64Chunk = arrayBufferToBase64(sliceBuf);
+        const isLast = end >= totalBytes;
+        savedPath = await invoke('desktop_cache_write_chunk', {
+          fileId: String(docId),
+          base64Chunk: b64Chunk,
+          append: offset > 0,
+          copyToFileId:
+            isLast && driveFileId && String(driveFileId) !== String(docId)
+              ? String(driveFileId)
+              : null,
+        });
+      }
+      return savedPath;
+    } catch (e) {
+      console.warn('[Desktop PDFium] savePdfBlobToCacheChunked warning:', e);
+      return null;
+    }
   },
 
   async renderPageToCanvas(docId, pageNum, canvas, widthPx, heightPx) {
@@ -276,7 +327,7 @@ window.__DESKTOP_PDFIUM__ = {
     }
   },
 
-  async launchOcrStudio({ docId = null, driveId = null, filePath = null, pdfName = null, preset = 'balanced', autoStart = false } = {}) {
+  async launchOcrStudio({ docId = null, driveId = null, filePath = null, pdfName = null, preset = 'balanced', autoStart = false, oauthToken = null } = {}) {
     if (!invoke) return { ok: false, error: 'Desktop bridge unavailable' };
     return await invoke('desktop_launch_ocr_studio', {
       docId: docId ? String(docId) : null,
@@ -285,6 +336,7 @@ window.__DESKTOP_PDFIUM__ = {
       pdfName: pdfName ? String(pdfName) : null,
       preset: preset ? String(preset) : 'balanced',
       autoStart: !!autoStart,
+      oauthToken: oauthToken ? String(oauthToken) : null,
     });
   },
 
@@ -293,7 +345,7 @@ window.__DESKTOP_PDFIUM__ = {
     return await invoke('desktop_pick_pdf_path_only');
   },
 
-  async startOcrCompressJob({ docId = null, driveId = null, inputPath = null, pdfName = null, preset = 'balanced' } = {}) {
+  async startOcrCompressJob({ docId = null, driveId = null, inputPath = null, pdfName = null, preset = 'balanced', oauthToken = null } = {}) {
     if (!invoke) throw new Error('Desktop bridge unavailable');
     return await invoke('desktop_start_ocr_compress_job', {
       docId: docId ? String(docId) : null,
@@ -301,6 +353,7 @@ window.__DESKTOP_PDFIUM__ = {
       inputPath: inputPath ? String(inputPath) : null,
       pdfName: pdfName ? String(pdfName) : null,
       preset: preset ? String(preset) : 'balanced',
+      oauthToken: oauthToken ? String(oauthToken) : null,
     });
   },
 

@@ -1737,6 +1737,10 @@ export function initLibraryModals() {
           const driveFile = await driveUploadPDF(file, driveFolderId);
           // Register in Supabase
           lastRec = await dbRegisterPDF(targetFolderId, file.name, driveFile.id);
+          // Also persist local disk cache copy (4MB chunked streaming) for Desktop PDFium & Legal OCR Studio
+          if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.savePdfBlobToCacheChunked && lastRec?.id) {
+            await window.__DESKTOP_PDFIUM__.savePdfBlobToCacheChunked(lastRec.id, file, driveFile.id).catch(() => {});
+          }
           S.annCounts[lastRec.id] = 0;
           uploadCount++;
         }

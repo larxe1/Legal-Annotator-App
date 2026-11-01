@@ -9,13 +9,14 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 use crate::{find_pdfium_dll, resolve_data_dir, run_windows_ocr_on_bgra, sanitize_cache_id, AppState};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use libloading::{Library, Symbol};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     ffi::{c_char, c_double, c_int, c_void, CString},
-    fs::{self, File},
-    io::{BufWriter, Write},
+    fs::{self, File, OpenOptions},
+    io::{BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::{LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -991,12 +992,209 @@ fn load_or_run_page_ocr(
     ocr_val
 }
 
+fn collect_saved_oauth_tokens(data_dir: &Path) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut push_unique = |t: String| {
+        let trimmed = t.trim().to_string();
+        if trimmed.len() > 20 && !tokens.contains(&trimmed) {
+            tokens.push(trimmed);
+        }
+    };
+
+    if let Some(cli_tok) = get_arg_value("--token") {
+        push_unique(cli_tok);
+    }
+    if let Ok(raw) = fs::read_to_string(data_dir.join("ocr_studio_oauth.txt")) {
+        push_unique(raw);
+    }
+    for fname in ["google_oauth.json", "syllabus_oauth.json"] {
+        if let Ok(raw) = fs::read_to_string(data_dir.join(fname)) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(tok) = json.get("access_token").and_then(|v| v.as_str()) {
+                    push_unique(tok.to_string());
+                }
+            }
+        }
+    }
+    tokens
+}
+
+fn file_starts_with_pdf_magic(path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    let mut hdr = [0u8; 4];
+    if f.read_exact(&mut hdr).is_ok() {
+        &hdr == b"%PDF"
+    } else {
+        false
+    }
+}
+
+/// Streams a large (e.g. 100 MB+) PDF directly from Google Drive to `data/pdf_cache/` on disk
+/// using `curl.exe -o <file>` so it uses zero RAM and never fails for >35 MB PDFs.
+pub fn ensure_drive_pdf_on_disk(
+    data_dir: &Path,
+    drive_id: &str,
+    doc_id: &str,
+) -> Result<PathBuf, String> {
+    let safe_drive = sanitize_cache_id(drive_id);
+    let safe_doc = sanitize_cache_id(doc_id);
+    if safe_drive.is_empty() {
+        return Err("Empty Google Drive file ID".into());
+    }
+
+    let cache_dir = data_dir.join("pdf_cache");
+    let _ = fs::create_dir_all(&cache_dir);
+    let drive_cache_path = cache_dir.join(format!("{}.pdf", safe_drive));
+    let doc_cache_path = if !safe_doc.is_empty() {
+        Some(cache_dir.join(format!("{}.pdf", safe_doc)))
+    } else {
+        None
+    };
+
+    if file_starts_with_pdf_magic(&drive_cache_path) {
+        if let Some(ref dp) = doc_cache_path {
+            if !file_starts_with_pdf_magic(dp) {
+                let _ = fs::copy(&drive_cache_path, dp);
+            }
+        }
+        return Ok(drive_cache_path);
+    }
+    if let Some(ref dp) = doc_cache_path {
+        if file_starts_with_pdf_magic(dp) {
+            let _ = fs::copy(dp, &drive_cache_path);
+            return Ok(dp.clone());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let tokens = collect_saved_oauth_tokens(data_dir);
+    let tmp_dl_path = cache_dir.join(format!("{}.downloading.pdf", safe_drive));
+    let tmp_dl_str = tmp_dl_path.to_string_lossy().to_string();
+
+    for tok in &tokens {
+        let auth_hdr = format!("Authorization: Bearer {}", tok);
+        let mut target_id = safe_drive.clone();
+
+        // Check metadata first in case this file is a Google Drive shortcut
+        let meta_url = format!(
+            "https://www.googleapis.com/drive/v3/files/{}?fields=id,name,mimeType,shortcutDetails&supportsAllDrives=true",
+            target_id
+        );
+        let mut meta_cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+        meta_cmd.args(["-L", "--silent", "--max-time", "25", "-H", &auth_hdr, &meta_url]);
+        #[cfg(target_os = "windows")]
+        meta_cmd.creation_flags(0x08000000);
+
+        if let Ok(meta_out) = meta_cmd.output() {
+            if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&meta_out.stdout) {
+                if meta_json.get(" mimeType").and_then(|m| m.as_str())
+                    == Some("application/vnd.google-apps.shortcut")
+                    || meta_json.get("mimeType").and_then(|m| m.as_str())
+                        == Some("application/vnd.google-apps.shortcut")
+                {
+                    if let Some(tid) = meta_json
+                        .get("shortcutDetails")
+                        .and_then(|s| s.get("targetId"))
+                        .and_then(|t| t.as_str())
+                    {
+                        target_id = sanitize_cache_id(tid);
+                    }
+                }
+            }
+        }
+
+        let dl_url = format!(
+            "https://www.googleapis.com/drive/v3/files/{}?alt=media&supportsAllDrives=true",
+            target_id
+        );
+        let _ = fs::remove_file(&tmp_dl_path);
+        let mut dl_cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+        dl_cmd.args([
+            "-L",
+            "--silent",
+            "--max-time",
+            "600",
+            "-H",
+            &auth_hdr,
+            "-o",
+            &tmp_dl_str,
+            &dl_url,
+        ]);
+        #[cfg(target_os = "windows")]
+        dl_cmd.creation_flags(0x08000000);
+
+        if dl_cmd.status().is_ok() && file_starts_with_pdf_magic(&tmp_dl_path) {
+            let _ = fs::remove_file(&drive_cache_path);
+            let _ = fs::rename(&tmp_dl_path, &drive_cache_path)
+                .or_else(|_| fs::copy(&tmp_dl_path, &drive_cache_path).map(|_| ()));
+            let _ = fs::remove_file(&tmp_dl_path);
+            if let Some(ref dp) = doc_cache_path {
+                if dp != &drive_cache_path {
+                    let _ = fs::copy(&drive_cache_path, dp);
+                }
+            }
+            return Ok(drive_cache_path);
+        }
+    }
+
+    // Fallback: direct public/link-shared Google Drive download
+    let pub_url = format!(
+        "https://drive.google.com/uc?export=download&confirm=t&id={}",
+        safe_drive
+    );
+    let _ = fs::remove_file(&tmp_dl_path);
+    let mut pub_cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+    pub_cmd.args([
+        "-L",
+        "--silent",
+        "--max-time",
+        "600",
+        "-o",
+        &tmp_dl_str,
+        &pub_url,
+    ]);
+    #[cfg(target_os = "windows")]
+    pub_cmd.creation_flags(0x08000000);
+
+    if pub_cmd.status().is_ok() && file_starts_with_pdf_magic(&tmp_dl_path) {
+        let _ = fs::remove_file(&drive_cache_path);
+        let _ = fs::rename(&tmp_dl_path, &drive_cache_path)
+            .or_else(|_| fs::copy(&tmp_dl_path, &drive_cache_path).map(|_| ()));
+        let _ = fs::remove_file(&tmp_dl_path);
+        if let Some(ref dp) = doc_cache_path {
+            if dp != &drive_cache_path {
+                let _ = fs::copy(&drive_cache_path, dp);
+            }
+        }
+        return Ok(drive_cache_path);
+    }
+    let _ = fs::remove_file(&tmp_dl_path);
+
+    Err("Could not download PDF from Google Drive automatically. Please open the PDF once in Legal Annotator or click 'Pick Any PDF from Computer…'.".into())
+}
+
 pub fn execute_streaming_ocr_compress(
     data_dir: PathBuf,
     mut job: OcrStudioJobStatus,
 ) -> Result<OcrStudioJobStatus, String> {
     let dll_path = find_pdfium_dll(&data_dir).ok_or("pdfium.dll not found")?;
-    let input_path = PathBuf::from(&job.input_path);
+    let mut input_path = PathBuf::from(&job.input_path);
+    if !input_path.exists() || !file_starts_with_pdf_magic(&input_path) {
+        if let Some(ref drid) = job.drive_id.clone() {
+            if !drid.trim().is_empty() {
+                job.status = "downloading".into();
+                job.updated_at = now_ms();
+                persist_job_status(&data_dir, &job);
+                let downloaded = ensure_drive_pdf_on_disk(&data_dir, drid, &job.doc_id)?;
+                job.input_path = downloaded.to_string_lossy().to_string();
+                input_path = downloaded;
+            }
+        }
+    }
     if !input_path.exists() {
         return Err(format!("Input PDF not found at {}", job.input_path));
     }
@@ -1714,7 +1912,16 @@ pub async fn desktop_launch_ocr_studio(
     pdf_name: Option<String>,
     preset: Option<String>,
     auto_start: Option<bool>,
+    oauth_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let data_dir = resolve_data_dir();
+    if let Some(ref tok) = oauth_token {
+        let trimmed = tok.trim();
+        if trimmed.len() > 20 {
+            let _ = fs::write(data_dir.join("ocr_studio_oauth.txt"), trimmed.as_bytes());
+        }
+    }
+
     let cur_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_dir = cur_exe
         .parent()
@@ -1772,6 +1979,11 @@ pub async fn desktop_launch_ocr_studio(
     if let Some(ref pr) = preset {
         if !pr.is_empty() {
             cmd.arg("--preset").arg(pr);
+        }
+    }
+    if let Some(ref tok) = oauth_token {
+        if !tok.trim().is_empty() {
+            cmd.arg("--token").arg(tok.trim());
         }
     }
     if auto_start.unwrap_or(false) {
@@ -1849,8 +2061,16 @@ pub async fn desktop_start_ocr_compress_job(
     input_path: Option<String>,
     pdf_name: Option<String>,
     preset: Option<String>,
+    oauth_token: Option<String>,
 ) -> Result<OcrStudioJobStatus, String> {
     let data_dir = resolve_data_dir();
+    if let Some(ref tok) = oauth_token {
+        let trimmed = tok.trim();
+        if trimmed.len() > 20 {
+            let _ = fs::write(data_dir.join("ocr_studio_oauth.txt"), trimmed.as_bytes());
+        }
+    }
+
     let mut resolved_input = input_path.unwrap_or_default();
 
     if resolved_input.is_empty() || !PathBuf::from(&resolved_input).exists() {
@@ -1872,11 +2092,27 @@ pub async fn desktop_start_ocr_compress_job(
         }
     }
 
-    if resolved_input.is_empty() || !PathBuf::from(&resolved_input).exists() {
-        return Err(
-            "Local PDF file not found on disk. Please select the PDF file or wait for it to finish downloading."
-                .into(),
-        );
+    let has_drive_id = drive_id
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let needs_drive_download =
+        resolved_input.is_empty() || !PathBuf::from(&resolved_input).exists();
+
+    if needs_drive_download {
+        if has_drive_id {
+            let safe_dr = sanitize_cache_id(drive_id.as_deref().unwrap_or_default());
+            resolved_input = state
+                .pdf_cache_dir
+                .join(format!("{}.pdf", safe_dr))
+                .to_string_lossy()
+                .to_string();
+        } else {
+            return Err(
+                "Local PDF file not found on disk. Please click 'Pick Any PDF from Computer…' to select the PDF file."
+                    .into(),
+            );
+        }
     }
 
     let effective_doc_id = doc_id
@@ -2071,6 +2307,16 @@ pub async fn desktop_split_pdf_to_folder(
     }
 
     if resolved_src.is_empty() || !PathBuf::from(&resolved_src).exists() {
+        if let Some(ref drid) = drive_id {
+            if !drid.trim().is_empty() {
+                if let Ok(dl_path) = ensure_drive_pdf_on_disk(&data_dir, drid, &did) {
+                    resolved_src = dl_path.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+
+    if resolved_src.is_empty() || !PathBuf::from(&resolved_src).exists() {
         return Err("Please select a PDF file first before splitting into a folder.".into());
     }
 
@@ -2156,4 +2402,46 @@ pub async fn desktop_get_pdf_ocr_summary(
 pub async fn desktop_close_studio_window(app: tauri::AppHandle) -> Result<bool, String> {
     app.exit(0);
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn desktop_cache_write_chunk(
+    state: tauri::State<'_, AppState>,
+    file_id: String,
+    base64_chunk: String,
+    append: bool,
+    copy_to_file_id: Option<String>,
+) -> Result<String, String> {
+    let safe_id = sanitize_cache_id(&file_id);
+    if safe_id.is_empty() {
+        return Err("Empty file_id".into());
+    }
+    let _ = fs::create_dir_all(&state.pdf_cache_dir);
+    let path = state.pdf_cache_dir.join(format!("{}.pdf", safe_id));
+    let bytes = BASE64
+        .decode(base64_chunk.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    let mut file = if append {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?
+    } else {
+        File::create(&path).map_err(|e| e.to_string())?
+    };
+    file.write_all(&bytes).map_err(|e| e.to_string())?;
+    file.flush().map_err(|e| e.to_string())?;
+    drop(file);
+
+    if let Some(ref second_id) = copy_to_file_id {
+        let safe_second = sanitize_cache_id(second_id);
+        if !safe_second.is_empty() && safe_second != safe_id {
+            let second_path = state.pdf_cache_dir.join(format!("{}.pdf", safe_second));
+            let _ = fs::copy(&path, &second_path);
+        }
+    }
+
+    Ok(path.to_string_lossy().to_string())
 }

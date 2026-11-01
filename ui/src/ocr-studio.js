@@ -311,6 +311,10 @@ export async function launchLinkedOcrStudioForPdf(pdfObj = null, preset = 'balan
   } catch {}
 
   try {
+    const activeToken =
+      S.driveToken ||
+      (typeof localStorage !== 'undefined' ? localStorage.getItem('driveToken') : null) ||
+      null;
     const res = await window.__DESKTOP_PDFIUM__.launchOcrStudio({
       docId: tid,
       driveId,
@@ -318,6 +322,7 @@ export async function launchLinkedOcrStudioForPdf(pdfObj = null, preset = 'balan
       pdfName,
       preset,
       autoStart,
+      oauthToken: activeToken,
     });
     if (res?.ok) {
       toast(`🚀 Launched "Legal OCR & Compressor Studio" for "${pdfName}"!`);
@@ -342,13 +347,13 @@ export function watchStudioJobForCurrentPdf(docId) {
       if (!st) return;
 
       const curTid = getTrueId();
-      if (st.status === 'running') {
+      if (st.status === 'downloading' || st.status === 'running') {
         if (curTid === docId) {
           const pct = st.totalPages > 0 ? Math.round((st.currentPage / st.totalPages) * 100) : 0;
           updateReaderOcrStatusPill({
             state: 'running',
             isStudio: true,
-            currentPage: st.currentPage,
+            currentPage: st.currentPage || 0,
             totalPages: st.totalPages || S.totalPages || 1,
             pct,
           });
@@ -507,7 +512,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
                   ${state.pdfName ? state.pdfName : 'No PDF selected yet'}
                 </div>
                 <div id="studio-file-meta" style="font-size:12px;color:#8ea0b8;margin-top:3px;">
-                  ${state.filePath ? state.filePath : 'Click "Pick Any PDF from Computer…" or launch directly from Legal Annotator'}
+                  ${state.filePath ? state.filePath : (state.docId || state.driveId ? '☁️ Linked to Legal Annotator Cloud Library (Auto-Downloads to Local Disk Cache if needed)' : 'Click "Pick Any PDF from Computer…" or launch directly from Legal Annotator')}
                 </div>
               </div>
             </div>
@@ -799,12 +804,17 @@ function renderStandaloneOcrStudioUI(studioInfo) {
       donePanel.style.display = 'none';
       setTopBadge('running', 'Starting OCR & Compression…');
 
+      const activeToken =
+        S.driveToken ||
+        (typeof localStorage !== 'undefined' ? localStorage.getItem('driveToken') : null) ||
+        null;
       const job = await window.__DESKTOP_PDFIUM__.startOcrCompressJob({
         docId: state.docId,
         driveId: state.driveId,
         inputPath: state.filePath,
         pdfName: state.pdfName,
         preset: state.preset,
+        oauthToken: activeToken,
       });
 
       state.docId = job.docId;
@@ -813,6 +823,15 @@ function renderStandaloneOcrStudioUI(studioInfo) {
       state.pollTimer = setInterval(async () => {
         const st = await window.__DESKTOP_PDFIUM__.getOcrCompressStatus(state.docId);
         if (!st) return;
+
+        if (st.status === 'downloading') {
+          document.getElementById('studio-prog-headline').textContent =
+            '☁️ Downloading PDF from Google Drive to Local Disk Cache…';
+          document.getElementById('studio-prog-pct').textContent = '…';
+          document.getElementById('studio-prog-bar').style.width = '8%';
+          setTopBadge('running', 'Downloading PDF from Google Drive to Local Disk…');
+          return;
+        }
 
         const tot = Math.max(1, st.totalPages || state.pageCount || 1);
         const cur = st.currentPage || 0;
