@@ -520,6 +520,26 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
 
   // Start PDF fetch and Supabase database queries in parallel
   const targetDriveId = pdfFile.drive_file_id || S.pdfs.find(p => p.id === pdfFile.linked_pdf_id)?.drive_file_id;
+  if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.getOcrCompressStatus && window.__DESKTOP_PDFIUM__?.readCachedPdfBytes) {
+    try {
+      const st = await window.__DESKTOP_PDFIUM__.getOcrCompressStatus(trueId);
+      if (st && st.status === 'completed' && st.updatedAt) {
+        const appliedKey = 'studio_applied_job_' + trueId;
+        if (safeStorageGet(appliedKey) !== String(st.updatedAt)) {
+          const freshBytes = await window.__DESKTOP_PDFIUM__.readCachedPdfBytes(trueId);
+          if (freshBytes && freshBytes.byteLength > 100) {
+            const freshBlob = new Blob([freshBytes], { type: 'application/pdf' });
+            if (targetDriveId) {
+              S.pdfCache[targetDriveId] = freshBlob;
+              const { setCachedPDF } = await import('./pdfcache.js');
+              await setCachedPDF(targetDriveId, freshBlob, pdfFile.name);
+            }
+            safeStorageSet(appliedKey, String(st.updatedAt));
+          }
+        }
+      }
+    } catch {}
+  }
   const pdfFetchPromise = driveFetchPDF(targetDriveId, (pct, loadedMB, totalMB) => {
     if (scroll) {
       if (pct !== null) {
@@ -876,17 +896,18 @@ export async function ensurePageRendered(pageNum, container = null) {
       const fontFam = resolvePdfFontFamily(tc.styles, item.fontName);
       const targetW = Math.abs(item.width || 0) * S.scale;
       const scaleX  = computeSpanScaleX(item.str, fh, fontFam, targetW);
+      const topY    = tx[5] - fh * 0.82;
       span.textContent = item.str;
-      span.style.cssText = `left:${tx[4]}px;top:${tx[5] - fh * 0.8}px;font-size:${fh}px;font-family:${fontFam}`;
+      span.style.cssText = `left:${tx[4]}px;top:${topY}px;height:${fh}px;line-height:1;font-size:${fh}px;font-family:${fontFam}`;
       const tf = buildSpanTransform(angle, scaleX);
       if (tf) span.style.transform = tf;
       txtLayer.appendChild(span);
       textItems.push({
         str: item.str,
-        x: item.transform[4] * S.scale,
-        y: vp.height - item.transform[5] * S.scale,
-        w: (item.width  || 0) * S.scale,
-        h: (item.height || fh) * S.scale,
+        x: tx[4],
+        y: topY,
+        w: targetW,
+        h: item.height ? item.height * S.scale : fh,
       });
     }
 

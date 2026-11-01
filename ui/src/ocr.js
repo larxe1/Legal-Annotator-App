@@ -217,7 +217,7 @@ export async function saveOcrPageData(trueId, pageNum, pageResult, options = {})
   const isRendered = !!S.pages?.[pageNum]?.rendered;
   const compactLines = (pageResult.lines || []).map(l => {
     if (isLargePdf && !isRendered) {
-      return { str: l.str, x: l.x, y: l.y, w: l.w, h: l.h };
+      return { str: l.str, x: l.x, y: l.y, w: l.w, h: l.h, rx: l.rx, ry: l.ry, rw: l.rw, rh: l.rh };
     }
     return l;
   });
@@ -257,7 +257,17 @@ export async function flushOcrCacheToStorage(trueId = null) {
       payloadObj = {};
       for (const [pKey, pVal] of Object.entries(_ocrCache[tid])) {
         payloadObj[pKey] = {
-          lines: (pVal.lines || []).map(l => ({ str: l.str, x: l.x, y: l.y, w: l.w, h: l.h })),
+          lines: (pVal.lines || []).map(l => ({
+            str: l.str,
+            x: l.x,
+            y: l.y,
+            w: l.w,
+            h: l.h,
+            rx: l.rx,
+            ry: l.ry,
+            rw: l.rw,
+            rh: l.rh,
+          })),
           updatedAt: pVal.updatedAt || Date.now(),
         };
       }
@@ -297,12 +307,15 @@ export async function loadOcrForCurrentPdf(trueId = null) {
   }
 
   // 2. Desktop Vault Hydration (if running in Desktop App)
+  // Always prefer Desktop Vault when localStorage lacks word-level `words`/`rx` or when Vault is newer
   if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.getPageText && S.totalPages) {
     try {
       for (let p = 1; p <= S.totalPages; p++) {
-        if (!_ocrCache[tid]?.[p]) {
+        const existing = _ocrCache[tid]?.[p];
+        const hasRichWords = existing?.lines?.[0]?.words?.length > 0 && typeof existing.lines[0].words[0].rx === 'number';
+        if (!existing || !hasRichWords) {
           const dText = await window.__DESKTOP_PDFIUM__.getPageText(tid, p, 'ocr').catch(() => null);
-          if (dText) {
+          if (dText && Array.isArray(dText.lines) && dText.lines.length > 0) {
             if (!_ocrCache[tid]) _ocrCache[tid] = {};
             _ocrCache[tid][p] = dText;
           }
@@ -378,6 +391,31 @@ export function applyOcrToRenderedPage(pageNum, trueId = null) {
 
   const scale = S.scale || 1.5;
   const txtLayer = pgState.txtLayer;
+  const pageW = pgState.viewport?.width || parseFloat(txtLayer.style.width) || (612 * scale);
+  const pageH = pgState.viewport?.height || parseFloat(txtLayer.style.height) || (792 * scale);
+
+  // If the current page lacks word-level `rx` in memory (e.g. stripped for >50 page RAM guard),
+  // asynchronously hydrate this rendered page from Desktop Vault if available
+  const firstLine = ocrData.lines[0];
+  if (
+    firstLine &&
+    (!Array.isArray(firstLine.words) || firstLine.words.length === 0) &&
+    typeof window !== 'undefined' &&
+    window.__DESKTOP_PDFIUM__?.getPageText &&
+    !pgState._vaultHydrated
+  ) {
+    pgState._vaultHydrated = true;
+    window.__DESKTOP_PDFIUM__
+      .getPageText(tid, pageNum, 'ocr')
+      .then(dText => {
+        if (dText && Array.isArray(dText.lines) && dText.lines[0]?.words?.length > 0) {
+          if (!_ocrCache[tid]) _ocrCache[tid] = {};
+          _ocrCache[tid][pageNum] = dText;
+          applyOcrToRenderedPage(pageNum, tid);
+        }
+      })
+      .catch(() => {});
+  }
 
   // Clear existing spans so OCR layer is clean and unambiguous
   txtLayer.innerHTML = '';
@@ -389,6 +427,13 @@ export function applyOcrToRenderedPage(pageNum, trueId = null) {
   for (const line of ocrData.lines) {
     if (!line.str || !line.str.trim()) continue;
 
+    const lineHasNorm =
+      typeof line.rx === 'number' &&
+      typeof line.ry === 'number' &&
+      (line.rx > 0 || line.ry > 0);
+    const lineY = lineHasNorm ? line.ry * pageH : (line.y || 0) * scale;
+    const lineH = Math.max(8, lineHasNorm ? (line.rh || 0.015) * pageH : (line.h || 14) * scale);
+
     // Prefer word-level spans when available for precision selection, or line-level spans
     const words = Array.isArray(line.words) && line.words.length > 0 ? line.words : null;
     if (words) {
@@ -396,17 +441,22 @@ export function applyOcrToRenderedPage(pageNum, trueId = null) {
         const wObj = words[wi];
         if (!wObj.str || !wObj.str.trim()) continue;
         const textWithSpace = wi < words.length - 1 ? (wObj.str + ' ') : wObj.str;
-        const sx = (wObj.x || 0) * scale;
-        const sy = (wObj.y || 0) * scale;
-        const sw = Math.max(4, (wObj.w || 12) * scale);
-        const sh = Math.max(8, (wObj.h || line.h || 14) * scale);
-        const fh = Math.max(8, Math.round(sh * 0.84));
+        const hasNorm =
+          typeof wObj.rx === 'number' &&
+          typeof wObj.ry === 'number' &&
+          (wObj.rx > 0 || wObj.ry > 0);
+        const sx = hasNorm ? wObj.rx * pageW : (wObj.x || 0) * scale;
+        // Lock words on the same OCR line to a consistent vertical top/height so dragging across a sentence never jumps to the next line
+        const sy = lineHasNorm ? lineY : (hasNorm ? wObj.ry * pageH : (wObj.y || 0) * scale);
+        const sw = Math.max(4, hasNorm ? (wObj.rw || 0.015) * pageW : (wObj.w || 12) * scale);
+        const sh = lineHasNorm ? lineH : Math.max(8, hasNorm ? (wObj.rh || 0.015) * pageH : (wObj.h || line.h || 14) * scale);
+        const fh = Math.max(8, Math.round(sh * 0.86));
         const scaleX = computeSpanScaleX(wObj.str, fh, fontFam, sw);
 
         const span = document.createElement('span');
         span.textContent = textWithSpace;
         span.dataset.ocr = 'true';
-        span.style.cssText = `left:${sx}px;top:${sy}px;font-size:${fh}px;font-family:${fontFam};`;
+        span.style.cssText = `left:${sx}px;top:${sy}px;height:${sh}px;line-height:1;font-size:${fh}px;font-family:${fontFam};`;
         if (scaleX && Math.abs(scaleX - 1) > 0.01) {
           span.style.transform = `scaleX(${scaleX})`;
         }
@@ -422,17 +472,17 @@ export function applyOcrToRenderedPage(pageNum, trueId = null) {
         });
       }
     } else {
-      const sx = (line.x || 0) * scale;
-      const sy = (line.y || 0) * scale;
-      const sw = Math.max(10, (line.w || 80) * scale);
-      const sh = Math.max(8, (line.h || 14) * scale);
-      const fh = Math.max(8, Math.round(sh * 0.84));
+      const sx = lineHasNorm ? line.rx * pageW : (line.x || 0) * scale;
+      const sy = lineY;
+      const sw = Math.max(10, lineHasNorm ? (line.rw || 0.1) * pageW : (line.w || 80) * scale);
+      const sh = lineH;
+      const fh = Math.max(8, Math.round(sh * 0.86));
       const scaleX = computeSpanScaleX(line.str, fh, fontFam, sw);
 
       const span = document.createElement('span');
-      span.textContent = line.str;
+      span.textContent = line.str + ' ';
       span.dataset.ocr = 'true';
-      span.style.cssText = `left:${sx}px;top:${sy}px;font-size:${fh}px;font-family:${fontFam};`;
+      span.style.cssText = `left:${sx}px;top:${sy}px;height:${sh}px;line-height:1;font-size:${fh}px;font-family:${fontFam};`;
       if (scaleX && Math.abs(scaleX - 1) > 0.01) {
         span.style.transform = `scaleX(${scaleX})`;
       }
@@ -644,10 +694,14 @@ export async function scanPage(pageNum, options = {}) {
           y: Math.round(wry * vp1Height * 10) / 10,
           w: Math.round(wrw * vp1Width * 10) / 10,
           h: Math.round(wrh * vp1Height * 10) / 10,
+          rx: wrx,
+          ry: wry,
+          rw: wrw,
+          rh: wrh,
         };
       }).filter(wItem => wItem.str);
 
-      lines.push({ str, x, y, w, h, words });
+      lines.push({ str, x, y, w, h, rx, ry, rw, rh, words });
     }
 
     fullText = (raw?.fullText || raw?.text || lines.map(l => l.str).join('\n')).trim();

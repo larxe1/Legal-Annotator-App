@@ -378,18 +378,25 @@ export function watchStudioJobForCurrentPdf(docId) {
 
         // If this document is currently open in the reader, reload its OCR layer and compressed PDF!
         if (curTid === docId) {
-          const { loadOcrForCurrentPdf } = await import('./ocr.js');
-          await loadOcrForCurrentPdf(docId);
-
-          // Also sync compressed PDF to IndexedDB & Google Drive in background if <= 60 MB
+          // 1. Update IndexedDB & RAM cache with the newly compressed PDF first, then sync to Google Drive in background
           if (window.__DESKTOP_PDFIUM__?.readCachedPdfBytes) {
             const newBytes = await window.__DESKTOP_PDFIUM__.readCachedPdfBytes(docId);
             if (newBytes && newBytes.byteLength > 100) {
+              const newBlob = new Blob([newBytes], { type: 'application/pdf' });
               const driveId = S.curPDF?.drive_file_id || S.pdfs?.find(p => p.id === S.curPDF?.linked_pdf_id)?.drive_file_id;
               if (driveId) {
-                import('./drive.js').then(m => m.driveUpdatePDF?.(driveId, newBytes, S.curPDF?.name)).catch(() => {});
+                S.pdfCache[driveId] = newBlob;
+                import('./drive.js').then(m => m.driveUpdatePDF?.(driveId, newBlob, S.curPDF?.name)).catch(() => {});
               }
             }
+          }
+
+          const { loadOcrForCurrentPdf } = await import('./ocr.js');
+          await loadOcrForCurrentPdf(docId);
+
+          // 2. Reload the open PDF in viewer so the compressed & aligned pages replace the old viewport
+          if (S.curPDF) {
+            import('./viewer.js').then(m => m.openPDFFromLibrary?.(S.curPDF)).catch(() => {});
           }
 
           updateReaderOcrStatusPill({

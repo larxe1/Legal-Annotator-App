@@ -851,12 +851,22 @@ export async function driveUploadPDF(file, targetFolderId) {
 
 // ── Update PDF in RAM cache, IndexedDB, Desktop Vault, and Google Drive ──
 export async function driveUpdatePDF(driveFileId, modifiedBlob, pdfName = 'document.pdf') {
-  if (driveFileId) S.pdfCache[driveFileId] = modifiedBlob;
-  await setCachedPDF(driveFileId, modifiedBlob, pdfName);
+  const blobObj =
+    modifiedBlob instanceof Blob
+      ? modifiedBlob
+      : new Blob([modifiedBlob], { type: 'application/pdf' });
+  if (driveFileId) S.pdfCache[driveFileId] = blobObj;
+  await setCachedPDF(driveFileId, blobObj, pdfName);
 
-  if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__?.invoke && driveFileId && modifiedBlob) {
+  if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.savePdfBlobToCacheChunked && driveFileId && blobObj) {
     try {
-      const buf = await modifiedBlob.arrayBuffer();
+      await window.__DESKTOP_PDFIUM__.savePdfBlobToCacheChunked(driveFileId, blobObj, driveFileId);
+    } catch (e) {
+      console.warn('[Drive] Desktop vault cache save failed:', e);
+    }
+  } else if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__?.invoke && driveFileId && blobObj) {
+    try {
+      const buf = await blobObj.arrayBuffer();
       const bytes = new Uint8Array(buf);
       const chunk = 0x8000;
       const parts = [];
@@ -885,7 +895,7 @@ export async function driveUpdatePDF(driveFileId, modifiedBlob, pdfName = 'docum
       const buildForm = () => {
         const f = new FormData();
         f.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
-        f.append('file', modifiedBlob);
+        f.append('file', blobObj);
         return f;
       };
 

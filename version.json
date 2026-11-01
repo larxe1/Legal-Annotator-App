@@ -1,7 +1,7 @@
 {
-  "version": "1.10.3",
-  "build": 27,
+  "version": "1.10.4",
+  "build": 28,
   "updatedAt": "2026-04-20",
-  "notes": "Fixed 'Local PDF file not found on disk' error for 100 MB+ PDFs in Legal OCR & Compressor Studio: added 4 MB chunked local disk caching on upload/open (removing the old 35 MB cache cutoff) plus automatic direct-to-disk Google Drive streaming download inside Legal OCR Studio whenever a linked PDF is not yet cached locally.",
+  "notes": "Fixed gray 8x8 block background artifact in OCR & Compressor Studio (corrected 2D 8x8 DCT paper-block DC scaling to 64x so paper decodes to pure white #FFFFFF) and fixed text-layer & highlight vertical alignment (preserved original PDF page point dimensions, locked words on each OCR line to a shared baseline, scaled spans by normalized 0..1 coordinates, and fixed baseline vs topY hit-box offset in viewer.js).",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

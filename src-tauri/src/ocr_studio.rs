@@ -443,7 +443,8 @@ pub fn encode_grayscale_jpeg(gray: &[u8], width: u32, height: u32, quality: u8) 
             let is_paper_block = non_white_count == 0 || (non_white_count <= 3 && min_v >= 168);
 
             if is_paper_block {
-                let dc_quant = (127.0 * 8.0 * fdtbl[0]).round() as i32;
+                // 2D 8x8 FDCT DC sum for uniform +127.0 (255 - 128) is 127.0 * 64.0
+                let dc_quant = (127.0 * 64.0 * fdtbl[0]).round() as i32;
                 let diff = dc_quant - prev_dc;
                 prev_dc = dc_quant;
                 let (cat, val_bits) = bit_category_and_val(diff);
@@ -548,23 +549,27 @@ fn bgra_to_clean_legal_grayscale(
         luma_buf.push(luma);
     }
 
-    // 45th percentile luminance safely captures the darker side of yellowed/gray paper background
-    let target_rank = ((total as u64 * 45) / 100) as u32;
-    let mut acc = 0u32;
+    // Measure paper floor from bright paper-candidate pixels (luma >= 120) so dark borders/illustrations
+    // never skew the paper threshold downward, while also recovering any mid-gray (~144) background scans
+    let bright_total: u32 = hist[120..=255].iter().sum();
     let mut paper_floor_luma: i32 = preset_white_threshold as i32;
-    for (val, &count) in hist.iter().enumerate() {
-        acc += count;
-        if acc >= target_rank {
-            paper_floor_luma = val as i32;
-            break;
+    if bright_total > (total as u32 / 10) {
+        let target_rank = ((bright_total as u64 * 35) / 100) as u32;
+        let mut acc = 0u32;
+        for val in 120..=255 {
+            acc += hist[val];
+            if acc >= target_rank {
+                paper_floor_luma = val as i32;
+                break;
+            }
         }
     }
 
-    let white_t = (paper_floor_luma - white_margin).clamp(128, preset_white_threshold as i32);
+    let white_t = (paper_floor_luma - white_margin).clamp(125, preset_white_threshold as i32);
     let ink_t: i32 = if ink_boost {
-        (white_t - 92).clamp(45, 95)
+        (white_t - 95).clamp(42, 92)
     } else {
-        48
+        45
     };
     let span = (white_t - ink_t).max(1);
 
@@ -574,15 +579,14 @@ fn bgra_to_clean_legal_grayscale(
         let out_v = if luma >= white_t {
             255u8
         } else if ink_boost && luma <= ink_t {
-            let v = ((luma * 2) / 5).clamp(0, 48) as u8;
-            v & !7u8
+            ((luma * 2) / 5).clamp(0, 42) as u8
         } else {
-            let scaled = 48 + ((luma - ink_t) * 207) / span;
-            let clamped = scaled.clamp(0, 254) as u8;
-            if clamped >= 242 {
+            let scaled = 42 + ((luma - ink_t) * 213) / span;
+            let clamped = scaled.clamp(0, 255) as u8;
+            if clamped >= 245 {
                 255u8
             } else {
-                clamped & !7u8
+                clamped
             }
         };
         gray.push(out_v);
@@ -707,6 +711,13 @@ fn build_page_content_stream(
         let mut cur_ty: i32 = 0;
 
         for line in lines {
+            let lry = line.get("ry").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let lrh = line.get("rh").and_then(|v| v.as_f64()).unwrap_or(0.015);
+            let line_h_pt = (lrh * height_pt * 0.86).clamp(5.0, 48.0);
+            let line_y_pt = (height_pt - ((lry + lrh * 0.80) * height_pt)).clamp(0.0, height_pt);
+            let line_ty = line_y_pt.round() as i32;
+            let line_font_sz = (line_h_pt.round() as i32).clamp(5, 48);
+
             if let Some(words) = line.get("words").and_then(|v| v.as_array()) {
                 for w in words {
                     let raw_str = w.get("str").and_then(|s| s.as_str()).unwrap_or("").trim();
@@ -718,29 +729,33 @@ fn build_page_content_stream(
                         continue;
                     }
                     let rx = w.get("rx").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let ry = w.get("ry").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let rw = w.get("rw").and_then(|v| v.as_f64()).unwrap_or(0.02);
-                    let rh = w.get("rh").and_then(|v| v.as_f64()).unwrap_or(0.015);
+                    let rh = w.get("rh").and_then(|v| v.as_f64()).unwrap_or(lrh);
 
                     let x_pt = (rx * width_pt).clamp(0.0, width_pt);
-                    let h_pt = (rh * height_pt * 0.88).clamp(5.0, 42.0);
-                    let y_pt = (height_pt - ((ry + rh * 0.86) * height_pt)).clamp(0.0, height_pt);
+                    let h_pt = (rh * height_pt * 0.86).clamp(5.0, 48.0);
                     let target_w_pt = (rw * width_pt).max(2.0);
                     let natural_w_pt = ((escaped.len() as f64) * h_pt * 0.52).max(1.0);
                     let tz = (((target_w_pt / natural_w_pt) * 100.0).round() as i32).clamp(45, 240);
-                    let font_sz = (h_pt.round() as i32).clamp(5, 42);
+                    let font_sz = if lrh > 0.0 {
+                        line_font_sz
+                    } else {
+                        (h_pt.round() as i32).clamp(5, 48)
+                    };
 
                     if font_sz != last_font_sz {
                         stream.push_str(&format!("/F1 {} Tf\n", font_sz));
                         last_font_sz = font_sz;
                     }
-                    if (tz - last_tz).abs() >= 10 {
+                    if (tz - last_tz).abs() >= 8 {
                         stream.push_str(&format!("{} Tz\n", tz));
                         last_tz = tz;
                     }
 
+                    // Lock all words in the same OCR line to the shared line baseline (`line_ty`)
+                    // so `dy == 0` within a line and PDF.js / Acrobat never fragment sentences vertically
                     let tx = x_pt.round() as i32;
-                    let ty = y_pt.round() as i32;
+                    let ty = line_ty;
                     let dx = tx - cur_tx;
                     let dy = ty - cur_ty;
                     cur_tx = tx;
@@ -881,18 +896,10 @@ fn normalize_page_points_and_pixels(
     raw_h_pt: f64,
     target_long_edge_px: c_int,
 ) -> (f64, f64, c_int, c_int) {
-    let rw = raw_w_pt.clamp(72.0, 4800.0);
-    let rh = raw_h_pt.clamp(72.0, 6400.0);
-
-    // If scanner set 1px = 1pt (e.g. 1700x2200 pt), normalize output PDF MediaBox to standard 612pt short side
-    let min_pt = rw.min(rh).max(72.0);
-    let pt_scale = if rw > 900.0 || rh > 1200.0 {
-        612.0 / min_pt
-    } else {
-        1.0
-    };
-    let width_pt = (rw * pt_scale).clamp(200.0, 1224.0);
-    let height_pt = (rh * pt_scale).clamp(200.0, 1584.0);
+    // Preserve exact original PDF page point dimensions so existing annotations, viewports,
+    // and cached coordinates stay 100% aligned, while bounding rendered pixel dimensions by target_long_edge_px.
+    let width_pt = raw_w_pt.clamp(72.0, 4800.0);
+    let height_pt = raw_h_pt.clamp(72.0, 6400.0);
 
     // Compute pixel dimensions strictly bounded by target_long_edge_px
     let long_pt = width_pt.max(height_pt).max(1.0);
@@ -914,23 +921,39 @@ fn load_or_run_page_ocr(
     height_pt: f64,
 ) -> serde_json::Value {
     let vault_file = vault_doc_dir.join(format!("txt_{}_ocr.json", page_num));
+    let mut base_ocr: Option<serde_json::Value> = None;
+
     if !safe_doc.is_empty() && vault_file.exists() {
         if let Ok(raw) = fs::read_to_string(&vault_file) {
             if let Ok(cached) = serde_json::from_str::<serde_json::Value>(&raw) {
-                let has_words = cached
+                let has_normalized_words = cached
                     .get("lines")
                     .and_then(|v| v.as_array())
-                    .map(|arr| !arr.is_empty())
+                    .map(|arr| {
+                        arr.iter().any(|l| {
+                            l.get("words")
+                                .and_then(|w| w.as_array())
+                                .map(|warr| {
+                                    warr.iter().any(|w| {
+                                        w.get("rx").and_then(|x| x.as_f64()).unwrap_or(0.0) > 0.0
+                                            || w.get("ry").and_then(|y| y.as_f64()).unwrap_or(0.0) > 0.0
+                                    })
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
                     .unwrap_or(false);
-                if has_words {
-                    return cached;
+                if has_normalized_words {
+                    base_ocr = Some(cached);
                 }
             }
         }
     }
 
-    let ocr_val = run_windows_ocr_on_bgra(bgra, render_w, render_h)
-        .unwrap_or_else(|_| serde_json::json!({ "lines": [], "fullText": "" }));
+    let ocr_val = base_ocr.unwrap_or_else(|| {
+        run_windows_ocr_on_bgra(bgra, render_w, render_h)
+            .unwrap_or_else(|_| serde_json::json!({ "lines": [], "fullText": "" }))
+    });
 
     if !safe_doc.is_empty() {
         let mut scaled_lines = Vec::new();
@@ -1182,7 +1205,44 @@ pub fn execute_streaming_ocr_compress(
     mut job: OcrStudioJobStatus,
 ) -> Result<OcrStudioJobStatus, String> {
     let dll_path = find_pdfium_dll(&data_dir).ok_or("pdfium.dll not found")?;
+    let safe_doc = sanitize_cache_id(&job.doc_id);
+    let cache_dir = data_dir.join("pdf_cache");
+    let _ = fs::create_dir_all(&cache_dir);
+    let orig_backup_path = if !safe_doc.is_empty() {
+        Some(cache_dir.join(format!("{}_orig.pdf", safe_doc)))
+    } else {
+        None
+    };
+
     let mut input_path = PathBuf::from(&job.input_path);
+
+    // 1. Prefer pristine original backup if available so re-running never re-compresses a prior output
+    if let Some(ref orig_p) = orig_backup_path {
+        if orig_p.exists() && file_starts_with_pdf_magic(orig_p) {
+            input_path = orig_p.clone();
+            job.input_path = orig_p.to_string_lossy().to_string();
+        } else if input_path.exists() && input_path.to_string_lossy().contains("pdf_cache") {
+            let cur_len = fs::metadata(&input_path).map(|m| m.len()).unwrap_or(0);
+            if job.original_bytes > 0 && cur_len + 1024 * 1024 < job.original_bytes {
+                // `pdf_cache/{doc}.pdf` was overwritten by an earlier compressed run; remove so Drive fetches clean original
+                if job
+                    .drive_id
+                    .as_ref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
+                {
+                    let _ = fs::remove_file(&input_path);
+                    if let Some(ref drid) = job.drive_id {
+                        let safe_dr = sanitize_cache_id(drid);
+                        if !safe_dr.is_empty() {
+                            let _ = fs::remove_file(cache_dir.join(format!("{}.pdf", safe_dr)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if !input_path.exists() || !file_starts_with_pdf_magic(&input_path) {
         if let Some(ref drid) = job.drive_id.clone() {
             if !drid.trim().is_empty() {
@@ -1199,8 +1259,19 @@ pub fn execute_streaming_ocr_compress(
         return Err(format!("Input PDF not found at {}", job.input_path));
     }
 
+    // Save pristine backup before any compression overwrites pdf_cache/{doc}.pdf
+    if let Some(ref orig_p) = orig_backup_path {
+        if !orig_p.exists() && input_path != *orig_p {
+            let _ = fs::copy(&input_path, orig_p);
+            if orig_p.exists() {
+                input_path = orig_p.clone();
+                job.input_path = orig_p.to_string_lossy().to_string();
+            }
+        }
+    }
+
     let disk_input_bytes = fs::metadata(&input_path).map(|m| m.len()).unwrap_or(0);
-    if job.original_bytes == 0 {
+    if job.original_bytes == 0 || disk_input_bytes > job.original_bytes {
         job.original_bytes = disk_input_bytes;
     }
 
@@ -1216,7 +1287,6 @@ pub fn execute_streaming_ocr_compress(
     let mut pdf_w = PdfStreamWriter::new(out_file);
     pdf_w.start_pdf_header_and_font()?;
 
-    let safe_doc = sanitize_cache_id(&job.doc_id);
     let vault_doc_dir = data_dir.join("page_vault").join(&safe_doc);
     let _ = fs::create_dir_all(&vault_doc_dir);
 
