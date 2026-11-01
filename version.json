@@ -1,7 +1,7 @@
 {
-  "version": "1.10.4",
-  "build": 28,
+  "version": "1.10.5",
+  "build": 29,
   "updatedAt": "2026-04-20",
-  "notes": "Fixed gray 8x8 block background artifact in OCR & Compressor Studio (corrected 2D 8x8 DCT paper-block DC scaling to 64x so paper decodes to pure white #FFFFFF) and fixed text-layer & highlight vertical alignment (preserved original PDF page point dimensions, locked words on each OCR line to a shared baseline, scaled spans by normalized 0..1 coordinates, and fixed baseline vs topY hit-box offset in viewer.js).",
+  "notes": "Wrap and scroll reader toolbar cleanly so right-side controls never clip, remove static green OCR status badges, and move compact Zoom controls to the bottom-right corner.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

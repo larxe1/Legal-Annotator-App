@@ -92,11 +92,13 @@ export async function updateReaderOcrStatusPill(overrideState = null) {
 
   const tid = getTrueId();
   const totalPages = S.totalPages || S.pdfDoc?.numPages || 1;
-  pill.style.display = 'inline-flex';
 
-  // 1. If an explicit override state is passed (e.g. live scanning progress)
+  // 1. Only show the pill while an OCR / Compression job is actively running!
+  // Static badges ("Searchable PDF (Digital Text)", "OCR Ready", "Scanned PDF") are hidden
+  // to keep the top reader toolbar clean and uncluttered.
   if (overrideState) {
     if (overrideState.state === 'running') {
+      pill.style.display = 'inline-flex';
       const pct = Math.min(99, Math.max(0, Math.round(overrideState.pct || 0)));
       const curP = overrideState.currentPage || 1;
       const totP = overrideState.totalPages || totalPages;
@@ -106,25 +108,17 @@ export async function updateReaderOcrStatusPill(overrideState = null) {
       pill.style.color = '#fde047';
       return;
     }
-    if (overrideState.state === 'ready') {
-      const extra = overrideState.savedPct > 1
-        ? ` • Compressed -${Math.round(overrideState.savedPct)}% (${formatBytesMB(overrideState.compressedBytes)})`
-        : ` (${overrideState.pages || totalPages} pgs)`;
-      pill.innerHTML = `<span>🟢</span><span>OCR Ready & Searchable${extra}</span>`;
-      pill.style.background = 'rgba(34, 197, 94, 0.16)';
-      pill.style.border = '1px solid rgba(74, 222, 128, 0.5)';
-      pill.style.color = '#4ade80';
-      return;
-    }
+    pill.style.display = 'none';
+    return;
   }
 
-  // 2. Check saved badge metadata or desktop summary
-  const savedBadge = getSavedOcrBadgeMeta(tid);
+  // 2. Check if a background Desktop Studio job is currently running for this PDF
   if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.getPdfOcrSummary) {
     try {
       const summary = await window.__DESKTOP_PDFIUM__.getPdfOcrSummary(tid, totalPages);
       const job = summary?.studioJob;
-      if (job && job.status === 'running') {
+      if (job && (job.status === 'running' || job.status === 'downloading')) {
+        pill.style.display = 'inline-flex';
         const pct = job.totalPages > 0 ? Math.round((job.currentPage / job.totalPages) * 100) : 0;
         pill.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:#facc15;display:inline-block;"></span><span>⏳ Studio OCR & Compress: ${job.currentPage}/${job.totalPages || totalPages} (${pct}%)</span>`;
         pill.style.background = 'rgba(234, 179, 8, 0.16)';
@@ -141,67 +135,11 @@ export async function updateReaderOcrStatusPill(overrideState = null) {
           compressedBytes: job.compressedBytes || 0,
           savedPct: job.savedPct || 0,
         });
-        const pctTxt = job.savedPct > 1
-          ? ` • ${formatBytesMB(job.compressedBytes)} (-${Math.round(job.savedPct)}%)`
-          : ` (${job.totalPages || totalPages} pgs)`;
-        pill.innerHTML = `<span>🟢</span><span>OCR Ready${pctTxt}</span>`;
-        pill.style.background = 'rgba(34, 197, 94, 0.16)';
-        pill.style.border = '1px solid rgba(74, 222, 128, 0.5)';
-        pill.style.color = '#4ade80';
-        return;
-      }
-      if (summary && summary.ocrPages > 0) {
-        if (summary.ocrPages >= Math.max(1, Math.floor(totalPages * 0.8))) {
-          setSavedOcrBadgeMeta(tid, { pages: summary.ocrPages });
-          pill.innerHTML = `<span>🟢</span><span>OCR Ready (${summary.ocrPages}/${totalPages} pgs)</span>`;
-          pill.style.background = 'rgba(34, 197, 94, 0.16)';
-          pill.style.border = '1px solid rgba(74, 222, 128, 0.5)';
-          pill.style.color = '#4ade80';
-          return;
-        } else {
-          pill.innerHTML = `<span>🟡</span><span>Partial OCR (${summary.ocrPages}/${totalPages} pgs)</span>`;
-          pill.style.background = 'rgba(245, 158, 11, 0.15)';
-          pill.style.border = '1px solid rgba(251, 191, 36, 0.45)';
-          pill.style.color = '#fbbf24';
-          return;
-        }
       }
     } catch {}
   }
 
-  if (savedBadge && savedBadge.pages > 0) {
-    const extra = savedBadge.savedPct > 1
-      ? ` • ${formatBytesMB(savedBadge.compressedBytes)} (-${Math.round(savedBadge.savedPct)}%)`
-      : ` (${savedBadge.pages}/${totalPages} pgs)`;
-    pill.innerHTML = `<span>🟢</span><span>OCR Ready${extra}</span>`;
-    pill.style.background = 'rgba(34, 197, 94, 0.16)';
-    pill.style.border = '1px solid rgba(74, 222, 128, 0.5)';
-    pill.style.color = '#4ade80';
-    return;
-  }
-
-  // 3. Check if first few pages already have native digital text in PDF.js
-  try {
-    const samplePageNum = Math.min(S.curPage || 1, totalPages);
-    const page = await S.pdfDoc.getPage(samplePageNum);
-    const tc = await page.getTextContent();
-    try { page.cleanup?.(); } catch {}
-    const meaningfulWords = (tc?.items || []).filter(it => it.str && it.str.trim().length > 1).length;
-    if (meaningfulWords >= 12) {
-      pill.innerHTML = `<span>🟢</span><span>Searchable PDF (Digital Text)</span>`;
-      pill.style.background = 'rgba(34, 197, 94, 0.12)';
-      pill.style.border = '1px solid rgba(74, 222, 128, 0.35)';
-      pill.style.color = '#86efac';
-      return;
-    }
-  } catch {}
-
-  // 4. Otherwise it's an un-OCR'd scanned PDF!
-  const sizeStr = S.pdfDoc?._byteLength ? ` (${formatBytesMB(S.pdfDoc._byteLength)})` : '';
-  pill.innerHTML = `<span>⚪</span><span>Scanned PDF${sizeStr} — Click to OCR & Compress</span>`;
-  pill.style.background = 'rgba(248, 113, 113, 0.14)';
-  pill.style.border = '1px solid rgba(248, 113, 113, 0.45)';
-  pill.style.color = '#fca5a5';
+  pill.style.display = 'none';
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

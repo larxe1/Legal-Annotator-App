@@ -173,14 +173,6 @@
 
       <div class="tb-sep"></div>
 
-      <!-- Zoom -->
-      <button class="tb-btn" id="btn-zout" title="Zoom Out">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35M8 11h6"/></svg>
-      </button>
-      <span id="zoom-lbl">100%</span>
-      <button class="tb-btn" id="btn-zin" title="Zoom In">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></svg>
-      </button>
       <button class="tb-btn" id="btn-ocr-pdf" title="Scan to OCR (Make Scanned PDF Searchable & Selectable)">
         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7V4h3M20 7V4h-3M4 17v3h3M20 17v3h-3M7 12h10"/></svg>
         <span>Scan OCR</span>
@@ -287,6 +279,16 @@
         <div class="pane-header" id="pane-a-header" style="display:none">
           <span class="pane-badge primary">🅐 Primary</span>
           <span class="pane-pdf-name" id="pane-a-name"></span>
+        </div>
+        <!-- Compact Bottom-Right Zoom Pill -->
+        <div id="floating-zoom-ctrl" title="PDF Zoom">
+          <button class="tb-btn" id="btn-zout" title="Zoom Out">
+            <svg width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35M8 11h6"/></svg>
+          </button>
+          <span id="zoom-lbl">100%</span>
+          <button class="tb-btn" id="btn-zin" title="Zoom In">
+            <svg width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></svg>
+          </button>
         </div>
         <div id="canvas-scroll">
         <div id="welcome">

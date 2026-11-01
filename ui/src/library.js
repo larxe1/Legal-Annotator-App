@@ -1145,10 +1145,6 @@ function buildPdfEl(pdf) {
   const defPage = safeStorageGet('default_page_' + pdf.id)
     || (pdf.folder_id ? safeStorageGet('default_page_f_' + pdf.folder_id + '_' + trueId) : null);
   const defBadgeHtml = defPage ? `<span class="def-page-badge" title="Opens at page ${defPage} by default (Click to change)">p.${defPage}</span>` : '';
-  const hasOcrBadge = !!(safeStorageGet('ocr_ready_badge_' + trueId) || safeStorageGet('ocr_cache_' + trueId));
-  const ocrBadgeHtml = hasOcrBadge
-    ? `<span class="ocr-lib-badge" title="OCR Ready & Searchable PDF" style="font-size:9.5px;font-weight:700;padding:1px 5px;border-radius:4px;background:rgba(34,197,94,0.16);color:#4ade80;border:1px solid rgba(74,222,128,0.4);margin-left:4px;flex-shrink:0;">OCR</span>`
-    : '';
 
   const statusIcon = digested ? '⚖️' : '📄';
   const statusTitle = digested
@@ -1161,7 +1157,6 @@ function buildPdfEl(pdf) {
       ${pdf.linked_pdf_id ? '<span style="color:var(--gold);margin-right:4px" title="Shortcut">🔗</span>' : ''}
       ${pdf.name}
     </span>
-    ${ocrBadgeHtml}
     ${defBadgeHtml}
     <span class="ann-badge" style="${count ? '' : 'display:none'}">${count}</span>
     <div class="li-acts">
