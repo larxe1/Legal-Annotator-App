@@ -659,7 +659,10 @@ function renderStandaloneOcrStudioUI(studioInfo) {
               </div>
               <div style="display:flex;gap:10px;flex-wrap:wrap;">
                 <button id="studio-btn-save-as" style="padding:9px 16px;border-radius:8px;border:1px solid #4ade80;background:rgba(22,163,74,0.25);color:#ecfdf5;font-size:12.5px;font-weight:700;cursor:pointer;">
-                  💾 Save Compressed PDF As…
+                  💾 Save Single Compressed PDF As…
+                </button>
+                <button id="studio-btn-jump-split" style="padding:9px 16px;border-radius:8px;border:1px solid #38bdf8;background:rgba(56,189,248,0.18);color:#e0f2fe;font-size:12.5px;font-weight:700;cursor:pointer;">
+                  ✂️ Split &amp; Save into Folder…
                 </button>
                 <button id="studio-btn-close-win" style="padding:9px 18px;border-radius:8px;border:none;background:#4ade80;color:#052e16;font-size:12.5px;font-weight:800;cursor:pointer;">
                   ✓ Done — Return to Legal Annotator
@@ -668,6 +671,41 @@ function renderStandaloneOcrStudioUI(studioInfo) {
             </div>
           </div>
 
+        </section>
+
+        <!-- Step 4: Split & Save PDF into Another Folder (External Use Only — Leaves Google Drive Untouched) -->
+        <section id="studio-split-section" style="background:#111a2c;border:1px solid #22334d;border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:14px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div>
+              <label style="font-size:11.5px;font-weight:700;text-transform:uppercase;color:#38bdf8;letter-spacing:0.06em;display:flex;align-items:center;gap:6px;">
+                <span>✂️</span> 4. Split &amp; Save PDF into a Folder (For External Use Outside Legal Annotator)
+              </label>
+              <div style="font-size:12px;color:#8ea0b8;margin-top:3px;">
+                Saves multiple smaller, compressed &amp; OCR-searchable PDF parts into any folder you choose (e.g. for NotebookLM, ChatGPT, or sharing) while keeping your main book unified inside Legal Annotator &amp; Google Drive.
+              </div>
+            </div>
+            <button id="studio-btn-split-folder" style="padding:10px 18px;border-radius:8px;border:1px solid #38bdf8;background:linear-gradient(135deg,#0284c7,#0369a1);color:#f0f9ff;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap;box-shadow:0 4px 12px rgba(2,132,199,0.3);">
+              📂 Choose Folder &amp; Save Split PDFs…
+            </button>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:12px;align-items:end;background:#0b111e;border:1px solid #1e293b;border-radius:9px;padding:14px;">
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              <label style="font-size:11.5px;font-weight:600;color:#cbd5e1;">How do you want to split the PDF?</label>
+              <select id="studio-split-mode" style="padding:9px 12px;border-radius:7px;border:1px solid #2e4366;background:#111a2c;color:#f8fafc;font-size:13px;outline:none;cursor:pointer;">
+                <option value="pages" selected>📄 By Pages per File (e.g. every 100 pages)</option>
+                <option value="size_mb">🗜️ By Max File Size per Part (e.g. max 15 MB each)</option>
+                <option value="parts">🔢 Into N Equal Parts (e.g. split into 5 files)</option>
+                <option value="ranges">📑 By Custom Page Ranges (e.g. 1-120, 121-250, 251-500)</option>
+              </select>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              <label id="studio-split-val-label" style="font-size:11.5px;font-weight:600;color:#cbd5e1;">Pages per Split PDF File:</label>
+              <input id="studio-split-value" type="text" value="100" placeholder="e.g. 100" style="padding:9px 12px;border-radius:7px;border:1px solid #2e4366;background:#111a2c;color:#f8fafc;font-size:13px;outline:none;" />
+            </div>
+          </div>
+
+          <div id="studio-split-result" style="display:none;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.4);border-radius:9px;padding:12px 14px;font-size:12.5px;color:#e0f2fe;line-height:1.5;"></div>
         </section>
       </main>
     </div>
@@ -853,6 +891,112 @@ function renderStandaloneOcrStudioUI(studioInfo) {
 
   document.getElementById('studio-btn-save-as')?.addEventListener('click', async () => {
     await window.__DESKTOP_PDFIUM__?.exportCompressedPdfAs?.(state.docId, state.pdfName);
+  });
+
+  document.getElementById('studio-btn-jump-split')?.addEventListener('click', () => {
+    const sec = document.getElementById('studio-split-section');
+    sec?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('studio-btn-split-folder')?.click();
+  });
+
+  const splitModeEl = document.getElementById('studio-split-mode');
+  const splitValLabelEl = document.getElementById('studio-split-val-label');
+  const splitValInputEl = document.getElementById('studio-split-value');
+
+  splitModeEl?.addEventListener('change', () => {
+    const m = splitModeEl.value;
+    if (m === 'pages') {
+      splitValLabelEl.textContent = 'Pages per Split PDF File:';
+      splitValInputEl.value = '100';
+      splitValInputEl.placeholder = 'e.g. 50 or 100';
+    } else if (m === 'size_mb') {
+      splitValLabelEl.textContent = 'Max Megabytes (MB) per File:';
+      splitValInputEl.value = '15';
+      splitValInputEl.placeholder = 'e.g. 10, 15, or 25';
+    } else if (m === 'parts') {
+      splitValLabelEl.textContent = 'Number of Equal PDF Files:';
+      splitValInputEl.value = '5';
+      splitValInputEl.placeholder = 'e.g. 2, 4, or 5';
+    } else if (m === 'ranges') {
+      splitValLabelEl.textContent = 'Custom Page Ranges (comma-separated):';
+      splitValInputEl.value = state.pageCount > 200 ? `1-100, 101-200, 201-${state.pageCount}` : '1-50, 51-100';
+      splitValInputEl.placeholder = 'e.g. 1-120, 121-250, 251-500';
+    }
+  });
+
+  document.getElementById('studio-btn-split-folder')?.addEventListener('click', async () => {
+    const btnSplit = document.getElementById('studio-btn-split-folder');
+    const resBox = document.getElementById('studio-split-result');
+    if (!state.filePath && !state.docId && !state.driveId) {
+      const picked = await window.__DESKTOP_PDFIUM__?.pickPdfPathOnly?.();
+      if (!picked) return;
+      state.filePath = picked.path;
+      state.pdfName = picked.name;
+      state.sizeBytes = picked.sizeBytes || 0;
+      state.pageCount = picked.pageCount || 0;
+      document.getElementById('studio-file-name').textContent = state.pdfName;
+      document.getElementById('studio-file-meta').textContent = `${state.pageCount ? state.pageCount + ' pages • ' : ''}${formatBytesMB(state.sizeBytes)} • ${state.filePath}`;
+    }
+
+    const splitMode = splitModeEl?.value || 'pages';
+    const splitValue = (splitValInputEl?.value || '100').trim();
+
+    try {
+      btnSplit.disabled = true;
+      btnSplit.textContent = '⏳ Splitting & Saving PDFs…';
+      if (resBox) {
+        resBox.style.display = 'block';
+        resBox.innerHTML = '⏳ Selecting destination folder and generating compressed, searchable split PDF parts…';
+      }
+
+      const res = await window.__DESKTOP_PDFIUM__?.splitPdfToFolder?.({
+        docId: state.docId,
+        driveId: state.driveId,
+        inputPath: state.filePath,
+        defaultName: state.pdfName,
+        splitMode,
+        splitValue,
+        preset: state.preset,
+      });
+
+      btnSplit.disabled = false;
+      btnSplit.textContent = '📂 Choose Folder & Save Split PDFs…';
+
+      if (res?.cancelled) {
+        if (resBox) resBox.style.display = 'none';
+        return;
+      }
+
+      if (res?.ok) {
+        const filesList = (res.files || [])
+          .slice(0, 8)
+          .map(f => `<span style="display:inline-block;background:rgba(0,0,0,0.3);padding:2px 8px;border-radius:5px;margin:2px 4px 2px 0;font-family:monospace;font-size:11.5px;">${f.name} (${formatBytesMB(f.sizeBytes)})</span>`)
+          .join('');
+        const moreTxt = (res.files || []).length > 8 ? ` <span style="color:#94a3b8;">+${res.files.length - 8} more files</span>` : '';
+        if (resBox) {
+          resBox.style.display = 'block';
+          resBox.innerHTML = `
+            <div style="font-weight:700;color:#4ade80;margin-bottom:4px;">
+              ✅ Saved ${res.totalParts} Split &amp; Searchable PDF Files (${formatBytesMB(res.totalBytes)} total) to:
+            </div>
+            <div style="font-family:monospace;font-size:12px;color:#f8fafc;margin-bottom:6px;word-break:break-all;">
+              📁 ${res.folderPath}
+            </div>
+            <div>${filesList}${moreTxt}</div>
+          `;
+        }
+      } else if (resBox) {
+        resBox.style.display = 'block';
+        resBox.innerHTML = `<span style="color:#fca5a5;">❌ Failed to split PDF: ${res?.error || 'Unknown error'}</span>`;
+      }
+    } catch (err) {
+      btnSplit.disabled = false;
+      btnSplit.textContent = '📂 Choose Folder & Save Split PDFs…';
+      if (resBox) {
+        resBox.style.display = 'block';
+        resBox.innerHTML = `<span style="color:#fca5a5;">❌ Error: ${err.message || err}</span>`;
+      }
+    }
   });
 
   document.getElementById('studio-btn-close-win')?.addEventListener('click', () => {

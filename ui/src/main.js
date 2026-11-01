@@ -817,7 +817,15 @@ function initCalendar() {
       return;
     }
 
-    // Clicking the schedule card or "📖 Open Syllabus ↗" calls openSubjectSyllabus(curSubj)!
+    // If user clicked "📖 Open Syllabus ↗", open or choose the syllabus directly
+    if (e.target.closest('.gn-cal-open-syllabus') || e.target.closest('.gn-cal-open-binder')) {
+      e.stopPropagation();
+      openSubjectSyllabus(curSubj);
+      return;
+    }
+
+    // Clicking the schedule card body opens the subject binder in the sidebar AND opens its syllabus (or prompts if none)
+    openSubjectBinderByTitle(curSubj);
     openSubjectSyllabus(curSubj);
   });
 

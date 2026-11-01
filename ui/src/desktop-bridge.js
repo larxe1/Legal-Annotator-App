@@ -332,6 +332,27 @@ window.__DESKTOP_PDFIUM__ = {
     });
   },
 
+  async splitPdfToFolder({
+    docId = null,
+    driveId = null,
+    inputPath = null,
+    defaultName = null,
+    splitMode = 'pages',
+    splitValue = '100',
+    preset = 'balanced',
+  } = {}) {
+    if (!invoke) return { ok: false, error: 'Desktop bridge unavailable' };
+    return await invoke('desktop_split_pdf_to_folder', {
+      docId: docId ? String(docId) : null,
+      driveId: driveId ? String(driveId) : null,
+      inputPath: inputPath ? String(inputPath) : null,
+      defaultName: defaultName ? String(defaultName) : null,
+      splitMode: String(splitMode || 'pages'),
+      splitValue: String(splitValue || '100'),
+      preset: preset ? String(preset) : 'balanced',
+    });
+  },
+
   async getPdfOcrSummary(docId, totalPages = 0) {
     if (!invoke || !docId) return null;
     try {

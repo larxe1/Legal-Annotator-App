@@ -649,7 +649,7 @@ function wireScheduleModals() {
 
 // ── 6. Render Editable Schedule into #welcome-calendar ──────────────────────
 
-export function renderEditableSchedule() {
+export function renderEditableSchedule(options = {}) {
   const cal = document.getElementById('welcome-calendar');
   if (!cal) return;
 
@@ -758,12 +758,14 @@ export function renderEditableSchedule() {
     grid.appendChild(col);
   });
 
-  // Keep GoodNotes Study Desk shelf & digest stat counters in sync
-  import('./goodnotes-ui.js').then(m => {
-    if (typeof m.renderStudyDesk === 'function') {
-      m.renderStudyDesk();
-    }
-  }).catch(() => {});
+  // Keep GoodNotes Study Desk shelf & digest stat counters in sync (only when not already called from renderStudyDesk)
+  if (!options?.fromStudyDesk) {
+    import('./goodnotes-ui.js').then(m => {
+      if (typeof m.renderStudyDesk === 'function') {
+        m.renderStudyDesk({ skipSchedule: true });
+      }
+    }).catch(() => {});
+  }
 }
 
 // ── 7. Context Menu Integration & Reactive Observers ────────────────────────

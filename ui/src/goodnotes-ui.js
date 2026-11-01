@@ -585,7 +585,7 @@ export function openSubjectBinderByTitle(rawTitle) {
   return true;
 }
 
-export function renderStudyDesk() {
+export function renderStudyDesk(options = {}) {
   const cal = document.getElementById('welcome-calendar');
   if (!cal) return;
 
@@ -673,7 +673,9 @@ export function renderStudyDesk() {
   }
 
   // 3. Connect Study Desk Schedule to schedule.js & Enhance Class Schedule Cards
-  import('./schedule.js').then(m => m.renderEditableSchedule?.()).catch(() => {});
+  if (!options?.skipSchedule) {
+    import('./schedule.js').then(m => m.renderEditableSchedule?.({ fromStudyDesk: true })).catch(() => {});
+  }
 
   cal.querySelectorAll('.cal-item').forEach(item => {
     const strong = item.querySelector('strong');

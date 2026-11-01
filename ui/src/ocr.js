@@ -865,6 +865,30 @@ export async function exportSearchablePdfFile() {
     toast('⚠️ Please open a PDF first.');
     return;
   }
+
+  // On Desktop: if a Studio compressed PDF already exists for this doc, export that compact PDF directly!
+  if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.getOcrCompressStatus) {
+    try {
+      const st = await window.__DESKTOP_PDFIUM__.getOcrCompressStatus(tid);
+      if (st && st.status === 'completed') {
+        const res = await window.__DESKTOP_PDFIUM__.exportCompressedPdfAs(tid, S.curPDF.name);
+        if (res?.ok) {
+          toast(`✅ Saved Compressed Searchable PDF to: ${res.path}`);
+        }
+        return;
+      }
+      // If this is a large PDF (> 80 pages or > 25 MB), use Studio instead of pdf-lib to prevent file size inflation
+      const totalPages = S.totalPages || S.pdfDoc?.numPages || 1;
+      const rawLen = S.pdfDoc?._byteLength || S.pdfDoc?._rawPdfBytes?.byteLength || 0;
+      if (totalPages > 80 || rawLen > 25 * 1024 * 1024) {
+        const { launchLinkedOcrStudioForPdf } = await import('./ocr-studio.js');
+        toast('🚀 Opening Legal OCR & Compressor Studio to compress & save this large PDF without inflating file size…');
+        await launchLinkedOcrStudioForPdf(S.curPDF, 'balanced', false);
+        return;
+      }
+    } catch {}
+  }
+
   toast('⏳ Preparing OCR-Ready Searchable PDF file…');
   try {
     await embedOcrIntoPdfAndSync(tid);
