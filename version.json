@@ -1,7 +1,7 @@
 {
-  "version": "1.9.0",
-  "build": 22,
-  "updatedAt": "2026-11-01T10:50:00+08:00",
-  "notes": "Upgraded Scan-to-OCR with direct Windows Native OCR canvas pipeline, word-aligned searchable/editable PDF embedding + Save OCR PDF button, intuitive 3-zone drag-and-drop with live drop badge + right-click Move to Folder (per subject), editable Class Schedule with Set/Open Syllabus (resumes where you left off), and 10-minute inactive tab auto-close with Settings toggle.",
+  "version": "1.9.1",
+  "build": 23,
+  "updatedAt": "2026-11-01T11:04:00+08:00",
+  "notes": "Fixed Out-Of-Memory crash on 500-page / 100MB scanned PDFs: eliminated 100MB ArrayBuffer/Base64 duplication, capped background canvas rendering to a ±12 page window with far-canvas eviction, deferred OCR cache serialization until scan completion, and added periodic PDF.js memory cleanup.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

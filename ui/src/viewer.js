@@ -255,13 +255,39 @@ let _renderedPages = new Set();
 let _bgRenderGen = 0;
 let _activeBlobUrl = null; // kept alive for the full PDF session; revoked on next PDF open
 
-// ── Full PDF Rendering (partial loading / page unrendering disabled so full PDF stays loaded) ──
-export function unrenderFarPages() {
-  // Intentionally disabled: user requested the full PDF to always load and stay rendered.
+// ── Memory-Safe Page Canvas Eviction for Large PDFs (500+ pages) ──
+const MAX_RENDERED_CANVAS_PAGES = 30;
+const EVICT_PAGE_DISTANCE = 22;
+
+export function unrenderFarPages(centerPage = S.curPage || 1) {
+  if (!S.totalPages || S.totalPages <= 50 || _renderedPages.size <= MAX_RENDERED_CANVAS_PAGES) {
+    return;
+  }
+  for (const pNum of Array.from(_renderedPages)) {
+    if (Math.abs(pNum - centerPage) > EVICT_PAGE_DISTANCE) {
+      const pg = S.pages?.[pNum];
+      if (pg && pg.rendered && !pg.rendering) {
+        try {
+          if (pg.pdfCanvas) { pg.pdfCanvas.width = 1; pg.pdfCanvas.height = 1; }
+          if (pg.drawCanvas) { pg.drawCanvas.width = 1; pg.drawCanvas.height = 1; }
+        } catch {}
+        pg.pdfCanvas = null;
+        pg.drawCanvas = null;
+        pg.txtLayer = null;
+        pg.annOv = null;
+        pg.srchOv = null;
+        pg.rendered = false;
+        if (pg.wrap) {
+          pg.wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:'Inter',sans-serif;letter-spacing:.05em">Page ${pNum}</div>`;
+        }
+        _renderedPages.delete(pNum);
+      }
+    }
+  }
 }
 
 export function scheduleUnrenderFarPages() {
-  // Intentionally disabled: user requested the full PDF to always load and stay rendered.
+  scheduleIdleWork(() => unrenderFarPages(S.curPage || 1));
 }
 
 // Cooperative idle scheduler helper: uses requestIdleCallback if available, or polite 35ms timeout
@@ -294,9 +320,12 @@ export function startBackgroundDocRenderer(docId) {
     const cur = S.curPage || 1;
     let nextP = null;
     let minDiff = Infinity;
+    // For large PDFs (> 50 pages), only pre-render a ±12 page lookahead window around curPage
+    // so a 500-page 100MB PDF never allocates 8GB of canvases in RAM!
+    const maxLookahead = S.totalPages > 50 ? 12 : S.totalPages;
 
-    // Search for closest unrendered page to current reading position
-    for (let p = 1; p <= S.totalPages; p++) {
+    // Search for closest unrendered page to current reading position within lookahead window
+    for (let p = Math.max(1, cur - maxLookahead); p <= Math.min(S.totalPages, cur + maxLookahead); p++) {
       const pg = S.pages?.[p];
       if (pg && !pg.rendered && !pg.rendering) {
         const diff = Math.abs(p - cur);
@@ -308,6 +337,7 @@ export function startBackgroundDocRenderer(docId) {
     }
 
     if (nextP === null || _bgRenderGen !== myGen) {
+      unrenderFarPages(cur);
       return;
     }
 
@@ -509,18 +539,18 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     const blob = await pdfFetchPromise;
 
     // Convert Blob → ArrayBuffer once here for PDF.js (unavoidable).
-    // All storage (RAM cache + IndexedDB) remains Blob — this is the only copy.
+    // Never duplicate or base64-encode 100MB buffers in JS!
     const buf = await blob.arrayBuffer();
-    const rawCopy = buf.slice(0);
+    const byteLen = buf.byteLength;
+    const onlyCopyIfSmall = byteLen <= 35 * 1024 * 1024 ? buf.slice(0) : null;
     if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.openPdf) {
-      window.__DESKTOP_PDFIUM__.openPdf(trueId, rawCopy.slice(0), pdfFile._localPath || null).catch(() => {});
-      if (targetDriveId && targetDriveId !== trueId) {
-        window.__DESKTOP_PDFIUM__.openPdf(targetDriveId, rawCopy.slice(0), pdfFile._localPath || null).catch(() => {});
-      }
+      window.__DESKTOP_PDFIUM__.openPdf(trueId, onlyCopyIfSmall, pdfFile._localPath || null, targetDriveId).catch(() => {});
     }
     S.pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
     S.pdfDoc._desktopDocId = trueId;
-    S.pdfDoc._rawPdfBytes = rawCopy;
+    S.pdfDoc._driveFileId = targetDriveId;
+    S.pdfDoc._byteLength = byteLen;
+    S.pdfDoc._rawPdfBytes = onlyCopyIfSmall;
     S.totalPages = S.pdfDoc.numPages;
     document.getElementById('pg-total').textContent = S.totalPages;
     document.getElementById('pg-input').value = 1;
@@ -893,6 +923,9 @@ export async function ensurePageRendered(pageNum, container = null) {
     }
 
     _renderedPages.add(pageNum);
+    if (S.totalPages > 50 && _renderedPages.size > MAX_RENDERED_CANVAS_PAGES) {
+      scheduleUnrenderFarPages();
+    }
   } catch (err) {
     console.error(`Failed to render page ${pageNum}:`, err);
   } finally {

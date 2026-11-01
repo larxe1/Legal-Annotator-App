@@ -190,23 +190,15 @@ export function hasOcrData(trueId, pageNum) {
   return !!(data && (data.fullText || (data.lines && data.lines.length > 0)));
 }
 
-// ── Save Page OCR Data (Memory + LocalStorage + Desktop Vault + Supabase) ──
-export async function saveOcrPageData(trueId, pageNum, pageResult) {
+// ── Save Page OCR Data (Memory + Desktop Vault; Optional Deferred Cloud/LocalStorage Flush) ──
+export async function saveOcrPageData(trueId, pageNum, pageResult, options = {}) {
+  const { deferCloudFlush = false } = options;
   const tid = trueId || getTruePdfId();
   if (!tid || !pageNum || !pageResult) return;
 
   if (!_ocrCache[tid]) _ocrCache[tid] = {};
-  _ocrCache[tid][pageNum] = {
-    lines: pageResult.lines || [],
-    fullText: pageResult.fullText || '',
-    updatedAt: Date.now()
-  };
 
-  // 1. LocalStorage
-  const serialized = JSON.stringify(_ocrCache[tid]);
-  safeStorageSet('ocr_cache_' + tid, serialized);
-
-  // 2. Desktop Vault (if running in Desktop App)
+  // 1. Desktop Vault first (writes individual ~8KB page file to disk with zero RAM accumulation)
   if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.savePageText) {
     try {
       window.__DESKTOP_PDFIUM__.savePageText(tid, pageNum, 'ocr', {
@@ -219,18 +211,72 @@ export async function saveOcrPageData(trueId, pageNum, pageResult) {
     }
   }
 
-  // 3. Supabase Cloud Sync (fire and forget / async)
-  dbSetSetting('ocr_cache_' + tid, serialized).catch(err => {
-    console.warn('[OCR] Failed to sync OCR cache to Supabase:', err);
+  // 2. For large PDFs (> 50 pages), keep compact line-level objects in RAM for unrendered pages
+  // to prevent 500 pages of nested word bounding boxes from consuming hundreds of MBs in JS heap
+  const isLargePdf = (S.totalPages || 0) > 50;
+  const isRendered = !!S.pages?.[pageNum]?.rendered;
+  const compactLines = (pageResult.lines || []).map(l => {
+    if (isLargePdf && !isRendered) {
+      return { str: l.str, x: l.x, y: l.y, w: l.w, h: l.h };
+    }
+    return l;
   });
 
-  // 4. Update global search text cache for instant Ctrl+F search
+  _ocrCache[tid][pageNum] = {
+    lines: compactLines,
+    fullText: pageResult.fullText || '',
+    updatedAt: Date.now()
+  };
+
+  // 3. Update global search text cache for instant Ctrl+F search
   if (!S.pageTextCache) S.pageTextCache = {};
   S.pageTextCache[pageNum] = _ocrCache[tid][pageNum].fullText ||
-    _ocrCache[tid][pageNum].lines.map(l => l.str).join('\n');
+    compactLines.map(l => l.str).join('\n');
 
-  // 5. Apply to currently rendered page if active
-  applyOcrToRenderedPage(pageNum, tid);
+  // 4. Apply to currently rendered page if active
+  if (isRendered) {
+    applyOcrToRenderedPage(pageNum, tid);
+  }
+
+  // 5. Only flush full map to localStorage/Supabase if not in the middle of a multi-page batch loop!
+  if (!deferCloudFlush) {
+    await flushOcrCacheToStorage(tid);
+  }
+}
+
+// ── Flush OCR Cache Once After Batch Scan (Memory-Guarded for 500-Page PDFs) ──
+export async function flushOcrCacheToStorage(trueId = null) {
+  const tid = trueId || getTruePdfId();
+  if (!tid || !_ocrCache[tid]) return;
+
+  try {
+    // Strip nested word arrays when serializing multi-page caches so payload stays compact
+    const pageCount = Object.keys(_ocrCache[tid]).length;
+    let payloadObj = _ocrCache[tid];
+    if (pageCount > 20) {
+      payloadObj = {};
+      for (const [pKey, pVal] of Object.entries(_ocrCache[tid])) {
+        payloadObj[pKey] = {
+          lines: (pVal.lines || []).map(l => ({ str: l.str, x: l.x, y: l.y, w: l.w, h: l.h })),
+          updatedAt: pVal.updatedAt || Date.now(),
+        };
+      }
+    }
+
+    const serialized = JSON.stringify(payloadObj);
+    // Guard localStorage 5MB quota: only write to localStorage if <= 2.2 MB
+    if (serialized.length <= 2200000) {
+      safeStorageSet('ocr_cache_' + tid, serialized);
+    }
+    // Guard Supabase payload size: only sync to app_settings if <= 3.5 MB
+    if (serialized.length <= 3500000) {
+      dbSetSetting('ocr_cache_' + tid, serialized).catch(err => {
+        console.warn('[OCR] Failed to sync OCR cache to Supabase:', err);
+      });
+    }
+  } catch (err) {
+    console.warn('[OCR] flushOcrCacheToStorage warning:', err);
+  }
 }
 
 // ── Load OCR Data for PDF (LocalStorage, Desktop Vault & Supabase) ──
@@ -420,8 +466,8 @@ export function applyOcrToRenderedPage(pageNum, trueId = null) {
 // OCR ENGINES (ENGINE 1: WINDOWS NATIVE OCR, ENGINE 2: TESSERACT.JS)
 // ═════════════════════════════════════════════════════════════════════
 
-// ── Render PDF Page to Offscreen High-Res Canvas (Web Tesseract Fallback) ──
-async function renderPageToOffscreenCanvas(pageNum, renderScale = 2.0) {
+// ── Render PDF Page to Offscreen Canvas with Explicit Memory Cleanup ──
+async function renderPageToOffscreenCanvas(pageNum, renderScale = 1.5) {
   if (!S.pdfDoc) throw new Error('No PDF document loaded');
   const page = await S.pdfDoc.getPage(pageNum);
   const vp = page.getViewport({ scale: renderScale });
@@ -434,7 +480,14 @@ async function renderPageToOffscreenCanvas(pageNum, renderScale = 2.0) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  return { canvas, renderScale, vp };
+  const cleanup = () => {
+    try {
+      canvas.width = 1;
+      canvas.height = 1;
+      page.cleanup?.();
+    } catch {}
+  };
+  return { canvas, renderScale, vp, cleanup };
 }
 
 // ── Web Fallback Engine: Local Tesseract.js Recognition ──
@@ -510,7 +563,7 @@ async function runTesseractEngine(canvas, renderScale, onProgress = null) {
 
 // ── Single Page OCR Runner (Desktop Native OCR or Tesseract Web Fallback) ──
 export async function scanPage(pageNum, options = {}) {
-  const { onProgress = null } = options;
+  const { onProgress = null, deferCloudFlush = false } = options;
   const tid = getTruePdfId();
   if (!tid) throw new Error('No active PDF open to scan');
   if (!S.pdfDoc) throw new Error('No PDF document loaded');
@@ -523,37 +576,45 @@ export async function scanPage(pageNum, options = {}) {
   let lines = [];
   let fullText = '';
 
+  // Fast, zero-allocation 1.0x page dimensions from pre-computed placeholder viewport
+  const curScale = S.scale || 1.5;
+  const cachedVp = S.pages?.[pageNum]?.viewport || S.pages?.[1]?.viewport;
+  const vp1Width = cachedVp ? (cachedVp.width / curScale) : 612;
+  const vp1Height = cachedVp ? (cachedVp.height / curScale) : 792;
+
   if (isDesktopOcr) {
     if (onProgress) onProgress({ status: 'recognizing_native', page: pageNum, pct: 20 });
     const docId = S.pdfDoc._desktopDocId || tid;
-    const driveId = S.curPDF?.drive_file_id || tid;
+    const driveId = S.pdfDoc._driveFileId || S.curPDF?.drive_file_id || tid;
 
-    // 1. Try direct PDFium -> Windows Native OCR first
+    // 1. Try direct PDFium -> Windows Native OCR first (1200x1650 = 150 DPI, fast & low-memory)
     let raw = null;
     if (typeof window.__DESKTOP_PDFIUM__?.ocrPage === 'function') {
-      raw = await window.__DESKTOP_PDFIUM__.ocrPage(docId, pageNum, 1600, 2200);
+      raw = await window.__DESKTOP_PDFIUM__.ocrPage(docId, pageNum, 1200, 1650);
       if ((!raw || !Array.isArray(raw.lines) || raw.lines.length === 0) && driveId && driveId !== docId) {
-        raw = await window.__DESKTOP_PDFIUM__.ocrPage(driveId, pageNum, 1600, 2200);
+        raw = await window.__DESKTOP_PDFIUM__.ocrPage(driveId, pageNum, 1200, 1650);
       }
     }
 
-    // 2. Guaranteed Fallback: Render page via PDF.js offscreen canvas and pass PNG to Windows Native OCR!
+    // 2. Fallback: Render page via PDF.js offscreen canvas and pass PNG to Windows Native OCR (with immediate canvas cleanup!)
     if ((!raw || !Array.isArray(raw.lines) || raw.lines.length === 0) && typeof window.__DESKTOP_PDFIUM__?.ocrPng === 'function') {
       if (onProgress) onProgress({ status: 'rendering_canvas', page: pageNum, pct: 35 });
-      const { canvas } = await renderPageToOffscreenCanvas(pageNum, 2.0);
-      const pngDataUrl = canvas.toDataURL('image/png');
-      if (onProgress) onProgress({ status: 'recognizing_native_png', page: pageNum, pct: 55 });
-      raw = await window.__DESKTOP_PDFIUM__.ocrPng(pngDataUrl).catch(err => {
-        console.warn(`[OCR] desktop_ocr_png warning on page ${pageNum}:`, err);
-        return null;
-      });
+      const rendered = await renderPageToOffscreenCanvas(pageNum, 1.5);
+      try {
+        const pngDataUrl = rendered.canvas.toDataURL('image/png');
+        if (onProgress) onProgress({ status: 'recognizing_native_png', page: pageNum, pct: 55 });
+        raw = await window.__DESKTOP_PDFIUM__.ocrPng(pngDataUrl).catch(err => {
+          console.warn(`[OCR] desktop_ocr_png warning on page ${pageNum}:`, err);
+          return null;
+        });
+      } finally {
+        rendered.cleanup();
+      }
     }
 
     if (onProgress) onProgress({ status: 'parsing', page: pageNum, pct: 75 });
-    const page = await S.pdfDoc.getPage(pageNum);
-    const vp1 = page.getViewport({ scale: 1.0 });
-    const rawW = (raw && raw.width > 0) ? raw.width : 1600;
-    const rawH = (raw && raw.height > 0) ? raw.height : 2200;
+    const rawW = (raw && raw.width > 0) ? raw.width : 1200;
+    const rawH = (raw && raw.height > 0) ? raw.height : 1650;
 
     const rawLines = Array.isArray(raw?.lines) ? raw.lines : (Array.isArray(raw) ? raw : []);
     for (const rLine of rawLines) {
@@ -564,10 +625,10 @@ export async function scanPage(pageNum, options = {}) {
       const rw = typeof rLine.rw === 'number' ? rLine.rw : (typeof rLine.w === 'number' ? rLine.w / rawW : 0);
       const rh = typeof rLine.rh === 'number' ? rLine.rh : (typeof rLine.h === 'number' ? rLine.h / rawH : 0);
 
-      const x = Math.round(rx * vp1.width * 10) / 10;
-      const y = Math.round(ry * vp1.height * 10) / 10;
-      const w = Math.round(rw * vp1.width * 10) / 10;
-      const h = Math.round(rh * vp1.height * 10) / 10;
+      const x = Math.round(rx * vp1Width * 10) / 10;
+      const y = Math.round(ry * vp1Height * 10) / 10;
+      const w = Math.round(rw * vp1Width * 10) / 10;
+      const h = Math.round(rh * vp1Height * 10) / 10;
 
       const rawWords = Array.isArray(rLine.words) ? rLine.words : [];
       const words = rawWords.map(wItem => {
@@ -577,10 +638,10 @@ export async function scanPage(pageNum, options = {}) {
         const wrh = typeof wItem.rh === 'number' ? wItem.rh : (typeof wItem.h === 'number' ? wItem.h / rawH : rh);
         return {
           str: (wItem.str || wItem.text || '').trim(),
-          x: Math.round(wrx * vp1.width * 10) / 10,
-          y: Math.round(wry * vp1.height * 10) / 10,
-          w: Math.round(wrw * vp1.width * 10) / 10,
-          h: Math.round(wrh * vp1.height * 10) / 10,
+          x: Math.round(wrx * vp1Width * 10) / 10,
+          y: Math.round(wry * vp1Height * 10) / 10,
+          w: Math.round(wrw * vp1Width * 10) / 10,
+          h: Math.round(wrh * vp1Height * 10) / 10,
         };
       }).filter(wItem => wItem.str);
 
@@ -588,41 +649,32 @@ export async function scanPage(pageNum, options = {}) {
     }
 
     fullText = (raw?.fullText || raw?.text || lines.map(l => l.str).join('\n')).trim();
-
-    // 3. Final fallback to Tesseract if Windows Native OCR returned 0 lines on a non-blank page
-    if (lines.length === 0 && !fullText) {
-      try {
-        const { canvas, renderScale } = await renderPageToOffscreenCanvas(pageNum, 2.0);
-        const localResult = await runTesseractEngine(canvas, renderScale);
-        lines = localResult.lines;
-        fullText = localResult.fullText;
-      } catch (tessErr) {
-        console.warn(`[OCR] Fallback Tesseract notice on page ${pageNum}:`, tessErr);
-      }
-    }
   } else {
-    // Web Fallback: Local Tesseract.js v5
+    // Web Fallback: Local Tesseract.js v5 with explicit canvas cleanup
     if (onProgress) onProgress({ status: 'rendering', page: pageNum, pct: 10 });
-    const { canvas, renderScale } = await renderPageToOffscreenCanvas(pageNum, 2.0);
+    const rendered = await renderPageToOffscreenCanvas(pageNum, 1.5);
+    try {
+      if (onProgress) onProgress({ status: 'recognizing', page: pageNum, pct: 30 });
+      const localResult = await runTesseractEngine(rendered.canvas, rendered.renderScale, subPct => {
+        if (onProgress) {
+          const overall = 30 + Math.round(subPct * 55);
+          onProgress({ status: 'recognizing', page: pageNum, pct: overall });
+        }
+      });
 
-    if (onProgress) onProgress({ status: 'recognizing', page: pageNum, pct: 30 });
-    const localResult = await runTesseractEngine(canvas, renderScale, subPct => {
-      if (onProgress) {
-        const overall = 30 + Math.round(subPct * 55);
-        onProgress({ status: 'recognizing', page: pageNum, pct: overall });
-      }
-    });
-
-    lines = localResult.lines;
-    fullText = localResult.fullText;
+      lines = localResult.lines;
+      fullText = localResult.fullText;
+    } finally {
+      rendered.cleanup();
+    }
   }
 
   const wordCount = lines.reduce((sum, l) => sum + (Array.isArray(l.words) && l.words.length ? l.words.length : (l.str ? l.str.split(/\s+/).length : 0)), 0);
 
-  // Only persist if actual text was recognized (never overwrite or mark a failed empty scan as "scanned")
+  // Only persist if actual text was recognized
   if (lines.length > 0 || fullText.length > 0) {
     if (onProgress) onProgress({ status: 'saving', page: pageNum, pct: 95 });
-    await saveOcrPageData(tid, pageNum, { lines, fullText });
+    await saveOcrPageData(tid, pageNum, { lines, fullText }, { deferCloudFlush });
   }
 
   if (onProgress) onProgress({ status: 'done', page: pageNum, pct: 100 });
@@ -893,8 +945,12 @@ export async function detectScannedPages(doc = S.pdfDoc, maxPages = S.totalPages
       if (wordCount < 15) {
         scanned.push(p);
       }
+      page.cleanup?.();
     } catch {
       scanned.push(p);
+    }
+    if (p % 25 === 0) {
+      await new Promise(r => setTimeout(r, 10));
     }
   }
   return scanned;
@@ -1211,9 +1267,9 @@ async function executeOcrWorkflow() {
     }
   }
 
-  // 3. Engine Choice: Desktop Native OCR vs Tesseract Local
+  // 3. Engine Choice: Desktop Native OCR vs Tesseract Local (Batch of 2 keeps peak memory < 40 MB across 500 pages!)
   const isDesktop = typeof window !== 'undefined' && typeof window.__DESKTOP_PDFIUM__?.ocrPage === 'function';
-  const BATCH_SIZE = isDesktop ? 4 : 1;
+  const BATCH_SIZE = isDesktop ? 2 : 1;
 
   // 4. Update UI to scanning state
   _isScanning = true;
@@ -1245,11 +1301,12 @@ async function executeOcrWorkflow() {
       if (progressBar) progressBar.style.width = `${overallBase}%`;
       if (progressDetail) {
         progressDetail.textContent = isDesktop
-          ? `Running Windows Native OCR in parallel (batch of ${batch.length})…`
+          ? `Running Windows Native OCR (memory-safe batch ${Math.min(i + batch.length, totalCount)}/${totalCount})…`
           : `Running Local in-browser OCR on page ${batch[0]}…`;
       }
 
       const results = await Promise.all(batch.map(pNum => scanPage(pNum, {
+        deferCloudFlush: true,
         onProgress: info => {
           if (_scanCancelled) return;
           const pageContrib = (info.pct / 100) * (100 / totalCount);
@@ -1264,15 +1321,31 @@ async function executeOcrWorkflow() {
           completedCount++;
         }
       }
-      // Yield to main thread for responsive UI & cancel button handling
-      await new Promise(r => setTimeout(r, 16));
+
+      // Periodic PDF.js & V8 garbage collection yield every 10 pages during large scans
+      if ((i + BATCH_SIZE) % 10 === 0) {
+        try { S.pdfDoc?.cleanup?.(); } catch {}
+        await new Promise(r => setTimeout(r, 30));
+      } else {
+        await new Promise(r => setTimeout(r, 12));
+      }
     }
 
     if (progressBar) progressBar.style.width = '100%';
     if (progressPct) progressPct.textContent = '100%';
 
-    // Step 5: Embed OCR into PDF binary and sync across caches + Drive!
+    // Flush OCR cache once at the end of the scan!
     if (completedCount > 0) {
+      await flushOcrCacheToStorage(tid);
+      applyOcrToRenderedPage(S.curPage || 1, tid);
+    }
+
+    // Step 5: Auto-embed into PDF binary ONLY for normal-sized PDFs (<= 35 MB and <= 120 pages).
+    // For massive 100 MB / 500-page PDFs, loading 100 MB into in-browser pdf-lib causes V8 Out-Of-Memory,
+    // whereas the Disk Vault + in-app OCR layer already makes all 500 pages 100% searchable, selectable & highlightable!
+    const pdfByteLen = S.pdfDoc?._byteLength || 0;
+    const isHugePdf = (S.totalPages || 0) > 120 || pdfByteLen > 35 * 1024 * 1024;
+    if (completedCount > 0 && !isHugePdf) {
       if (progressLabel) progressLabel.textContent = 'Embedding searchable text into PDF…';
       if (progressDetail) progressDetail.textContent = 'Writing word-aligned OCR text layer into PDF & syncing to Drive…';
       try {

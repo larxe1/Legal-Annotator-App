@@ -79,7 +79,7 @@ if (invoke) {
 import { reRenderAll } from './viewer.js';
 
 window.__DESKTOP_PDFIUM__ = {
-  async openPdf(docId, arrayBuffer, localPath = null) {
+  async openPdf(docId, arrayBuffer, localPath = null, driveFileId = null) {
     if (!invoke) return false;
     try {
       if (localPath) {
@@ -87,20 +87,27 @@ window.__DESKTOP_PDFIUM__ = {
         if (res?.ok) _openNativeDocs.add(String(docId));
         return !!res?.ok;
       }
-      // 1. Check if already cached on disk in D:\Code\legal-annotator-desktop\data\pdf_cache
-      const cachedPath = await invoke('desktop_cache_get_path', { fileId: String(docId) }).catch(() => null);
+      // 1. Check if already cached on disk under docId OR driveFileId in data\pdf_cache
+      let cachedPath = await invoke('desktop_cache_get_path', { fileId: String(docId) }).catch(() => null);
+      if (!cachedPath && driveFileId && String(driveFileId) !== String(docId)) {
+        cachedPath = await invoke('desktop_cache_get_path', { fileId: String(driveFileId) }).catch(() => null);
+      }
       if (cachedPath) {
         const res = await invoke('pdfium_open_path', { docId: String(docId), path: cachedPath });
         if (res?.ok) {
           _openNativeDocs.add(String(docId));
+          if (driveFileId && String(driveFileId) !== String(docId)) {
+            await invoke('pdfium_open_path', { docId: String(driveFileId), path: cachedPath }).catch(() => {});
+            _openNativeDocs.add(String(driveFileId));
+          }
           return true;
         }
       }
-      // 2. Otherwise persist once to disk cache and open directly from path via FPDF_LoadDocument
-      if (arrayBuffer && arrayBuffer.byteLength <= 150 * 1024 * 1024) {
+      // 2. Otherwise persist once to disk cache (only for files <= 35 MB to prevent Base64 OOM)
+      if (arrayBuffer && arrayBuffer.byteLength <= 35 * 1024 * 1024) {
         const b64 = arrayBufferToBase64(arrayBuffer);
         const savedPath = await invoke('desktop_cache_save_pdf', {
-          fileId: String(docId),
+          fileId: String(driveFileId || docId),
           base64: b64,
         }).catch(() => null);
         if (savedPath) {
