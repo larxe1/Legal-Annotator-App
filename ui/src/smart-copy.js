@@ -770,6 +770,194 @@ export async function copyEntirePdfTextSmart() {
 }
 
 let _isDigestingPerplexity = false;
+let _batchDigestState = {
+  running: false,
+  cancelled: false,
+  currentPdfId: null,
+  resolveCurrentPdf: null,
+};
+
+function updateBatchDigestBanner(text = '', showStop = true) {
+  let banner = document.getElementById('la-batch-pplx-banner');
+  if (!text) {
+    if (banner) banner.remove();
+    return;
+  }
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'la-batch-pplx-banner';
+    banner.style.cssText =
+      'position:fixed;bottom:18px;left:18px;z-index:99999;background:linear-gradient(90deg,#0f172a 0%,#172542 100%);border:1.5px solid var(--gold,#c9a84c);border-radius:10px;padding:10px 14px;color:#e8e4db;font-family:Inter,system-ui,sans-serif;font-size:12.5px;display:flex;align-items:center;gap:12px;box-shadow:0 8px 28px rgba(0,0,0,0.6);max-width:540px;';
+    document.body.appendChild(banner);
+  }
+  banner.innerHTML = `
+    <span style="color:var(--gold,#c9a84c);font-weight:700;white-space:nowrap;">⚡ Batch Digest</span>
+    <span id="la-batch-pplx-msg" style="flex:1;line-height:1.4;overflow:hidden;text-overflow:ellipsis;"></span>
+    ${
+      showStop
+        ? '<button id="la-batch-pplx-stop" style="background:#7f1d1d;border:1px solid #ef4444;color:#fecaca;border-radius:6px;padding:4px 10px;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;">⏹ Stop Batch</button>'
+        : ''
+    }
+  `;
+  const msgEl = banner.querySelector('#la-batch-pplx-msg');
+  if (msgEl) msgEl.textContent = text;
+  const stopBtn = banner.querySelector('#la-batch-pplx-stop');
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      _batchDigestState.cancelled = true;
+      if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
+        _batchDigestState.resolveCurrentPdf(false);
+      }
+      updateBatchDigestBanner('⏹ Batch Digest stopped by user.', false);
+      setTimeout(() => updateBatchDigestBanner(''), 3000);
+    });
+  }
+}
+
+async function ensurePdfOpenedAndLoaded(pdfItem) {
+  if (!pdfItem) return false;
+  if (!S.curPDF || S.curPDF.id !== pdfItem.id || !S.pdfDoc) {
+    const { openPDFFromLibrary } = await import('./viewer.js');
+    await openPDFFromLibrary(pdfItem);
+  }
+  const started = Date.now();
+  while (Date.now() - started < 45000) {
+    if (S.curPDF && S.curPDF.id === pdfItem.id && S.pdfDoc && S.totalPages > 0) {
+      return true;
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return Boolean(S.curPDF && S.curPDF.id === pdfItem.id && S.pdfDoc);
+}
+
+/**
+ * Right-click handler for a single PDF in the Library sidebar:
+ * Opens the PDF if needed and launches Perplexity Digest Studio for it.
+ */
+export async function runPerplexityDigestForPdf(pdfItem) {
+  if (!pdfItem) return;
+  const ready = await ensurePdfOpenedAndLoaded(pdfItem);
+  if (!ready) {
+    toast(`⚠️ Could not load "${pdfItem.name}" for Perplexity Digest.`);
+    return;
+  }
+  await openPerplexityDigestForCurrentPdf();
+}
+
+/**
+ * Right-click handler for a Folder/Subfolder in the Library sidebar:
+ * Automatically processes every PDF in the folder one-by-one in Perplexity "Law" Project
+ * using Claude 5.5 Sonnet, waits for each digest to finish and save into Case Digest,
+ * and moves to the next PDF automatically.
+ */
+export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
+  if (_batchDigestState.running) {
+    toast('⚠️ A Batch Perplexity Digest is already running.');
+    return;
+  }
+  const folders = (Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder]).filter(Boolean);
+  if (!folders.length) return;
+
+  const folderIds = new Set();
+  const collectFolderIds = (fid) => {
+    if (!fid || folderIds.has(fid)) return;
+    folderIds.add(fid);
+    if (Array.isArray(S.folders)) {
+      S.folders
+        .filter(sf => sf.parent_folder_id === fid)
+        .forEach(sf => collectFolderIds(sf.id));
+    }
+  };
+  folders.forEach(f => collectFolderIds(f.id));
+
+  const pdfQueue = Array.isArray(S.pdfs)
+    ? S.pdfs.filter(p => folderIds.has(p.folder_id))
+    : [];
+
+  if (!pdfQueue.length) {
+    toast('⚠️ No PDFs found inside this folder/subfolder to digest.');
+    return;
+  }
+
+  _batchDigestState.running = true;
+  _batchDigestState.cancelled = false;
+  _batchDigestState.currentPdfId = null;
+  _batchDigestState.resolveCurrentPdf = null;
+
+  let completedCount = 0;
+  const folderTitle = folders.map(f => f.name).join(', ');
+  toast(`⚡ Starting Batch Perplexity Digest for ${pdfQueue.length} PDF${pdfQueue.length === 1 ? '' : 's'} in "${folderTitle}"…`);
+
+  try {
+    for (let i = 0; i < pdfQueue.length; i++) {
+      if (_batchDigestState.cancelled) break;
+      const pdfItem = pdfQueue[i];
+      const trueId = String(pdfItem.linked_pdf_id || pdfItem.id || '');
+      const stepLabel = `(${i + 1} / ${pdfQueue.length})`;
+
+      updateBatchDigestBanner(`${stepLabel} Loading "${pdfItem.name}"…`, true);
+      const loaded = await ensurePdfOpenedAndLoaded(pdfItem);
+      if (!loaded || _batchDigestState.cancelled) {
+        toast(`⚠️ Skipping "${pdfItem.name}" (could not load PDF).`);
+        continue;
+      }
+
+      // Prepare promise that resolves when window.__onPerplexityDigestReceived saves the digest for this PDF
+      const digestSavedPromise = new Promise((resolve) => {
+        _batchDigestState.currentPdfId = trueId;
+        const timeoutId = setTimeout(() => {
+          if (_batchDigestState.resolveCurrentPdf) {
+            _batchDigestState.resolveCurrentPdf = null;
+          }
+          resolve(false);
+        }, 6 * 60 * 1000); // 6-minute safety cap per case
+
+        _batchDigestState.resolveCurrentPdf = (ok) => {
+          clearTimeout(timeoutId);
+          _batchDigestState.resolveCurrentPdf = null;
+          _batchDigestState.currentPdfId = null;
+          resolve(Boolean(ok));
+        };
+      });
+
+      updateBatchDigestBanner(`${stepLabel} Submitting "${pdfItem.name}" to Perplexity "Law" (Claude Sonnet)…`, true);
+      await openPerplexityDigestForCurrentPdf({ forceAutoSubmit: true, forceAutoSend: true });
+
+      updateBatchDigestBanner(`${stepLabel} Waiting 1–2 mins for Perplexity to finish "${pdfItem.name}"…`, true);
+      const savedOk = await digestSavedPromise;
+      if (_batchDigestState.cancelled) break;
+
+      if (savedOk) {
+        completedCount++;
+      }
+
+      // Polite cooldown between cases while Perplexity Studio returns to the "Law" project homepage
+      if (i + 1 < pdfQueue.length && !_batchDigestState.cancelled) {
+        for (let cd = 5; cd >= 1; cd--) {
+          if (_batchDigestState.cancelled) break;
+          updateBatchDigestBanner(
+            `✅ Saved "${pdfItem.name}"! Starting next case (${i + 2}/${pdfQueue.length}) in ${cd}s…`,
+            true
+          );
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+    }
+
+    if (!_batchDigestState.cancelled) {
+      updateBatchDigestBanner(
+        `🎉 Batch Complete! Saved Case Digests for ${completedCount} of ${pdfQueue.length} PDFs.`,
+        false
+      );
+      toast(`🎉 Batch Perplexity Digest complete! (${completedCount}/${pdfQueue.length} cases digested)`);
+      setTimeout(() => updateBatchDigestBanner(''), 5000);
+    }
+  } finally {
+    _batchDigestState.running = false;
+    _batchDigestState.currentPdfId = null;
+    _batchDigestState.resolveCurrentPdf = null;
+  }
+}
 
 function getTauriInvoke() {
   if (typeof window === 'undefined') return null;
@@ -786,7 +974,7 @@ function getTauriInvoke() {
  * Extracts entire PDF text + Subfolder Instruction, copies to clipboard, and opens
  * the Perplexity "Law" Project Digest Studio window (with auto-paste & auto-submit).
  */
-export async function openPerplexityDigestForCurrentPdf() {
+export async function openPerplexityDigestForCurrentPdf(opts = {}) {
   if (_isDigestingPerplexity) return;
   if (!S.pdfDoc || !S.totalPages || S.totalPages <= 0 || !S.curPDF) {
     toast('⚠️ Open a PDF first to generate a Case Digest in Perplexity.');
@@ -888,9 +1076,13 @@ export async function openPerplexityDigestForCurrentPdf() {
       } catch {}
     }
 
-    const autoSubmitPref = safeStorageGet('pplx_auto_submit', 'true') !== 'false';
+    const autoSubmitPref = opts?.forceAutoSubmit
+      ? true
+      : safeStorageGet('pplx_auto_submit', 'true') !== 'false';
     const digestModePref = safeStorageGet('pplx_digest_mode', 'append') === 'replace' ? 'replace' : 'append';
-    const autoSendPref = safeStorageGet('pplx_auto_send', 'true') !== 'false';
+    const autoSendPref = opts?.forceAutoSend
+      ? true
+      : safeStorageGet('pplx_auto_send', 'true') !== 'false';
 
     const studioPayload = {
       pdfId: String(trueId || ''),
@@ -1118,6 +1310,8 @@ if (typeof window !== 'undefined') {
   window.copySelectedTextClean = copySelectedTextClean;
   window.copyEntirePdfTextSmart = copyEntirePdfTextSmart;
   window.openPerplexityDigestForCurrentPdf = openPerplexityDigestForCurrentPdf;
+  window.runPerplexityDigestForPdf = runPerplexityDigestForPdf;
+  window.runBatchPerplexityDigestForFolders = runBatchPerplexityDigestForFolders;
   window.stripPageNumbersAndFooters = stripPageNumbersAndFooters;
   window.formatPageTextContent = formatPageTextContent;
   window.initSmartCopy = initSmartCopy;
@@ -1144,11 +1338,16 @@ if (typeof window !== 'undefined') {
   window.__onPerplexityDigestReceived = async (msg) => {
     if (!msg || typeof msg !== 'object') return;
     const { importDigestIntoCaseDigestTab } = await import('./notepad.js');
-    await importDigestIntoCaseDigestTab(
+    const ok = await importDigestIntoCaseDigestTab(
       msg.pdfId || '',
       msg.html || '',
       msg.text || '',
       msg.digestMode === 'replace' ? 'replace' : 'append'
     );
+    if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
+      if (!_batchDigestState.currentPdfId || !msg.pdfId || String(msg.pdfId) === String(_batchDigestState.currentPdfId)) {
+        _batchDigestState.resolveCurrentPdf(ok);
+      }
+    }
   };
 }

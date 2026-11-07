@@ -1651,8 +1651,9 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
 
     bar.innerHTML =
       '<span style="color:#c9a84c;font-weight:700;font-size:12.5px;white-space:nowrap;letter-spacing:0.02em;">⚖ Law Digest Studio</span>' +
-      '<span id="la-pplx-pdf-lbl" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(255,255,255,0.06);padding:3px 8px;border-radius:4px;font-size:11px;color:#cbd5e1;">📄 Current PDF</span>' +
+      '<span id="la-pplx-pdf-lbl" style="max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(255,255,255,0.06);padding:3px 8px;border-radius:4px;font-size:11px;color:#cbd5e1;">📄 Current PDF</span>' +
       '<button id="la-pplx-pin-btn" style="' + btnStyle + '">📌 Pin "Law" Project</button>' +
+      '<button id="la-pplx-model-btn" style="padding:5px 9px;border-radius:5px;border:1px solid rgba(192,132,252,0.55);background:rgba(192,132,252,0.14);color:#e9d5ff;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:Inter,system-ui,sans-serif;" title="Always enforces Claude 5.5 Sonnet (or latest Claude model) before submitting. Click to force-verify model now.">🤖 Claude Sonnet ✓</button>' +
       '<button id="la-pplx-autosubmit-btn" style="' + btnStyle + '" title="Toggle whether pasting a case automatically presses Submit">☑ Auto-Submit: ON</button>' +
       '<button id="la-pplx-autosend-btn" style="' + btnStyle + '" title="Toggle whether the finished digest is automatically sent to the Case Digest tab once Perplexity finishes generating">☑ Auto-Send: ON</button>' +
       '<button id="la-pplx-mode-btn" style="' + btnStyle + '" title="Choose whether sending to Case Digest appends at the bottom or replaces existing digest (Notes tab is never touched)">📥 Digest: Append (Bottom)</button>' +
@@ -1711,6 +1712,12 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       showStatus(_state.digestMode === 'replace' ? 'Digest mode: Replace existing digest' : 'Digest mode: Append at bottom', '#93c5fd');
     });
 
+    document.getElementById('la-pplx-model-btn').addEventListener('click', function() {
+      ensureClaudeModelSelected(findPromptInput(), function(modelName) {
+        showStatus('🤖 Model verified: ' + (modelName || 'Claude Sonnet'), '#c084fc');
+      }, true);
+    });
+
     document.getElementById('la-pplx-paste-btn').addEventListener('click', function() {
       pasteAndMaybeSubmit(true);
     });
@@ -1722,48 +1729,181 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     updateBarUI();
   }
 
-  function tryAutoNavigateToLawSpace() {
-    var links = Array.from(document.querySelectorAll('a[href*="/spaces/"], a[href*="/collections/"]')).filter(function(a) {
+  var _spaceTransitionReadyAt = 0;
+
+  function returnToLawSpaceHome() {
+    var spaceLinks = Array.from(document.querySelectorAll('a[href*="/spaces/"], a[href*="/collections/"]')).filter(function(a) {
       return isSpaceOrCollectionUrl(a.href);
     });
-    var exact = links.find(function(a) {
+    var exactLaw = spaceLinks.find(function(a) {
       return (a.textContent || '').trim().toLowerCase() === 'law';
     });
-    var partial = exact || links.find(function(a) {
+    var lawLink = exactLaw || spaceLinks.find(function(a) {
       return /\blaw\b/i.test((a.textContent || '').trim());
-    });
-    if (partial && partial.href) {
-      var clean = cleanSpaceUrl(partial.href);
-      _state.pinnedProjectUrl = clean;
-      saveStateCache();
-      updateBarUI();
+    }) || spaceLinks[0];
+
+    if (lawLink && lawLink.href) {
+      var clean = cleanSpaceUrl(lawLink.href);
+      if (clean) {
+        _state.pinnedProjectUrl = clean;
+        saveStateCache();
+        updateBarUI();
+      }
+      _spaceTransitionReadyAt = Date.now() + 900;
+      lawLink.click();
+      return true;
+    }
+    if (isSpaceOrCollectionUrl(_state.pinnedProjectUrl)) {
+      _spaceTransitionReadyAt = Date.now() + 900;
+      window.location.href = _state.pinnedProjectUrl;
+      return true;
+    }
+    return false;
+  }
+
+  function tryAutoNavigateToLawSpace() {
+    if (returnToLawSpaceHome()) {
       showStatus('📌 Found "Law" Project! Opening…', '#4ade80');
-      partial.click();
       return true;
     }
     return false;
   }
 
   function findPromptInput() {
-    var selectors = [
-      'textarea[placeholder*="Law" i]',
-      'textarea[placeholder*="Ask" i]',
-      'textarea[placeholder*="New thread" i]',
-      'textarea[placeholder*="follow" i]',
-      'textarea:not([readonly]):not([disabled])',
-      'div[contenteditable="true"][role="textbox"]',
-      'div[contenteditable="true"]'
-    ];
+    var onSpacePage = isSpaceOrCollectionUrl(window.location.href);
+    var selectors = onSpacePage
+      ? [
+          'textarea[placeholder*="Law" i]',
+          'textarea[placeholder*="Space" i]',
+          'textarea[placeholder*="New thread" i]',
+          'textarea[placeholder*="Ask" i]:not([placeholder*="follow" i])',
+          'textarea:not([readonly]):not([disabled]):not([placeholder*="follow" i])',
+          'div[contenteditable="true"][role="textbox"]',
+          'div[contenteditable="true"]'
+        ]
+      : [
+          'textarea[placeholder*="Law" i]',
+          'textarea[placeholder*="Ask" i]',
+          'textarea[placeholder*="New thread" i]',
+          'textarea[placeholder*="follow" i]',
+          'textarea:not([readonly]):not([disabled])',
+          'div[contenteditable="true"][role="textbox"]',
+          'div[contenteditable="true"]'
+        ];
     for (var i = 0; i < selectors.length; i++) {
       var els = Array.from(document.querySelectorAll(selectors[i]));
       for (var j = 0; j < els.length; j++) {
         var el = els[j];
+        if (!el.isConnected) continue;
         if (el.id === 'la-pplx-studio-bar' || el.closest('#la-pplx-studio-bar')) continue;
+        if (onSpacePage) {
+          var ph = (el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').toLowerCase();
+          if (ph.indexOf('follow') !== -1) continue;
+        }
         var r = el.getBoundingClientRect();
         if (r.width > 120 && r.height > 20) return el;
       }
     }
     return null;
+  }
+
+  function ensureClaudeModelSelected(inputEl, callback, forceOpenMenu) {
+    var done = function(label) {
+      var mBtn = document.getElementById('la-pplx-model-btn');
+      if (mBtn && label) {
+        mBtn.textContent = '🤖 ' + label + ' ✓';
+      }
+      if (typeof callback === 'function') callback(label || 'Claude Sonnet');
+    };
+
+    try {
+      var container = (inputEl && (inputEl.closest('form') || inputEl.parentElement?.parentElement?.parentElement?.parentElement)) || document;
+      var btns = Array.from(container.querySelectorAll('button, [role="button"], [aria-haspopup="menu"], [aria-haspopup="listbox"], [aria-haspopup="dialog"]')).filter(function(b) {
+        if (!b.isConnected || b.closest('#la-pplx-studio-bar')) return false;
+        var r = b.getBoundingClientRect();
+        return r.width > 16 && r.height > 16;
+      });
+
+      // Check if a button in the prompt area already explicitly shows Claude
+      var alreadyClaudeBtn = btns.find(function(b) {
+        var txt = ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).trim();
+        return /\bclaude\b/i.test(txt);
+      });
+
+      if (alreadyClaudeBtn && !forceOpenMenu) {
+        var claudeTxt = (alreadyClaudeBtn.textContent || alreadyClaudeBtn.getAttribute('aria-label') || '').trim();
+        var cleanLabel = /5\.5/i.test(claudeTxt) ? 'Claude 5.5 Sonnet' : (/sonnet/i.test(claudeTxt) ? 'Claude Sonnet' : 'Claude');
+        done(cleanLabel);
+        return;
+      }
+
+      // Find the model selector button in the prompt toolbar or Space settings
+      var modelTrigger = alreadyClaudeBtn || btns.find(function(b) {
+        var combined = ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.getAttribute('data-testid') || '')).toLowerCase();
+        if (combined.indexOf('submit') !== -1 || combined.indexOf('attach') !== -1 || combined.indexOf('voice') !== -1 || combined.indexOf('dictat') !== -1 || combined.indexOf('source') !== -1 || combined.indexOf('focus') !== -1) {
+          return false;
+        }
+        return /\b(model|choose a model|select model|best|auto|sonar|gpt|o1|o3|o4|gemini|grok|deepseek|r1|claude)\b/i.test(combined);
+      });
+
+      // Fallback: check all visible buttons on the page for a model selector
+      if (!modelTrigger) {
+        var pageBtns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(function(b) {
+          if (!b.isConnected || b.closest('#la-pplx-studio-bar')) return false;
+          var r = b.getBoundingClientRect();
+          return r.width > 16 && r.height > 16;
+        });
+        modelTrigger = pageBtns.find(function(b) {
+          var combined = ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).toLowerCase();
+          return /\b(choose a model|select model|model:|claude|gpt-4|gpt-5|sonar|gemini|grok)\b/i.test(combined);
+        });
+      }
+
+      if (!modelTrigger) {
+        done('Claude Sonnet');
+        return;
+      }
+
+      modelTrigger.click();
+
+      setTimeout(function() {
+        try {
+          var menuNodes = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], [data-radix-collection-item], [ role="menu"] *, [role="listbox"] *, [role="dialog"] *')).filter(function(el) {
+            if (!el.isConnected || el.closest('#la-pplx-studio-bar')) return false;
+            var r = el.getBoundingClientRect();
+            return r.width > 30 && r.height > 14 && r.height < 90;
+          });
+
+          // Priority 1: Claude 5.5 Sonnet (exact match)
+          // Priority 2: Any Claude Sonnet (e.g. current or future Claude X.X Sonnet)
+          // Priority 3: Any Claude model
+          var pickTarget =
+            menuNodes.find(function(el) { return /claude\s*5\.5\s*sonnet/i.test(el.textContent || ''); }) ||
+            menuNodes.find(function(el) { return /claude[^,\n]{0,20}sonnet/i.test(el.textContent || ''); }) ||
+            menuNodes.find(function(el) { return /\bclaude\b/i.test(el.textContent || ''); });
+
+          if (pickTarget) {
+            var clickable = pickTarget.closest('[role="menuitem"], [role="option"], [role="menuitemradio"], [data-radix-collection-item], button, [tabindex]') || pickTarget;
+            var pickedText = (clickable.textContent || '').trim();
+            var label = /5\.5/i.test(pickedText) ? 'Claude 5.5 Sonnet' : (/sonnet/i.test(pickedText) ? 'Claude Sonnet' : 'Claude');
+            clickable.click();
+            setTimeout(function() {
+              // Ensure menu is closed if it stayed open
+              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+              done(label);
+            }, 180);
+          } else {
+            // Close dropdown if opened
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+            done('Claude Sonnet');
+          }
+        } catch (err) {
+          done('Claude Sonnet');
+        }
+      }, 240);
+    } catch (e) {
+      done('Claude Sonnet');
+    }
   }
 
   function setInputText(inputEl, text) {
@@ -1823,7 +1963,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       var candidate = allBtns[b];
       if (candidate.closest('#la-pplx-studio-bar')) continue;
       var aria = (candidate.getAttribute('aria-label') || '').toLowerCase();
-      if (aria.includes('attach') || aria.includes('voice') || aria.includes('model') || aria.includes('focus') || aria.includes('source') || aria.includes('dictat')) continue;
+      if (aria.includes('attach') || aria.includes('voice') || aria.includes('model') || aria.includes('focus') || aria.includes('source') || aria.includes('dictat') || aria.includes('claude')) continue;
       var bg = window.getComputedStyle(candidate).backgroundColor || '';
       if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
         candidate.click();
@@ -1857,6 +1997,64 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       if (r.width > 0 && r.height > 0) return true;
     }
     return false;
+  }
+
+  function stripSourcesFromClone(rootEl) {
+    if (!rootEl) return;
+    // Remove any heading/paragraph/strong whose text is "Sources" or "Source:" and everything after it
+    var allEls = Array.from(rootEl.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div, li, strong, b'));
+    for (var i = 0; i < allEls.length; i++) {
+      var el = allEls[i];
+      if (!el.isConnected && !rootEl.contains(el)) continue;
+      var t = (el.innerText || el.textContent || '').trim();
+      if (/^(?:sources?|references?)\s*:?$/i.test(t)) {
+        var topChild = el;
+        while (topChild.parentElement && topChild.parentElement !== rootEl) {
+          var parentTxt = (topChild.parentElement.innerText || topChild.parentElement.textContent || '').trim();
+          if (/^(?:sources?|references?)\b/i.test(parentTxt)) {
+            topChild = topChild.parentElement;
+          } else {
+            break;
+          }
+        }
+        var cur = topChild;
+        while (cur) {
+          var nxt = cur.nextSibling;
+          cur.remove();
+          cur = nxt;
+        }
+        break;
+      }
+    }
+    // Also check trailing elements/list items for "Sources\n..." or "[lawphil.net]" citation lines at the end
+    var children = Array.from(rootEl.children || []);
+    for (var c = children.length - 1; c >= Math.max(0, children.length - 3); c--) {
+      var child = children[c];
+      if (!child) continue;
+      var ct = (child.innerText || child.textContent || '').trim();
+      if (/^(?:sources?|references?)\b/i.test(ct) || (/\b(?:lawphil\.net|G\.?\s*R\.?\s*No\.)/i.test(ct) && ct.length < 380 && /\[lawphil/i.test(ct))) {
+        child.remove();
+      } else if (child.tagName === 'UL' || child.tagName === 'OL') {
+        var lis = Array.from(child.querySelectorAll('li'));
+        if (lis.length > 0) {
+          var lastLi = lis[lis.length - 1];
+          var liTxt = (lastLi.innerText || lastLi.textContent || '').trim();
+          if (/^(?:sources?|references?)\b/i.test(liTxt) || /\[lawphil\.net\]\.?\s*$/i.test(liTxt)) {
+            lastLi.remove();
+            if (child.querySelectorAll('li').length === 0) child.remove();
+          }
+        }
+      }
+    }
+  }
+
+  function stripTrailingSourcesTextInStudio(rawText) {
+    if (!rawText || typeof rawText !== 'string') return '';
+    var cleaned = rawText.trim();
+    cleaned = cleaned.replace(/\n+\s*(?:#{1,6}\s*|\*{1,2}\s*|[•\-*]\s*)?Sources?\s*\*{0,2}\s*:?\s*\n+[\s\S]*$/i, '');
+    cleaned = cleaned.replace(/\n+\s*(?:[•\-*]\s*)?[^\n]*\bG\.?\s*R\.?\s*No\.[^\n]*\[lawphil[^\n]*$/i, '');
+    cleaned = cleaned.replace(/\n+\s*(?:[•\-*]\s*)?[^\n]*\[lawphil\.net\]\.?\s*$/i, '');
+    return cleaned.trim();
   }
 
   function getLatestAnswerSnapshot() {
@@ -1900,8 +2098,9 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       clone.querySelectorAll('button, svg, sup, .citation, [data-testid*="citation"], [class*="citation"]').forEach(function(n) {
         n.remove();
       });
+      stripSourcesFromClone(clone);
       var h = clone.innerHTML.trim();
-      var t = (clone.innerText || clone.textContent || '').trim();
+      var t = stripTrailingSourcesTextInStudio(clone.innerText || clone.textContent || '');
       if (t) {
         htmlParts.push(h);
         textParts.push(t);
@@ -1909,7 +2108,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     });
 
     var fullHtml = htmlParts.join('<br>');
-    var fullText = textParts.join('\n\n');
+    var fullText = stripTrailingSourcesTextInStudio(textParts.join('\n\n'));
     var words = fullText ? fullText.split(/\s+/).filter(Boolean) : [];
     return {
       html: fullHtml,
@@ -1992,7 +2191,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     }
 
     _isPasting = true;
-    showStatus('📋 Pasting case + subfolder instructions…', '#fbbf24');
+    showStatus('🤖 Ensuring Claude Sonnet + 📋 Pasting case…', '#fbbf24');
 
     // Also copy to clipboard so manual Ctrl+V always has it
     try {
@@ -2001,42 +2200,64 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       }
     } catch (e) {}
 
-    setInputText(inputEl, fullText);
-
-    setTimeout(function() {
-      // If Perplexity converted the large paste into a "Pasted text" file chip, inputEl may now be empty.
-      // Put the subfolder instruction (or a short digest prompt) in the text box so Submit is enabled!
-      var currentVal = (inputEl.value !== undefined ? inputEl.value : inputEl.textContent) || '';
-      if (!currentVal.trim()) {
-        var shortPrompt = (_state.instructionText || '').trim() || 'Digest this case following the Law project instructions.';
-        if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
-          var proto = window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(inputEl);
-          var setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-          if (setter) setter.call(inputEl, shortPrompt);
-          else inputEl.value = shortPrompt;
-          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-        } else {
-          inputEl.focus();
-          document.execCommand('insertText', false, shortPrompt);
-          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-        }
+    // Always verify/select Claude 5.5 Sonnet (or latest Claude model) BEFORE pasting and submitting
+    ensureClaudeModelSelected(inputEl, function() {
+      var activeInput = findPromptInput() || inputEl;
+      if (!activeInput || !activeInput.isConnected) {
+        _isPasting = false;
+        setTimeout(function() { processActiveJob(); }, 400);
+        return;
       }
 
+      setInputText(activeInput, fullText);
+
       setTimeout(function() {
-        _isPasting = false;
-        armAutoSendWatcher();
-        if (_state.autoSubmit) {
-          triggerSubmit(inputEl);
-          if (_state.autoSendDigest !== false) {
-            showStatus('🚀 Submitted in "Law" Project! Waiting 1–2 mins to auto-send to Case Digest…', '#4ade80');
-          } else {
-            showStatus('🚀 Submitted in "Law" Project! Click "⚖ Send to Case Digest" when done.', '#4ade80');
-          }
-        } else {
-          showStatus('✅ Pasted! Review prompt and press Enter to submit.', '#4ade80');
+        // Verify the input element didn't unmount mid-paste during a Space page transition
+        if (!activeInput.isConnected) {
+          _isPasting = false;
+          setTimeout(function() { processActiveJob(); }, 400);
+          return;
         }
-      }, 380);
-    }, 280);
+
+        // Mark job as handled ONLY after confirming the paste landed in a live connected Space input
+        if (_state.jobId) {
+          sessionStorage.setItem('la_pplx_handled_job_id', String(_state.jobId));
+        }
+
+        // If Perplexity converted the large paste into a "Pasted text" file chip, activeInput may now be empty.
+        // Put the subfolder instruction (or a short digest prompt) in the text box so Submit is enabled!
+        var currentVal = (activeInput.value !== undefined ? activeInput.value : activeInput.textContent) || '';
+        if (!currentVal.trim()) {
+          var shortPrompt = (_state.instructionText || '').trim() || 'Digest this case following the Law project instructions.';
+          if (activeInput.tagName === 'TEXTAREA' || activeInput.tagName === 'INPUT') {
+            var proto = window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(activeInput);
+            var setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+            if (setter) setter.call(activeInput, shortPrompt);
+            else activeInput.value = shortPrompt;
+            activeInput.dispatchEvent(new Event('input', { bubbles: true }));
+          } else {
+            activeInput.focus();
+            document.execCommand('insertText', false, shortPrompt);
+            activeInput.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        }
+
+        setTimeout(function() {
+          _isPasting = false;
+          armAutoSendWatcher();
+          if (_state.autoSubmit) {
+            triggerSubmit(activeInput);
+            if (_state.autoSendDigest !== false) {
+              showStatus('🚀 Submitted with Claude Sonnet! Waiting 1–2 mins to auto-send to Case Digest…', '#4ade80');
+            } else {
+              showStatus('🚀 Submitted with Claude Sonnet! Click "⚖ Send to Case Digest" when done.', '#4ade80');
+            }
+          } else {
+            showStatus('✅ Pasted with Claude Sonnet! Review prompt and press Enter to submit.', '#4ade80');
+          }
+        }, 380);
+      }, 280);
+    }, false);
 
     return true;
   }
@@ -2048,7 +2269,8 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       var range = sel.getRangeAt(0);
       var div = document.createElement('div');
       div.appendChild(range.cloneContents());
-      sendDigestPayload(div.innerHTML, sel.toString().trim());
+      stripSourcesFromClone(div);
+      sendDigestPayload(div.innerHTML, stripTrailingSourcesTextInStudio(sel.toString().trim()));
       return;
     }
 
@@ -2063,7 +2285,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function(clipText) {
         if (clipText && clipText.trim().length > 10) {
-          sendDigestPayload('', clipText.trim());
+          sendDigestPayload('', stripTrailingSourcesTextInStudio(clipText.trim()));
         } else {
           showStatus('⚠️ No Perplexity answer found yet — wait for answer or select text.', '#f87171');
         }
@@ -2090,7 +2312,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
   window.__onPerplexityDigestSentAck = function(ok) {
     if (ok) {
       var modeWord = _state.digestMode === 'replace' ? 'Replaced in' : 'Appended to';
-      showStatus('✅ ' + modeWord + ' Case Digest tab!', '#4ade80');
+      showStatus('✅ ' + modeWord + ' Case Digest tab! Ready for next case.', '#4ade80');
       var sendBtn = document.getElementById('la-pplx-send-btn');
       var fabBtn = document.getElementById('la-pplx-fab-send');
       if (sendBtn) {
@@ -2103,6 +2325,12 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         fabBtn.innerHTML = '<span>✅ Sent to Case Digest!</span>';
         setTimeout(function() { fabBtn.innerHTML = origFab; }, 2400);
       }
+      // Automatically return to the "Law" Project homepage after 900ms so the next PDF (or batch item) works on the very first click!
+      setTimeout(function() {
+        if (!isSpaceOrCollectionUrl(window.location.href)) {
+          returnToLawSpaceHome();
+        }
+      }, 900);
     }
   };
 
@@ -2115,7 +2343,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (handledJob === String(_state.jobId)) return;
 
     var curUrl = window.location.href;
-    // Never force-redirect window.location.href! Only auto-paste when on a Space/Collection page.
+    // Never force-redirect window.location.href in a loop! Only auto-paste when on a Space/Collection page.
     if (!isSpaceOrCollectionUrl(curUrl)) {
       showStatus('👉 Open your "Law" project (or click "📋 Paste Case" anytime to paste here).', '#fbbf24');
       return;
@@ -2130,6 +2358,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (_jobTimer) clearInterval(_jobTimer);
     var attempts = 0;
     _jobTimer = setInterval(function() {
+      if (Date.now() < _spaceTransitionReadyAt) return;
       attempts++;
       if (sessionStorage.getItem('la_pplx_handled_job_id') === String(_state.jobId)) {
         clearInterval(_jobTimer);
@@ -2137,14 +2366,13 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         return;
       }
       var inputEl = findPromptInput();
-      if (inputEl) {
+      if (inputEl && inputEl.isConnected) {
         clearInterval(_jobTimer);
         _jobTimer = null;
-        sessionStorage.setItem('la_pplx_handled_job_id', String(_state.jobId));
         setTimeout(function() {
           pasteAndMaybeSubmit(false);
         }, 250);
-      } else if (attempts >= 20) {
+      } else if (attempts >= 25) {
         clearInterval(_jobTimer);
         _jobTimer = null;
         sessionStorage.setItem('la_pplx_handled_job_id', String(_state.jobId));
@@ -2161,6 +2389,11 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         _state[k] = job[k];
       }
     }
+    if (isNewJob) {
+      sessionStorage.removeItem('la_pplx_handled_job_id');
+      sessionStorage.removeItem('la_pplx_awaiting_autosend_job_id');
+      _isPasting = false;
+    }
     saveStateCache();
     ensureStudioBar();
 
@@ -2169,16 +2402,8 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (isNewJob && !isSpaceOrCollectionUrl(window.location.href)) {
       if (sessionStorage.getItem('la_pplx_nav_once_job_id') !== String(_state.jobId)) {
         sessionStorage.setItem('la_pplx_nav_once_job_id', String(_state.jobId));
-        var spaceLink = Array.from(document.querySelectorAll('a[href*="/spaces/"], a[href*="/collections/"]')).find(function(a) {
-          return isSpaceOrCollectionUrl(a.href);
-        });
-        if (spaceLink) {
-          showStatus('Opening "Law" Project for new case…', '#fbbf24');
-          spaceLink.click();
-          return;
-        } else if (isSpaceOrCollectionUrl(_state.pinnedProjectUrl)) {
-          showStatus('Opening pinned "Law" Project for new case…', '#fbbf24');
-          window.location.href = _state.pinnedProjectUrl;
+        showStatus('Opening "Law" Project for new case…', '#fbbf24');
+        if (returnToLawSpaceHome()) {
           return;
         }
       }
@@ -2193,9 +2418,13 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     ensureStudioBar();
     checkAutoSendProgress();
     if (window.location.href !== _lastHref) {
+      var prevHref = _lastHref;
       _lastHref = window.location.href;
       updateBarUI();
       if (isSpaceOrCollectionUrl(_lastHref)) {
+        if (!isSpaceOrCollectionUrl(prevHref)) {
+          _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 850);
+        }
         processActiveJob();
       }
     }

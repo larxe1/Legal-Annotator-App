@@ -1,7 +1,7 @@
 {
-  "version": "1.14.0",
-  "build": 36,
+  "version": "1.15.0",
+  "build": 37,
   "updatedAt": "2026-11-07",
-  "notes": "Add Auto-Send to Case Digest (ON by default, waits 1–2 mins for Perplexity to finish generating and auto-imports full digest while keeping Studio window open for the next case), capture full digest instead of last bullet point, and clean up default Topic/Subtopic instruction.",
+  "notes": "Fix Case 1 to Case 2 seamless single-click transition, strip trailing Sources section from all digests, enforce Claude 5.5 Sonnet (or latest Claude model) in Perplexity Studio, and add right-click PDF & right-click Subfolder en-masse automatic batch Perplexity Digest.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

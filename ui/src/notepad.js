@@ -861,6 +861,86 @@ export function switchNotepadTab(tab) {
   }
 }
 
+function stripTrailingSourcesText(text = '') {
+  if (!text) return '';
+  return String(text)
+    .replace(/\n\s*(?:#{1,6}\s*|\*\*)?(?:Sources?|References?)\*?\*?\s*:?\s*\n[\s\S]*$/i, '')
+    .replace(/\n\s*(?:Sources?|References?)\s*:\s*[^\n]+(?:\[lawphil\.net\]|\[chanrobles\.com\]|\[elibrary\.judiciary\.gov\.ph\]|G\.R\.\s*No\.)[\s\S]*$/i, '')
+    .trim();
+}
+
+function stripTrailingSourcesHtml(html = '') {
+  if (!html) return '';
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${html}</div>`, 'text/html');
+    const root = doc.body.firstElementChild;
+    if (!root) return html;
+
+    const removeNodeAndFollowing = (target) => {
+      if (!target || target === root) return;
+      let cur = target;
+      while (cur && cur.parentElement && cur !== root) {
+        let next = cur.nextSibling;
+        while (next) {
+          const toRem = next;
+          next = next.nextSibling;
+          toRem.remove();
+        }
+        cur = cur.parentElement;
+      }
+      target.remove();
+    };
+
+    const allEls = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div, li, strong, b'));
+    for (let i = 0; i < allEls.length; i++) {
+      const el = allEls[i];
+      if (!el.isConnected) continue;
+      const txt = (el.textContent || '').trim();
+      if (/^(?:sources?|references?)\s*:?\s*$/i.test(txt)) {
+        const block = el.closest('h1, h2, h3, h4, h5, h6, p, li') || el;
+        const blockTxt = (block.textContent || '').trim();
+        if (
+          /^(?:sources?|references?)\s*:?\s*$/i.test(blockTxt) ||
+          /^(?:sources?|references?)\s*:?\s*\n/i.test(blockTxt) ||
+          (/^(?:sources?|references?)\s*:?/i.test(blockTxt) && blockTxt.length < 360)
+        ) {
+          removeNodeAndFollowing(block);
+          break;
+        }
+      } else if (
+        (el.tagName === 'P' || el.tagName === 'DIV' || el.tagName === 'LI') &&
+        /^(?:sources?|references?)\s*:?\s*(?:\n|\r|$)/i.test(txt) &&
+        txt.length < 500
+      ) {
+        removeNodeAndFollowing(el);
+        break;
+      }
+    }
+
+    // Also check if the very last element is a standalone [lawphil.net] source citation bullet/line
+    const tailBlocks = Array.from(root.querySelectorAll('p, li, div'));
+    if (tailBlocks.length > 0) {
+      const lastEl = tailBlocks[tailBlocks.length - 1];
+      const lastTxt = (lastEl.textContent || '').trim();
+      if (
+        lastTxt.length < 350 &&
+        /\[(?:lawphil\.net|chanrobles\.com|elibrary\.judiciary\.gov\.ph|sc\.judiciary\.gov\.ph)\]\.?$/i.test(lastTxt)
+      ) {
+        const parentList = lastEl.tagName === 'LI' ? lastEl.closest('ul, ol') : null;
+        lastEl.remove();
+        if (parentList && !parentList.textContent.trim()) {
+          parentList.remove();
+        }
+      }
+    }
+
+    return root.innerHTML.replace(/(?:<br\s*\/?>\s*)+$/i, '').trim();
+  } catch {
+    return html;
+  }
+}
+
 // ── Import formatted digest strictly into Case Digest tab (leaves Notes tab untouched) ──
 export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText = '', mode = 'append') {
   const targetPdfId = pdfId
@@ -871,7 +951,9 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
     return false;
   }
 
-  const formattedHtml = sanitizeRichPasteHtml(rawHtml, rawText).trim();
+  const cleanedRawHtml = stripTrailingSourcesHtml(rawHtml);
+  const cleanedRawText = stripTrailingSourcesText(rawText);
+  const formattedHtml = stripTrailingSourcesHtml(sanitizeRichPasteHtml(cleanedRawHtml, cleanedRawText)).trim();
   if (!formattedHtml) {
     toast('⚠️ No digest text found to import.');
     return false;
@@ -930,6 +1012,7 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
   setWriteTs(targetPdfId);
   await saveHistorySnapshot(targetPdfId, notesContent, nextDigest);
   executeSaveForPdf(targetPdfId);
+  import('./library.js').then(m => m.renderLibrary?.()).catch(() => {});
 
   toast(
     hasExistingDigest && effectiveMode === 'append'

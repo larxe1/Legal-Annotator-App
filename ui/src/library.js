@@ -74,6 +74,48 @@ function ensureLibCtxMenuItems() {
       menu.appendChild(ocrItem);
     }
   }
+  if (!document.getElementById('ctx-perplexity-digest')) {
+    const pplxPdfItem = document.createElement('div');
+    pplxPdfItem.className = 'ctx-item';
+    pplxPdfItem.id = 'ctx-perplexity-digest';
+    pplxPdfItem.style.color = 'var(--gold)';
+    pplxPdfItem.style.fontWeight = '600';
+    pplxPdfItem.textContent = '⚡ Perplexity Digest (Auto Case Digest)';
+    const ocrItem = document.getElementById('ctx-ocr-studio');
+    if (ocrItem && ocrItem.nextSibling) {
+      menu.insertBefore(pplxPdfItem, ocrItem.nextSibling);
+    } else {
+      menu.appendChild(pplxPdfItem);
+    }
+    pplxPdfItem.addEventListener('click', async () => {
+      if (!_ctxTarget || _ctxIsFolder) return;
+      const pdf = Array.isArray(_ctxTarget) ? _ctxTarget[0] : _ctxTarget;
+      hideLibCtxMenu();
+      const { runPerplexityDigestForPdf } = await import('./smart-copy.js');
+      await runPerplexityDigestForPdf(pdf);
+    });
+  }
+  if (!document.getElementById('ctx-folder-perplexity-digest')) {
+    const pplxFoldItem = document.createElement('div');
+    pplxFoldItem.className = 'ctx-item';
+    pplxFoldItem.id = 'ctx-folder-perplexity-digest';
+    pplxFoldItem.style.color = 'var(--gold)';
+    pplxFoldItem.style.fontWeight = '600';
+    pplxFoldItem.textContent = '⚡ Perplexity Digest All PDFs in Folder';
+    const exportBtn = document.getElementById('lib-ctx-export-pdf');
+    if (exportBtn) {
+      menu.insertBefore(pplxFoldItem, exportBtn);
+    } else {
+      menu.appendChild(pplxFoldItem);
+    }
+    pplxFoldItem.addEventListener('click', async () => {
+      if (!_ctxTarget || !_ctxIsFolder) return;
+      const folderTarget = _ctxTarget;
+      hideLibCtxMenu();
+      const { runBatchPerplexityDigestForFolders } = await import('./smart-copy.js');
+      await runBatchPerplexityDigestForFolders(folderTarget);
+    });
+  }
   const offlinePdfBtn = document.getElementById('lib-ctx-offline');
   if (!document.getElementById('ctx-pdf-offline-remove')) {
     const remPdfItem = document.createElement('div');
@@ -187,6 +229,15 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   if (setSylBtn) setSylBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
   const ocrStudioBtn = document.getElementById('ctx-ocr-studio');
   if (ocrStudioBtn) ocrStudioBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
+  const pplxPdfBtn = document.getElementById('ctx-perplexity-digest');
+  if (pplxPdfBtn) pplxPdfBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
+  const pplxFoldBtn = document.getElementById('ctx-folder-perplexity-digest');
+  if (pplxFoldBtn) {
+    pplxFoldBtn.style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
+    pplxFoldBtn.textContent = (isMultiFolder && Array.isArray(target))
+      ? `⚡ Perplexity Digest All PDFs (${target.length} Folders)`
+      : '⚡ Perplexity Digest All PDFs in Folder';
+  }
   document.getElementById('lib-ctx-offline').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   const pdfOfflineRemBtn = document.getElementById('ctx-pdf-offline-remove');
   if (pdfOfflineRemBtn) pdfOfflineRemBtn.style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
