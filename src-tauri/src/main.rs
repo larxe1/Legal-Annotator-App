@@ -1465,7 +1465,7 @@ fn load_pplx_prefs_disk() -> serde_json::Value {
         "pinnedProjectUrl": "",
         "autoSubmit": true,
         "digestMode": "append",
-        "autoSendDigest": false
+        "autoSendDigest": true
     })
 }
 
@@ -1494,7 +1494,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     pinnedProjectUrl: '',
     autoSubmit: true,
     digestMode: 'append',
-    autoSendDigest: false,
+    autoSendDigest: true,
     jobId: 0
   };
 
@@ -1618,6 +1618,14 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       autoSubBtn.style.color = _state.autoSubmit ? '#f3d37a' : '#94a3b8';
     }
 
+    var autoSendBtn = document.getElementById('la-pplx-autosend-btn');
+    if (autoSendBtn) {
+      var isAutoSend = _state.autoSendDigest !== false;
+      autoSendBtn.textContent = isAutoSend ? '☑ Auto-Send: ON' : '☐ Auto-Send: OFF';
+      autoSendBtn.style.borderColor = isAutoSend ? 'rgba(74,222,128,0.5)' : '#334155';
+      autoSendBtn.style.color = isAutoSend ? '#4ade80' : '#94a3b8';
+    }
+
     var modeBtn = document.getElementById('la-pplx-mode-btn');
     if (modeBtn) {
       var isAppend = _state.digestMode !== 'replace';
@@ -1646,6 +1654,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       '<span id="la-pplx-pdf-lbl" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(255,255,255,0.06);padding:3px 8px;border-radius:4px;font-size:11px;color:#cbd5e1;">📄 Current PDF</span>' +
       '<button id="la-pplx-pin-btn" style="' + btnStyle + '">📌 Pin "Law" Project</button>' +
       '<button id="la-pplx-autosubmit-btn" style="' + btnStyle + '" title="Toggle whether pasting a case automatically presses Submit">☑ Auto-Submit: ON</button>' +
+      '<button id="la-pplx-autosend-btn" style="' + btnStyle + '" title="Toggle whether the finished digest is automatically sent to the Case Digest tab once Perplexity finishes generating">☑ Auto-Send: ON</button>' +
       '<button id="la-pplx-mode-btn" style="' + btnStyle + '" title="Choose whether sending to Case Digest appends at the bottom or replaces existing digest (Notes tab is never touched)">📥 Digest: Append (Bottom)</button>' +
       '<button id="la-pplx-paste-btn" style="' + btnStyle + '" title="Paste Subfolder Instruction + PDF Text into Perplexity prompt box">📋 Paste Case</button>' +
       '<span id="la-pplx-status" style="font-size:11px;color:#fbbf24;white-space:nowrap;margin-left:auto;margin-right:4px;"></span>' +
@@ -1686,6 +1695,13 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       syncPrefsToApp();
       updateBarUI();
       showStatus(_state.autoSubmit ? 'Auto-Submit enabled' : 'Auto-Submit disabled (review before pressing Enter)', '#93c5fd');
+    });
+
+    document.getElementById('la-pplx-autosend-btn').addEventListener('click', function() {
+      _state.autoSendDigest = (_state.autoSendDigest === false) ? true : false;
+      syncPrefsToApp();
+      updateBarUI();
+      showStatus(_state.autoSendDigest ? 'Auto-Send to Case Digest enabled' : 'Auto-Send disabled (use manual Send button)', '#4ade80');
     });
 
     document.getElementById('la-pplx-mode-btn').addEventListener('click', function() {
@@ -1831,6 +1847,136 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
   }
 
   var _isPasting = false;
+  var _autoSendLastText = '';
+  var _autoSendStableSince = 0;
+
+  function isPerplexityStillGenerating() {
+    var stopBtns = Array.from(document.querySelectorAll('button[aria-label*="Stop" i]'));
+    for (var i = 0; i < stopBtns.length; i++) {
+      var r = stopBtns[i].getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) return true;
+    }
+    return false;
+  }
+
+  function getLatestAnswerSnapshot() {
+    var rawProse = Array.from(document.querySelectorAll('.prose, [class*="prose"], .markdown-body')).filter(function(el) {
+      if (el.closest('#la-pplx-studio-bar')) return false;
+      if (el.closest('textarea, [contenteditable="true"]')) return false;
+      var txt = (el.innerText || '').trim();
+      return txt.length > 5;
+    });
+
+    // Keep ONLY outermost prose blocks (exclude any child/bullet element that is inside an outer .prose)
+    var outerProse = rawProse.filter(function(el) {
+      return !rawProse.some(function(other) {
+        return other !== el && other.contains(el);
+      });
+    });
+
+    if (outerProse.length === 0) {
+      return { html: '', text: '', wordCount: 0 };
+    }
+
+    var lastOuter = outerProse[outerProse.length - 1];
+    var turnContainer = lastOuter;
+    for (var lvl = 0; lvl < 4; lvl++) {
+      var p = turnContainer.parentElement;
+      if (!p || p === document.body || p.tagName === 'MAIN') break;
+      var copyBtns = p.querySelectorAll('button[aria-label*="Copy" i]');
+      if (copyBtns.length > 1) break;
+      turnContainer = p;
+    }
+
+    var turnBlocks = outerProse.filter(function(el) {
+      return turnContainer.contains(el);
+    });
+    if (turnBlocks.length === 0) turnBlocks = [lastOuter];
+
+    var htmlParts = [];
+    var textParts = [];
+    turnBlocks.forEach(function(block) {
+      var clone = block.cloneNode(true);
+      clone.querySelectorAll('button, svg, sup, .citation, [data-testid*="citation"], [class*="citation"]').forEach(function(n) {
+        n.remove();
+      });
+      var h = clone.innerHTML.trim();
+      var t = (clone.innerText || clone.textContent || '').trim();
+      if (t) {
+        htmlParts.push(h);
+        textParts.push(t);
+      }
+    });
+
+    var fullHtml = htmlParts.join('<br>');
+    var fullText = textParts.join('\n\n');
+    var words = fullText ? fullText.split(/\s+/).filter(Boolean) : [];
+    return {
+      html: fullHtml,
+      text: fullText,
+      wordCount: words.length
+    };
+  }
+
+  function armAutoSendWatcher() {
+    try {
+      var baseSnap = getLatestAnswerSnapshot();
+      var jid = String(_state.jobId || Date.now());
+      if (!_state.jobId) _state.jobId = Number(jid);
+      sessionStorage.setItem('la_pplx_awaiting_autosend_job_id', jid);
+      sessionStorage.setItem('la_pplx_baseline_text', baseSnap.text || '');
+      _autoSendLastText = '';
+      _autoSendStableSince = 0;
+    } catch (e) {}
+  }
+
+  function checkAutoSendProgress() {
+    if (_state.autoSendDigest === false) return;
+    var awaitingJobId = sessionStorage.getItem('la_pplx_awaiting_autosend_job_id');
+    if (!awaitingJobId) return;
+    if (sessionStorage.getItem('la_pplx_autosent_job_id') === awaitingJobId) {
+      sessionStorage.removeItem('la_pplx_awaiting_autosend_job_id');
+      return;
+    }
+
+    var baseline = sessionStorage.getItem('la_pplx_baseline_text') || '';
+    var snap = getLatestAnswerSnapshot();
+
+    // Still waiting for Perplexity to start or reach minimum digest length (~55 words)
+    if (!snap.text || snap.text === baseline || snap.wordCount < 55) {
+      if (snap.text && snap.text !== baseline && snap.wordCount > 5) {
+        showStatus('⏳ Perplexity is writing digest (' + snap.wordCount + ' words)… will auto-send when finished.', '#fbbf24');
+      }
+      _autoSendLastText = snap.text || '';
+      _autoSendStableSince = Date.now();
+      return;
+    }
+
+    if (snap.text !== _autoSendLastText || isPerplexityStillGenerating()) {
+      _autoSendLastText = snap.text;
+      _autoSendStableSince = Date.now();
+      showStatus('⏳ Perplexity is writing digest (' + snap.wordCount + ' words)… will auto-send when finished.', '#fbbf24');
+      return;
+    }
+
+    if (!_autoSendStableSince) {
+      _autoSendStableSince = Date.now();
+      return;
+    }
+
+    var stableMs = Date.now() - _autoSendStableSince;
+    if (stableMs < 4500) {
+      var secsLeft = Math.max(1, Math.ceil((4500 - stableMs) / 1000));
+      showStatus('⏳ Digest complete (' + snap.wordCount + ' words) — auto-sending to Case Digest in ' + secsLeft + 's…', '#4ade80');
+      return;
+    }
+
+    // Answer has stabilized for 4.5s and Stop button is gone — auto-send!
+    sessionStorage.setItem('la_pplx_autosent_job_id', awaitingJobId);
+    sessionStorage.removeItem('la_pplx_awaiting_autosend_job_id');
+    sendDigestPayload(snap.html, snap.text);
+  }
+
   function pasteAndMaybeSubmit(manualTrigger) {
     if (_isPasting) return;
     var fullText = (_state.fullPromptText || '').trim();
@@ -1878,9 +2024,14 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
 
       setTimeout(function() {
         _isPasting = false;
+        armAutoSendWatcher();
         if (_state.autoSubmit) {
           triggerSubmit(inputEl);
-          showStatus('🚀 Submitted in "Law" Project! Click "⚖ Send to Case Digest" when done.', '#4ade80');
+          if (_state.autoSendDigest !== false) {
+            showStatus('🚀 Submitted in "Law" Project! Waiting 1–2 mins to auto-send to Case Digest…', '#4ade80');
+          } else {
+            showStatus('🚀 Submitted in "Law" Project! Click "⚖ Send to Case Digest" when done.', '#4ade80');
+          }
         } else {
           showStatus('✅ Pasted! Review prompt and press Enter to submit.', '#4ade80');
         }
@@ -1901,60 +2052,11 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       return;
     }
 
-    // 2. Find latest assistant answer block(s) — filter out nested inner .prose inside <li> bullet points!
-    var rawProse = Array.from(document.querySelectorAll('.prose, [class*="prose"], .markdown-body')).filter(function(el) {
-      if (el.closest('#la-pplx-studio-bar')) return false;
-      if (el.closest('textarea, [contenteditable="true"]')) return false;
-      var txt = (el.innerText || '').trim();
-      return txt.length > 5;
-    });
-
-    // Keep ONLY outermost prose blocks (exclude any child/bullet element that is inside an outer .prose)
-    var outerProse = rawProse.filter(function(el) {
-      return !rawProse.some(function(other) {
-        return other !== el && other.contains(el);
-      });
-    });
-
-    if (outerProse.length > 0) {
-      var lastOuter = outerProse[outerProse.length - 1];
-      // Find the answer turn container (up to 4 levels up) in case a single answer was split into sibling .prose blocks
-      var turnContainer = lastOuter;
-      for (var lvl = 0; lvl < 4; lvl++) {
-        var p = turnContainer.parentElement;
-        if (!p || p === document.body || p.tagName === 'MAIN') break;
-        // Stop climbing if parent contains multiple separate answer copy/share toolbars
-        var copyBtns = p.querySelectorAll('button[aria-label*="Copy" i]');
-        if (copyBtns.length > 1) break;
-        turnContainer = p;
-      }
-
-      var turnBlocks = outerProse.filter(function(el) {
-        return turnContainer.contains(el);
-      });
-      if (turnBlocks.length === 0) turnBlocks = [lastOuter];
-
-      var htmlParts = [];
-      var textParts = [];
-      turnBlocks.forEach(function(block) {
-        var clone = block.cloneNode(true);
-        clone.querySelectorAll('button, svg, sup, .citation, [data-testid*="citation"], [class*="citation"]').forEach(function(n) {
-          n.remove();
-        });
-        var h = clone.innerHTML.trim();
-        var t = (clone.innerText || clone.textContent || '').trim();
-        if (t) {
-          htmlParts.push(h);
-          textParts.push(t);
-        }
-      });
-
-      var fullHtml = htmlParts.join('<br>');
-      var fullText = textParts.join('\n\n');
-      if (fullText.length > 10) {
-        sendDigestPayload(fullHtml, fullText);
-        return;
-      }
+    // 2. Get full latest assistant answer snapshot
+    var snap = getLatestAnswerSnapshot();
+    if (snap.text && snap.text.length > 10) {
+      sendDigestPayload(snap.html, snap.text);
+      return;
     }
 
     // 3. Fallback: read system clipboard
@@ -2053,6 +2155,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
 
   window.__PPLX_STUDIO_RECEIVE_JOB = function(job) {
     if (!job || typeof job !== 'object') return;
+    var isNewJob = job.jobId && String(job.jobId) !== String(_state.jobId);
     for (var k in job) {
       if (job[k] !== undefined && job[k] !== null) {
         _state[k] = job[k];
@@ -2060,13 +2163,35 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     }
     saveStateCache();
     ensureStudioBar();
+
+    // When starting a brand-new case from Legal Annotator while the Studio window is sitting on a previous case's thread (/search/...),
+    // return once to the "Law" Space page so each case gets its own clean thread in the Law project.
+    if (isNewJob && !isSpaceOrCollectionUrl(window.location.href)) {
+      if (sessionStorage.getItem('la_pplx_nav_once_job_id') !== String(_state.jobId)) {
+        sessionStorage.setItem('la_pplx_nav_once_job_id', String(_state.jobId));
+        var spaceLink = Array.from(document.querySelectorAll('a[href*="/spaces/"], a[href*="/collections/"]')).find(function(a) {
+          return isSpaceOrCollectionUrl(a.href);
+        });
+        if (spaceLink) {
+          showStatus('Opening "Law" Project for new case…', '#fbbf24');
+          spaceLink.click();
+          return;
+        } else if (isSpaceOrCollectionUrl(_state.pinnedProjectUrl)) {
+          showStatus('Opening pinned "Law" Project for new case…', '#fbbf24');
+          window.location.href = _state.pinnedProjectUrl;
+          return;
+        }
+      }
+    }
+
     processActiveJob();
   };
 
-  // Gentle check to keep Studio bar mounted during SPA navigation without ever redirecting or reloading
+  // Gentle check to keep Studio bar mounted during SPA navigation and watch for Auto-Send completion
   var _lastHref = window.location.href;
   setInterval(function() {
     ensureStudioBar();
+    checkAutoSendProgress();
     if (window.location.href !== _lastHref) {
       _lastHref = window.location.href;
       updateBarUI();
@@ -2117,6 +2242,7 @@ async fn desktop_open_perplexity_studio(
     pinned_project_url: Option<String>,
     auto_submit: Option<bool>,
     digest_mode: Option<String>,
+    auto_send_digest: Option<bool>,
 ) -> Result<bool, String> {
     let mut disk_prefs = load_pplx_prefs_disk();
     let eff_pinned = pinned_project_url
@@ -2147,9 +2273,17 @@ async fn desktop_open_perplexity_studio(
         })
         .unwrap_or_else(|| "append".to_string());
 
+    let eff_auto_send = auto_send_digest.unwrap_or_else(|| {
+        disk_prefs
+            .get("autoSendDigest")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    });
+
     disk_prefs["pinnedProjectUrl"] = serde_json::Value::String(eff_pinned.clone());
     disk_prefs["autoSubmit"] = serde_json::Value::Bool(eff_auto_submit);
     disk_prefs["digestMode"] = serde_json::Value::String(eff_digest_mode.clone());
+    disk_prefs["autoSendDigest"] = serde_json::Value::Bool(eff_auto_send);
     save_pplx_prefs_disk(&disk_prefs);
 
     let job_id = now_ms();
@@ -2163,6 +2297,7 @@ async fn desktop_open_perplexity_studio(
         "pinnedProjectUrl": eff_pinned,
         "autoSubmit": eff_auto_submit,
         "digestMode": eff_digest_mode,
+        "autoSendDigest": eff_auto_send,
         "jobId": job_id,
     });
 
@@ -2240,6 +2375,9 @@ async fn desktop_open_perplexity_studio(
                             if let Some(m) = msg_val.get("digestMode").and_then(|v| v.as_str()) {
                                 prefs["digestMode"] = serde_json::Value::String(m.to_string());
                             }
+                            if let Some(asend) = msg_val.get("autoSendDigest").and_then(|v| v.as_bool()) {
+                                prefs["autoSendDigest"] = serde_json::Value::Bool(asend);
+                            }
                             save_pplx_prefs_disk(&prefs);
                             if let Ok(mut st) = state_for_nav.lock() {
                                 if let Some(u) = prefs.get("pinnedProjectUrl").and_then(|v| v.as_str()) {
@@ -2250,6 +2388,9 @@ async fn desktop_open_perplexity_studio(
                                 }
                                 if let Some(m) = prefs.get("digestMode").and_then(|v| v.as_str()) {
                                     st["digestMode"] = serde_json::Value::String(m.to_string());
+                                }
+                                if let Some(asend) = prefs.get("autoSendDigest").and_then(|v| v.as_bool()) {
+                                    st["autoSendDigest"] = serde_json::Value::Bool(asend);
                                 }
                             }
                             if let Some(main_win) = app_for_nav.get_webview_window("main") {

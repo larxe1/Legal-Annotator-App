@@ -890,6 +890,7 @@ export async function openPerplexityDigestForCurrentPdf() {
 
     const autoSubmitPref = safeStorageGet('pplx_auto_submit', 'true') !== 'false';
     const digestModePref = safeStorageGet('pplx_digest_mode', 'append') === 'replace' ? 'replace' : 'append';
+    const autoSendPref = safeStorageGet('pplx_auto_send', 'true') !== 'false';
 
     const studioPayload = {
       pdfId: String(trueId || ''),
@@ -901,6 +902,7 @@ export async function openPerplexityDigestForCurrentPdf() {
       pinnedProjectUrl: pinnedProjectUrl ? String(pinnedProjectUrl) : null,
       autoSubmit: Boolean(autoSubmitPref),
       digestMode: String(digestModePref),
+      autoSendDigest: Boolean(autoSendPref),
     };
 
     if (typeof window.desktopOpenPerplexityStudio === 'function') {
@@ -1133,6 +1135,9 @@ if (typeof window !== 'undefined') {
     }
     if (prefs.digestMode === 'replace' || prefs.digestMode === 'append') {
       safeStorageSet('pplx_digest_mode', prefs.digestMode);
+    }
+    if (typeof prefs.autoSendDigest === 'boolean') {
+      safeStorageSet('pplx_auto_send', prefs.autoSendDigest ? 'true' : 'false');
     }
   };
 

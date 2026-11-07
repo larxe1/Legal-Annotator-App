@@ -1,7 +1,7 @@
 {
-  "version": "1.13.3",
-  "build": 35,
+  "version": "1.14.0",
+  "build": 36,
   "updatedAt": "2026-11-07",
-  "notes": "Fix Send to Case Digest capturing the full generated digest instead of only the last bullet point, and remove redundant folder path in parentheses from the default Topic/Subtopic instruction.",
+  "notes": "Add Auto-Send to Case Digest (ON by default, waits 1–2 mins for Perplexity to finish generating and auto-imports full digest while keeping Studio window open for the next case), capture full digest instead of last bullet point, and clean up default Topic/Subtopic instruction.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

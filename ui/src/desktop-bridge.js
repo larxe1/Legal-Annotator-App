@@ -112,6 +112,7 @@ if (invoke) {
         pinnedProjectUrl: opts.pinnedProjectUrl ? String(opts.pinnedProjectUrl) : null,
         autoSubmit: typeof opts.autoSubmit === 'boolean' ? opts.autoSubmit : null,
         digestMode: opts.digestMode ? String(opts.digestMode) : null,
+        autoSendDigest: typeof opts.autoSendDigest === 'boolean' ? opts.autoSendDigest : null,
       });
     } catch (err) {
       console.warn('[Desktop] desktop_open_perplexity_studio failed:', err);
