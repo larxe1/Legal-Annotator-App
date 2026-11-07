@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500;600&display=swap');
+@import url('../fonts/fonts.css');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -2305,3 +2305,46 @@ body.theme-paper #floating-zoom-ctrl #zoom-lbl {
 }
 
 
+
+/* ── Standalone Desktop Virtualization & Containment (Modern Web Guidance) ── */
+.pg-wrap.pg-cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--pg-w, 800px) auto var(--pg-h, 1100px);
+}
+@supports not (content-visibility: auto) {
+  .pg-wrap.pg-cv-auto {
+    contain: layout style paint;
+  }
+}
+.desktop-engine-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 6px 12px;
+  padding: 6px 10px;
+  background: rgba(20, 30, 50, 0.85);
+  border: 1px solid var(--navy-b);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text);
+}
+.desktop-open-local-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 6px 12px 2px 12px;
+  padding: 7px 10px;
+  background: linear-gradient(135deg, #1e3a8a, #2563eb);
+  border: 1px solid #3b82f6;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.desktop-open-local-btn:hover {
+  filter: brightness(1.12);
+}

@@ -1,7 +1,7 @@
 {
-  "version": "1.13.0",
-  "build": 32,
+  "version": "1.13.1",
+  "build": 33,
   "updatedAt": "2026-11-07",
-  "notes": "Add built-in Perplexity 'Law' Project Digest Studio (⚡ Perplexity Digest button with Auto-Submit toggle and 1-click Send to Case Digest with Append/Replace toggle), subfolder-specific Copy Text Instructions, zoom-out page reset fix, and Open in Google Drive fix.",
+  "notes": "Fix Perplexity 'Law' Digest Studio window launch by restoring desktop-bridge.js in ui/index.html and adding direct Tauri invoke fallback.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

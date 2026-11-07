@@ -467,6 +467,14 @@ export function initContextMenu() {
         toast('☁ Opening in Google Drive…');
         return;
       }
+    } else if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
+      try {
+        const ok = await window.__TAURI_INTERNALS__.invoke('desktop_open_url', { url: driveUrl });
+        if (ok) {
+          toast('☁ Opening in Google Drive…');
+          return;
+        }
+      } catch {}
     }
     const win = window.open(driveUrl, '_blank', 'noopener,noreferrer');
     if (!win) {

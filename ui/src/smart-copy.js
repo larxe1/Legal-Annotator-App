@@ -710,6 +710,17 @@ export async function copyEntirePdfTextSmart() {
 
 let _isDigestingPerplexity = false;
 
+function getTauriInvoke() {
+  if (typeof window === 'undefined') return null;
+  if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
+    return (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
+  }
+  if (typeof window.__TAURI__?.core?.invoke === 'function') {
+    return (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+  }
+  return null;
+}
+
 /**
  * Extracts entire PDF text + Subfolder Instruction, copies to clipboard, and opens
  * the Perplexity "Law" Project Digest Studio window (with auto-paste & auto-submit).
@@ -719,6 +730,16 @@ export async function openPerplexityDigestForCurrentPdf() {
   if (!S.pdfDoc || !S.totalPages || S.totalPages <= 0 || !S.curPDF) {
     toast('⚠️ Open a PDF first to generate a Case Digest in Perplexity.');
     return;
+  }
+
+  const tauriInvoke = getTauriInvoke();
+  const hasDesktopStudio =
+    typeof window.desktopOpenPerplexityStudio === 'function' || !!tauriInvoke;
+  let preOpenedWebWin = null;
+  if (!hasDesktopStudio && typeof window !== 'undefined' && typeof window.open === 'function') {
+    try {
+      preOpenedWebWin = window.open('about:blank', '_blank');
+    } catch {}
   }
 
   const btn = document.getElementById('btn-perplexity-digest');
@@ -778,6 +799,9 @@ export async function openPerplexityDigestForCurrentPdf() {
 
     const validPages = pageTexts.filter(t => t && t.trim().length > 0);
     if (!validPages.length) {
+      if (preOpenedWebWin && !preOpenedWebWin.closed) {
+        try { preOpenedWebWin.close(); } catch {}
+      }
       toast('⚠️ No selectable text found in this PDF (run Scan OCR first).');
       return;
     }
@@ -806,29 +830,53 @@ export async function openPerplexityDigestForCurrentPdf() {
     const autoSubmitPref = safeStorageGet('pplx_auto_submit', 'true') !== 'false';
     const digestModePref = safeStorageGet('pplx_digest_mode', 'append') === 'replace' ? 'replace' : 'append';
 
+    const studioPayload = {
+      pdfId: String(trueId || ''),
+      pdfName: String(pdfObj.name || 'Case.pdf'),
+      subfolderName: subfolderName ? String(subfolderName) : '',
+      instructionText: instructionText ? String(instructionText) : '',
+      pdfText: String(pdfText || ''),
+      fullPromptText: String(fullPromptText || ''),
+      pinnedProjectUrl: pinnedProjectUrl ? String(pinnedProjectUrl) : null,
+      autoSubmit: Boolean(autoSubmitPref),
+      digestMode: String(digestModePref),
+    };
+
     if (typeof window.desktopOpenPerplexityStudio === 'function') {
-      const opened = await window.desktopOpenPerplexityStudio({
-        pdfId: trueId,
-        pdfName: pdfObj.name || 'Case.pdf',
-        subfolderName,
-        instructionText,
-        pdfText,
-        fullPromptText,
-        pinnedProjectUrl,
-        autoSubmit: autoSubmitPref,
-        digestMode: digestModePref,
-      });
+      const opened = await window.desktopOpenPerplexityStudio(studioPayload);
       if (opened) {
         toast('⚡ Opened Perplexity "Law" Digest Studio!');
         return;
       }
+    } else if (tauriInvoke) {
+      try {
+        const opened = await tauriInvoke('desktop_open_perplexity_studio', studioPayload);
+        if (opened) {
+          toast('⚡ Opened Perplexity "Law" Digest Studio!');
+          return;
+        }
+      } catch (ipcErr) {
+        console.warn('[perplexity-digest] direct Tauri invoke failed:', ipcErr);
+      }
     }
 
-    // Web browser fallback
+    // Web / external browser fallback
     const fallbackUrl = pinnedProjectUrl || 'https://www.perplexity.ai/spaces';
-    window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+    if (preOpenedWebWin && !preOpenedWebWin.closed) {
+      preOpenedWebWin.location.href = fallbackUrl;
+      preOpenedWebWin.focus?.();
+    } else if (typeof window.desktopOpenUrl === 'function') {
+      await window.desktopOpenUrl(fallbackUrl);
+    } else if (tauriInvoke) {
+      await tauriInvoke('desktop_open_url', { url: fallbackUrl }).catch(() => {});
+    } else {
+      window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+    }
     toast('✅ Copied case + instructions! Paste (Ctrl+V) in your Perplexity "Law" Project.');
   } catch (err) {
+    if (preOpenedWebWin && !preOpenedWebWin.closed) {
+      try { preOpenedWebWin.close(); } catch {}
+    }
     console.error('[perplexity-digest] Error:', err);
     toast(`⚠️ Could not start Perplexity Digest: ${err.message || err}`);
   } finally {

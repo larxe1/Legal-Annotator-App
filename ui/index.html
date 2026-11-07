@@ -16,17 +16,16 @@
 <link rel="apple-touch-icon" sizes="512x512" href="icon-512.png">
 
 <!-- Google Fonts -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="fonts/fonts.css">
 
 <!-- PDF.js -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="./vendor/pdf.min.js"></script>
 <!-- Supabase -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="./vendor/supabase.min.js"></script>
 <!-- Mermaid (Diagrams & Flowcharts) -->
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="./vendor/mermaid.min.js"></script>
 <!-- html2pdf.js for exporting notes -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="./vendor/html2pdf.bundle.min.js"></script>
 <!-- Google Identity Services (for Drive OAuth) -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 
@@ -1364,7 +1363,7 @@
   });
   // Set pdf.js worker
   pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    './vendor/pdf.worker.min.js';
 </script>
 
 <!-- Main app (ES module) -->
@@ -1372,6 +1371,7 @@
 
 <!-- Backup (completely independent module — zero imports from main app) -->
 <script type="module" src="./src/backup.js"></script>
+<script type="module" src="./src/desktop-bridge.js"></script>
 
 <!-- Table Context Menu -->
 <div id="table-ctx-menu" style="display:none; position:absolute; z-index:9999; background:var(--navy-l); border:1px solid var(--navy-b); border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.6); flex-direction:column; padding:4px; min-width:150px;">
@@ -1441,7 +1441,7 @@
   document.getElementById('btn-pwa-install')?.addEventListener('click', triggerPWAInstall);
   document.getElementById('btn-install-sidebar')?.addEventListener('click', triggerPWAInstall);
 
-  if ('serviceWorker' in navigator) {
+  if (false && 'serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js').then(reg => {
         console.log('[PWA] ServiceWorker registered with scope:', reg.scope);

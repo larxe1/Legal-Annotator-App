@@ -2276,7 +2276,10 @@ async fn desktop_open_perplexity_studio(
         true
     });
 
-    builder.build().map_err(|e| e.to_string())?;
+    let win = builder.build().map_err(|e| e.to_string())?;
+    let _ = win.show();
+    let _ = win.unminimize();
+    let _ = win.set_focus();
     Ok(true)
 }
 
