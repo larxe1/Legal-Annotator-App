@@ -869,6 +869,110 @@ function stripTrailingSourcesText(text = '') {
     .trim();
 }
 
+function stripLeadingPreambleText(text = '') {
+  if (!text) return '';
+  let cleaned = String(text).trim();
+
+  // 1. If a markdown table is present, always start directly at the first markdown table row
+  const lines = cleaned.split(/\r?\n/);
+  for (let i = 0; i < lines.length - 1; i++) {
+    const line = lines[i].trim();
+    if (line.includes('|')) {
+      let nextIdx = i + 1;
+      while (nextIdx < lines.length && !lines[nextIdx].trim()) nextIdx++;
+      if (nextIdx < lines.length) {
+        const nextLine = lines[nextIdx].trim();
+        if (/^\|?[\s:|-]+\|[\s:|-]*$/.test(nextLine) || (line.startsWith('|') && nextLine.startsWith('|'))) {
+          return lines.slice(i).join('\n').trim();
+        }
+      }
+    }
+  }
+
+  // 2. Fallback if no markdown pipe table: strip everything up to and including "RECIT READY SUMMARY" / "RECIT-READY SUMMARY"
+  const recitMatch = cleaned.match(/(?:^|\n)\s*(?:#{1,6}\s*|\*{1,2}\s*|\d+[\.\)]\s*|[IVX]+[\.\)]\s*)*recit[\s\-]*ready\s+summary\b[^\n]*(?:\n+|$)/i);
+  if (recitMatch && typeof recitMatch.index === 'number') {
+    cleaned = cleaned.slice(recitMatch.index + recitMatch[0].length).trim();
+  }
+
+  // 3. Fallback: strip leading Perplexity meta-introductory sentences ("I have the full text of the decision from the text you pasted...", etc.)
+  cleaned = cleaned.replace(
+    /^(?:\s*[^\n]*\b(?:full text of the (?:decision|case|ponencia)|from the text you (?:pasted|provided|shared)|complete ponencia|did not pull (?:it |this )?from (?:lawphil|the sc|sc e-?library)|based on the (?:full )?text you (?:pasted|provided)|here is the (?:case )?digest)\b[^\n]*(?:\n+|$))+/i,
+    ''
+  ).trim();
+
+  return cleaned;
+}
+
+function stripLeadingPreambleHtml(html = '') {
+  if (!html) return '';
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${html}</div>`, 'text/html');
+    const root = doc.body.firstElementChild;
+    if (!root) return html;
+
+    const removePrecedingNodes = (target, keepTarget = false) => {
+      if (!target || target === root) return;
+      let cur = target;
+      while (cur && cur.parentElement && cur !== root) {
+        let prev = cur.previousSibling;
+        while (prev) {
+          const toRem = prev;
+          prev = prev.previousSibling;
+          toRem.remove();
+        }
+        cur = cur.parentElement;
+      }
+      if (!keepTarget) {
+        target.remove();
+      }
+    };
+
+    // 1. Primary rule: if the digest contains a table, ALWAYS start directly with the first table
+    // (excludes any intro commentary, case title heading, and "RECIT READY SUMMARY" above the table)
+    const firstTable = root.querySelector('table');
+    if (firstTable) {
+      removePrecedingNodes(firstTable, true);
+      return root.innerHTML.replace(/^(?:<br\s*\/?>|\s)+/i, '').trim();
+    }
+
+    // 2. Fallback if no HTML <table> exists: strip "RECIT READY SUMMARY" heading and everything above it
+    const allEls = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div, li, strong, b'));
+    for (let i = 0; i < allEls.length; i++) {
+      const el = allEls[i];
+      if (!el.isConnected) continue;
+      const txt = (el.textContent || '').trim();
+      if (/^(?:[#*\s\d.()IVX\-–—]+)?recit[\s\-]*ready\s+summary\b\s*:?\s*$/i.test(txt)) {
+        const block = el.closest('h1, h2, h3, h4, h5, h6, p, li') || el;
+        const blockTxt = (block.textContent || '').trim();
+        if (blockTxt.length < 160 && /recit[\s\-]*ready\s+summary/i.test(blockTxt)) {
+          removePrecedingNodes(block, false);
+          break;
+        }
+      }
+    }
+
+    // 3. Also strip any leading Perplexity meta-commentary paragraph at the top ("I have the full text of the decision...", etc.)
+    const topBlocks = Array.from(root.children);
+    for (let i = 0; i < Math.min(topBlocks.length, 4); i++) {
+      const block = topBlocks[i];
+      if (!block || !block.isConnected) continue;
+      const bTxt = (block.textContent || '').trim();
+      if (
+        bTxt.length < 650 &&
+        /\b(?:full text of the (?:decision|case|ponencia)|from the text you (?:pasted|provided|shared)|complete ponencia|did not pull (?:it |this )?from (?:lawphil|the sc|sc e-?library)|based on the (?:full )?text you (?:pasted|provided)|here is the (?:case )?digest)\b/i.test(bTxt)
+      ) {
+        removePrecedingNodes(block, false);
+      }
+    }
+
+    return root.innerHTML.replace(/^(?:<br\s*\/?>|\s)+/i, '').trim();
+  } catch {
+    return html;
+  }
+}
+
 function stripTrailingSourcesHtml(html = '') {
   if (!html) return '';
   try {
@@ -951,9 +1055,11 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
     return false;
   }
 
-  const cleanedRawHtml = stripTrailingSourcesHtml(rawHtml);
-  const cleanedRawText = stripTrailingSourcesText(rawText);
-  const formattedHtml = stripTrailingSourcesHtml(sanitizeRichPasteHtml(cleanedRawHtml, cleanedRawText)).trim();
+  const cleanedRawHtml = stripLeadingPreambleHtml(stripTrailingSourcesHtml(rawHtml));
+  const cleanedRawText = stripLeadingPreambleText(stripTrailingSourcesText(rawText));
+  const formattedHtml = stripLeadingPreambleHtml(
+    stripTrailingSourcesHtml(sanitizeRichPasteHtml(cleanedRawHtml, cleanedRawText))
+  ).trim();
   if (!formattedHtml) {
     toast('⚠️ No digest text found to import.');
     return false;

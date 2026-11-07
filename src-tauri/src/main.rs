@@ -2295,6 +2295,96 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     }
   }
 
+  function stripLeadingPreambleFromClone(rootEl) {
+    if (!rootEl) return;
+    var removePreceding = function(target, keepTarget) {
+      if (!target || target === rootEl) return;
+      var cur = target;
+      while (cur && cur.parentElement && cur !== rootEl) {
+        var prev = cur.previousSibling;
+        while (prev) {
+          var toRem = prev;
+          prev = prev.previousSibling;
+          toRem.remove();
+        }
+        cur = cur.parentElement;
+      }
+      if (!keepTarget) {
+        target.remove();
+      }
+    };
+
+    // 1. If a table exists in the answer, always start directly with the first table
+    // (strips introductory commentary, title, and "RECIT READY SUMMARY" above the table)
+    var firstTable = rootEl.querySelector('table');
+    if (firstTable) {
+      removePreceding(firstTable, true);
+      return;
+    }
+
+    // 2. Fallback if no HTML table exists: strip "RECIT READY SUMMARY" heading and everything above it
+    var allEls = Array.from(rootEl.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div, li, strong, b'));
+    for (var i = 0; i < allEls.length; i++) {
+      var el = allEls[i];
+      if (!el.isConnected && !rootEl.contains(el)) continue;
+      var t = (el.innerText || el.textContent || '').trim();
+      if (/^(?:[#*\s\d.()IVX\-–—]+)?recit[\s\-]*ready\s+summary\b\s*:?\s*$/i.test(t)) {
+        var block = el.closest('h1, h2, h3, h4, h5, h6, p, li') || el;
+        var bTxt = (block.innerText || block.textContent || '').trim();
+        if (bTxt.length < 160 && /recit[\s\-]*ready\s+summary/i.test(bTxt)) {
+          removePreceding(block, false);
+          break;
+        }
+      }
+    }
+
+    // 3. Also strip leading Perplexity meta-introductory paragraph ("I have the full text of the decision...", etc.)
+    var topChildren = Array.from(rootEl.children || []);
+    for (var c = 0; c < Math.min(topChildren.length, 4); c++) {
+      var child = topChildren[c];
+      if (!child || (!child.isConnected && !rootEl.contains(child))) continue;
+      var ct = (child.innerText || child.textContent || '').trim();
+      if (
+        ct.length < 650 &&
+        /\b(?:full text of the (?:decision|case|ponencia)|from the text you (?:pasted|provided|shared)|complete ponencia|did not pull (?:it |this )?from (?:lawphil|the sc|sc e-?library)|based on the (?:full )?text you (?:pasted|provided)|here is the (?:case )?digest)\b/i.test(ct)
+      ) {
+        removePreceding(child, false);
+      }
+    }
+  }
+
+  function stripLeadingPreambleTextInStudio(rawText) {
+    if (!rawText || typeof rawText !== 'string') return '';
+    var cleaned = rawText.trim();
+
+    var lines = cleaned.split(/\r?\n/);
+    for (var i = 0; i < lines.length - 1; i++) {
+      var line = lines[i].trim();
+      if (line.indexOf('|') !== -1) {
+        var nextIdx = i + 1;
+        while (nextIdx < lines.length && !lines[nextIdx].trim()) nextIdx++;
+        if (nextIdx < lines.length) {
+          var nextLine = lines[nextIdx].trim();
+          if (/^\|?[\s:|-]+\|[\s:|-]*$/.test(nextLine) || (line.indexOf('|') === 0 && nextLine.indexOf('|') === 0)) {
+            return lines.slice(i).join('\n').trim();
+          }
+        }
+      }
+    }
+
+    var recitMatch = cleaned.match(/(?:^|\n)\s*(?:#{1,6}\s*|\*{1,2}\s*|\d+[\.\)]\s*|[IVX]+[\.\)]\s*)*recit[\s\-]*ready\s+summary\b[^\n]*(?:\n+|$)/i);
+    if (recitMatch && typeof recitMatch.index === 'number') {
+      cleaned = cleaned.slice(recitMatch.index + recitMatch[0].length).trim();
+    }
+
+    cleaned = cleaned.replace(
+      /^(?:\s*[^\n]*\b(?:full text of the (?:decision|case|ponencia)|from the text you (?:pasted|provided|shared)|complete ponencia|did not pull (?:it |this )?from (?:lawphil|the sc|sc e-?library)|based on the (?:full )?text you (?:pasted|provided)|here is the (?:case )?digest)\b[^\n]*(?:\n+|$))+/i,
+      ''
+    ).trim();
+
+    return cleaned;
+  }
+
   function stripTrailingSourcesTextInStudio(rawText) {
     if (!rawText || typeof rawText !== 'string') return '';
     var cleaned = rawText.trim();
@@ -2338,6 +2428,14 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     });
     if (turnBlocks.length === 0) turnBlocks = [lastOuter];
 
+    // If any block in this turn contains a table, skip any earlier prose blocks in this turn that preceded the first table block
+    var firstTableBlockIdx = turnBlocks.findIndex(function(b) {
+      return !!b.querySelector('table');
+    });
+    if (firstTableBlockIdx > 0) {
+      turnBlocks = turnBlocks.slice(firstTableBlockIdx);
+    }
+
     var htmlParts = [];
     var textParts = [];
     turnBlocks.forEach(function(block) {
@@ -2345,9 +2443,10 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       clone.querySelectorAll('button, svg, sup, .citation, [data-testid*="citation"], [class*="citation"]').forEach(function(n) {
         n.remove();
       });
+      stripLeadingPreambleFromClone(clone);
       stripSourcesFromClone(clone);
       var h = clone.innerHTML.trim();
-      var t = stripTrailingSourcesTextInStudio(clone.innerText || clone.textContent || '');
+      var t = stripLeadingPreambleTextInStudio(stripTrailingSourcesTextInStudio(clone.innerText || clone.textContent || ''));
       if (t) {
         htmlParts.push(h);
         textParts.push(t);
@@ -2355,7 +2454,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     });
 
     var fullHtml = htmlParts.join('<br>');
-    var fullText = stripTrailingSourcesTextInStudio(textParts.join('\n\n'));
+    var fullText = stripLeadingPreambleTextInStudio(stripTrailingSourcesTextInStudio(textParts.join('\n\n')));
     var words = fullText ? fullText.split(/\s+/).filter(Boolean) : [];
     return {
       html: fullHtml,
@@ -2521,8 +2620,9 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       var range = sel.getRangeAt(0);
       var div = document.createElement('div');
       div.appendChild(range.cloneContents());
+      stripLeadingPreambleFromClone(div);
       stripSourcesFromClone(div);
-      sendDigestPayload(div.innerHTML, stripTrailingSourcesTextInStudio(sel.toString().trim()));
+      sendDigestPayload(div.innerHTML, stripLeadingPreambleTextInStudio(stripTrailingSourcesTextInStudio(sel.toString().trim())));
       return;
     }
 
@@ -2537,7 +2637,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function(clipText) {
         if (clipText && clipText.trim().length > 10) {
-          sendDigestPayload('', stripTrailingSourcesTextInStudio(clipText.trim()));
+          sendDigestPayload('', stripLeadingPreambleTextInStudio(stripTrailingSourcesTextInStudio(clipText.trim())));
         } else {
           showStatus('⚠️ No Perplexity answer found yet — wait for answer or select text.', '#f87171');
         }
