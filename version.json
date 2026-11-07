@@ -1,7 +1,7 @@
 {
-  "version": "1.11.0",
-  "build": 30,
+  "version": "1.12.0",
+  "build": 31,
   "updatedAt": "2026-11-07",
-  "notes": "Add Offline Study Mode (pre-download all notes or specific folders for offline review and delete cached copies afterwards), make startup and login work offline with zero errors, fix endless page jumping when searching large PDFs, and fix duplicate subfolder printing when parent and child folders are both selected.",
+  "notes": "Add subfolder-specific Copy Text Instructions (+ Add Instruction button beside Copy Text that persists per subfolder/subtopic), fix zooming/scrolling out from resetting PDF to page 1, and fix right-click 'Open in Google Drive' on the left sidebar.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

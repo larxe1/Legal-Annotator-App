@@ -6,6 +6,116 @@
 
 import { S } from './state.js';
 import { toast } from './ui.js';
+import { safeStorageGet, safeStorageSet } from './storage.js';
+import { dbGetSetting, dbSetSetting } from './db.js';
+
+const _cloudCheckedFolders = new Set();
+
+/**
+ * Resolves the subfolder / folder ID of the currently open PDF.
+ */
+export function getActiveSubfolderId() {
+  if (S.curPDF?.folder_id) return S.curPDF.folder_id;
+  if (S.curPDF?.id && Array.isArray(S.pdfs)) {
+    const found = S.pdfs.find(p => p.id === S.curPDF.id);
+    if (found?.folder_id) return found.folder_id;
+  }
+  return null;
+}
+
+/**
+ * Builds a readable breadcrumb path (e.g. "Subject › Folder A › Subfolder A") for a folder ID.
+ */
+export function getFolderBreadcrumb(folderId) {
+  if (!folderId || !Array.isArray(S.folders)) return 'Current Subfolder';
+  const parts = [];
+  let cur = S.folders.find(f => f.id === folderId);
+  let subjId = cur?.subject_id || null;
+  let guard = 0;
+  while (cur && guard++ < 20) {
+    parts.unshift(cur.name || 'Untitled Folder');
+    if (cur.subject_id) subjId = cur.subject_id;
+    cur = cur.parent_folder_id ? S.folders.find(f => f.id === cur.parent_folder_id) : null;
+  }
+  if (subjId && Array.isArray(S.subjects)) {
+    const subj = S.subjects.find(s => s.id === subjId);
+    if (subj?.name) parts.unshift(subj.name);
+  }
+  return parts.length ? parts.join(' › ') : 'Current Subfolder';
+}
+
+export function getSubfolderCopyInstruction(folderId) {
+  if (!folderId) return '';
+  return safeStorageGet('copy_instr_' + folderId, '') || '';
+}
+
+export function saveSubfolderCopyInstruction(folderId, instructionText) {
+  if (!folderId) return;
+  const clean = (instructionText || '').trim();
+  safeStorageSet('copy_instr_' + folderId, clean);
+  dbSetSetting('copy_instr_' + folderId, clean).catch(() => {});
+  updateCopyInstructionButtonState();
+}
+
+export function updateCopyInstructionButtonState() {
+  const btn = document.getElementById('btn-copy-pdf-instr');
+  if (!btn) return;
+  const folderId = getActiveSubfolderId();
+  if (!folderId) {
+    btn.classList.remove('has-instr');
+    btn.innerHTML = '<span>+ Add Instruction</span>';
+    btn.title = 'Open a PDF to add subfolder-specific instructions to Copy Text';
+    return;
+  }
+
+  const breadcrumb = getFolderBreadcrumb(folderId);
+  const instr = getSubfolderCopyInstruction(folderId).trim();
+
+  if (instr) {
+    btn.classList.add('has-instr');
+    btn.innerHTML = '<span>📝 Instruction ✓</span>';
+    const preview = instr.length > 140 ? instr.slice(0, 140) + '…' : instr;
+    btn.title = `Active Copy Instruction for "${breadcrumb}" (click to edit):\n${preview}`;
+  } else {
+    btn.classList.remove('has-instr');
+    btn.innerHTML = '<span>+ Add Instruction</span>';
+    btn.title = `Add instructions to include when copying PDFs in "${breadcrumb}"`;
+  }
+
+  // Lazy one-time cloud sync check for this subfolder if local is empty
+  if (!instr && !_cloudCheckedFolders.has(folderId)) {
+    _cloudCheckedFolders.add(folderId);
+    dbGetSetting('copy_instr_' + folderId)
+      .then((cloudVal) => {
+        if (cloudVal && typeof cloudVal === 'string' && cloudVal.trim()) {
+          if (!getSubfolderCopyInstruction(folderId).trim()) {
+            safeStorageSet('copy_instr_' + folderId, cloudVal.trim());
+            updateCopyInstructionButtonState();
+          }
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+export function openCopyInstructionModal() {
+  const folderId = getActiveSubfolderId();
+  if (!folderId) {
+    toast('⚠️ Open a PDF first to set copy instructions for its subfolder.');
+    return;
+  }
+  const modal = document.getElementById('mo-copy-instructions');
+  const lbl = document.getElementById('copy-instr-folder-lbl');
+  const textarea = document.getElementById('copy-instr-textarea');
+  if (!modal || !textarea) return;
+
+  const breadcrumb = getFolderBreadcrumb(folderId);
+  if (lbl) lbl.textContent = `Subfolder: ${breadcrumb}`;
+  textarea.value = getSubfolderCopyInstruction(folderId);
+  modal.dataset.folderId = folderId;
+  modal.classList.add('open');
+  setTimeout(() => textarea.focus(), 40);
+}
 
 // Commercial publisher footers (e.g., CD Technologies Asia, Inc. & cdasiaonline.com)
 const COMMERCIAL_FOOTER_PATTERNS = [
@@ -553,7 +663,11 @@ export async function copyEntirePdfTextSmart() {
     let fullText = validPages.join('\n\n').trim();
     fullText = stripPageNumbersAndFooters(fullText);
 
-    const ok = await copyToClipboard(fullText);
+    const activeFolderId = getActiveSubfolderId();
+    const subfolderInstr = activeFolderId ? getSubfolderCopyInstruction(activeFolderId).trim() : '';
+    const finalCopyText = subfolderInstr ? `${subfolderInstr}\n\n${fullText}` : fullText;
+
+    const ok = await copyToClipboard(finalCopyText);
     if (!ok) {
       toast('❌ Failed to copy to clipboard. Please check clipboard permissions.');
       return;
@@ -573,7 +687,11 @@ export async function copyEntirePdfTextSmart() {
       }, 2200);
     }
 
-    toast(`✅ Copied entire PDF text (${wordCount.toLocaleString()} words, ${pageLabel}) to clipboard!`);
+    if (subfolderInstr) {
+      toast(`✅ Copied PDF text + Subfolder Instruction (${wordCount.toLocaleString()} words, ${pageLabel})!`);
+    } else {
+      toast(`✅ Copied entire PDF text (${wordCount.toLocaleString()} words, ${pageLabel}) to clipboard!`);
+    }
   } catch (err) {
     console.error('[smart-copy] Error:', err);
     toast(`⚠️ Text extraction stopped: ${err.message || err}`);
@@ -687,6 +805,62 @@ export function initSmartCopy() {
       copyEntirePdfTextSmart();
     }, true);
   }
+
+  // 4. Attach subfolder instruction modal handlers to #btn-copy-pdf-instr & #mo-copy-instructions
+  const btnCopyInstr = document.getElementById('btn-copy-pdf-instr');
+  if (btnCopyInstr) {
+    btnCopyInstr.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openCopyInstructionModal();
+    });
+  }
+
+  const btnSaveInstr = document.getElementById('btn-copy-instr-save');
+  if (btnSaveInstr) {
+    btnSaveInstr.addEventListener('click', () => {
+      const modal = document.getElementById('mo-copy-instructions');
+      const textarea = document.getElementById('copy-instr-textarea');
+      const folderId = modal?.dataset.folderId || getActiveSubfolderId();
+      if (!folderId) return;
+      const val = (textarea?.value || '').trim();
+      saveSubfolderCopyInstruction(folderId, val);
+      modal?.classList.remove('open');
+      const breadcrumb = getFolderBreadcrumb(folderId);
+      if (val) {
+        toast(`✅ Saved copy instructions for "${breadcrumb}"`);
+      } else {
+        toast(`🗑 Cleared copy instructions for "${breadcrumb}"`);
+      }
+    });
+  }
+
+  const btnClearInstr = document.getElementById('btn-copy-instr-clear');
+  if (btnClearInstr) {
+    btnClearInstr.addEventListener('click', () => {
+      const modal = document.getElementById('mo-copy-instructions');
+      const textarea = document.getElementById('copy-instr-textarea');
+      const folderId = modal?.dataset.folderId || getActiveSubfolderId();
+      if (textarea) textarea.value = '';
+      if (folderId) {
+        saveSubfolderCopyInstruction(folderId, '');
+        const breadcrumb = getFolderBreadcrumb(folderId);
+        toast(`🗑 Cleared copy instructions for "${breadcrumb}"`);
+      }
+      modal?.classList.remove('open');
+    });
+  }
+
+  const instrTextarea = document.getElementById('copy-instr-textarea');
+  if (instrTextarea) {
+    instrTextarea.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        btnSaveInstr?.click();
+      }
+    });
+  }
+
+  updateCopyInstructionButtonState();
 }
 
 if (typeof window !== 'undefined') {

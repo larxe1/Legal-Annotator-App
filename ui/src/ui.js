@@ -429,12 +429,13 @@ function initSidebarResizer() {
 export async function changeZoom(delta) {
   const ns = Math.max(0.5, Math.min(3, S.scale + delta));
   if (ns === S.scale) return;
+  const { reRenderAll, captureZoomAnchor } = await import('./viewer.js');
+  if (S.pdfDoc) captureZoomAnchor();
   S.scale = ns;
   document.getElementById('zoom-lbl').textContent = Math.round(ns / 1.5 * 100) + '%';
   if (!S.pdfDoc) return;
 
   // Re-render all pages
-  const { reRenderAll } = await import('./viewer.js');
   reRenderAll();
 }
 
@@ -849,6 +850,27 @@ export function initNavButtons() {
   const scrollEl = document.getElementById('canvas-scroll');
   scrollEl.addEventListener('wheel', _markUserScrolling, { passive: true });
   scrollEl.addEventListener('touchmove', _markUserScrolling, { passive: true });
+
+  if (scrollEl && !scrollEl.dataset.desktopWheelZoom) {
+    scrollEl.dataset.desktopWheelZoom = 'true';
+    let zoomDebounce = null;
+    scrollEl.addEventListener('wheel', async (e) => {
+      if (!(e.ctrlKey || e.metaKey) || !S.pdfDoc) return;
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 0.12 : -0.12;
+      const nextScale = Math.min(3.0, Math.max(0.6, Math.round((S.scale + delta) * 100) / 100));
+      if (nextScale === S.scale) return;
+      const { reRenderAll, captureZoomAnchor } = await import('./viewer.js');
+      captureZoomAnchor();
+      S.scale = nextScale;
+      const zLbl = document.getElementById('zoom-lbl');
+      if (zLbl) zLbl.textContent = Math.round(S.scale / 1.5 * 100) + '%';
+      clearTimeout(zoomDebounce);
+      zoomDebounce = setTimeout(() => {
+        reRenderAll();
+      }, 110);
+    }, { passive: false });
+  }
 
   scrollEl.addEventListener('scroll', function () {
     _markUserScrolling();

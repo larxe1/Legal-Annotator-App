@@ -445,19 +445,39 @@ export function initContextMenu() {
   });
 
   // "Open in Google Drive" — opens file directly in Google Drive in new tab
-  document.getElementById('lib-ctx-gdrive')?.addEventListener('click', () => {
+  document.getElementById('lib-ctx-gdrive')?.addEventListener('click', async () => {
     if (!_ctxTarget || _ctxIsFolder) return;
-    const pdf = _ctxTarget;
+    const pdf = Array.isArray(_ctxTarget) ? _ctxTarget[0] : _ctxTarget;
     hideLibCtxMenu();
 
-    const driveId = pdf.drive_file_id || S.pdfs.find(p => p.id === pdf.linked_pdf_id)?.drive_file_id;
+    const driveId = pdf?.drive_file_id
+      || pdf?.driveFileId
+      || pdf?.driveId
+      || S.pdfs.find(p => p.id === pdf?.linked_pdf_id)?.drive_file_id
+      || S.pdfs.find(p => p.id === pdf?.id)?.drive_file_id;
     if (!driveId) {
       toast('No Google Drive file linked to this PDF.');
       return;
     }
 
     const driveUrl = `https://drive.google.com/file/d/${encodeURIComponent(driveId)}/view`;
-    window.open(driveUrl, '_blank', 'noopener,noreferrer');
+    if (typeof window.desktopOpenUrl === 'function') {
+      const ok = await window.desktopOpenUrl(driveUrl);
+      if (ok) {
+        toast('☁ Opening in Google Drive…');
+        return;
+      }
+    }
+    const win = window.open(driveUrl, '_blank', 'noopener,noreferrer');
+    if (!win) {
+      const a = document.createElement('a');
+      a.href = driveUrl;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
   });
 
   // "Save for Offline" — pre-cache PDF to IndexedDB

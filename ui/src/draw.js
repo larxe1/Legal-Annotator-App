@@ -225,6 +225,9 @@ export function initPinchZoom() {
       // Only zoom once the fingers clearly spread/close, so a plain two-finger
       // scroll (handled in pen.js) never changes the zoom or forces a re-render.
       if (!pinching && Math.abs(dist / pinchD - 1) < 0.12) return;
+      if (!pinching && S.pdfDoc) {
+        import('./viewer.js').then(m => m.captureZoomAnchor?.()).catch(() => {});
+      }
       pinching = true;
       S.scale = Math.max(0.5, Math.min(3, Math.round(pinchS * dist / pinchD * 4) / 4));
       document.getElementById('zoom-lbl').textContent = Math.round(S.scale / 1.5 * 100) + '%';

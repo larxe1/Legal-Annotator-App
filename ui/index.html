@@ -16,16 +16,17 @@
 <link rel="apple-touch-icon" sizes="512x512" href="icon-512.png">
 
 <!-- Google Fonts -->
-<link rel="stylesheet" href="fonts/fonts.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 
 <!-- PDF.js -->
-<script src="./vendor/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <!-- Supabase -->
-<script src="./vendor/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <!-- Mermaid (Diagrams & Flowcharts) -->
-<script src="./vendor/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <!-- html2pdf.js for exporting notes -->
-<script src="./vendor/html2pdf.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <!-- Google Identity Services (for Drive OAuth) -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 
@@ -180,6 +181,9 @@
       <button class="tb-btn" id="btn-copy-pdf-text" title="Copy Entire PDF Text to Clipboard">
         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path stroke-linecap="round" stroke-linejoin="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         <span>Copy Text</span>
+      </button>
+      <button class="tb-btn" id="btn-copy-pdf-instr" title="Add or edit instructions included when copying PDF text in this subfolder">
+        <span>+ Add Instruction</span>
       </button>
 
       <div class="tb-sep"></div>
@@ -1276,6 +1280,25 @@
   </div>
 </div>
 
+<!-- Subfolder Copy Instructions Modal -->
+<div class="modal-ov" id="mo-copy-instructions">
+  <div class="modal-box" style="max-width:520px; width:92%;">
+    <h3 style="margin-bottom:4px;">📋 Copy Text Instructions</h3>
+    <p id="copy-instr-folder-lbl" style="font-size:12px; color:var(--gold); margin-bottom:10px; font-weight:500;">Subfolder: —</p>
+    <p style="font-size:11.5px; color:var(--muted); line-height:1.5; margin-bottom:10px;">
+      Write the prompt or instructions you want automatically included at the top whenever you click <strong>Copy Text</strong> on any PDF inside this subfolder. Other folders will not be affected.
+    </p>
+    <textarea id="copy-instr-textarea" rows="7" placeholder="Example: Digest this case in the standard law school format (Facts, Issue, Ruling, Doctrine) focusing on the subtopic of..." style="width:100%; box-sizing:border-box; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-family:'Inter',sans-serif; font-size:12.5px; line-height:1.5; padding:10px; resize:vertical; outline:none; margin-bottom:12px;"></textarea>
+    <div class="modal-acts" style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+      <button class="btn-sec" id="btn-copy-instr-clear" style="color:var(--red); font-size:12px;">🗑 Clear Instruction</button>
+      <div style="display:flex; gap:8px;">
+        <button class="btn-sec" data-close="mo-copy-instructions">Cancel</button>
+        <button class="btn-gold" id="btn-copy-instr-save">💾 Save Instruction</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Hidden file input -->
 <input type="file" id="pdf-file-in" accept="application/pdf" multiple>
 
@@ -1338,7 +1361,7 @@
   });
   // Set pdf.js worker
   pdfjsLib.GlobalWorkerOptions.workerSrc =
-    './vendor/pdf.worker.min.js';
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 </script>
 
 <!-- Main app (ES module) -->
@@ -1346,7 +1369,6 @@
 
 <!-- Backup (completely independent module — zero imports from main app) -->
 <script type="module" src="./src/backup.js"></script>
-<script type="module" src="./src/desktop-bridge.js"></script>
 
 <!-- Table Context Menu -->
 <div id="table-ctx-menu" style="display:none; position:absolute; z-index:9999; background:var(--navy-l); border:1px solid var(--navy-b); border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.6); flex-direction:column; padding:4px; min-width:150px;">
@@ -1416,7 +1438,7 @@
   document.getElementById('btn-pwa-install')?.addEventListener('click', triggerPWAInstall);
   document.getElementById('btn-install-sidebar')?.addEventListener('click', triggerPWAInstall);
 
-  if (false && 'serviceWorker' in navigator) {
+  if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js').then(reg => {
         console.log('[PWA] ServiceWorker registered with scope:', reg.scope);

@@ -1421,6 +1421,27 @@ async fn desktop_clear_google_oauth(
     Ok(true)
 }
 
+#[tauri::command]
+async fn desktop_open_url(url: String) -> Result<bool, String> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
+        return Err("Only http/https URLs are allowed".into());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new(r"C:\Windows\System32\rundll32.exe");
+        cmd.args(["url.dll,FileProtocolHandler", trimmed]);
+        cmd.creation_flags(0x08000000);
+        cmd.spawn().map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Unsupported OS".into())
+    }
+}
+
 pub(crate) fn sanitize_cache_id(file_id: &str) -> String {
     file_id
         .chars()
@@ -2854,6 +2875,7 @@ fn main() {
             desktop_start_google_oauth,
             desktop_poll_google_oauth,
             desktop_clear_google_oauth,
+            desktop_open_url,
             desktop_cache_get_path,
             desktop_cache_save_pdf,
             desktop_cache_read_pdf,

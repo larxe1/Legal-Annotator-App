@@ -253,7 +253,23 @@ export async function openFolderDoc(fold) {
 let _pageObserver = null;
 let _renderedPages = new Set();
 let _bgRenderGen = 0;
+let _renderScaleGen = 0;
+let _activeZoomAnchor = null;
 let _activeBlobUrl = null; // kept alive for the full PDF session; revoked on next PDF open
+
+export function captureZoomAnchor() {
+  if (_activeZoomAnchor) return _activeZoomAnchor;
+  const scrollEl = document.getElementById('canvas-scroll');
+  const anchorPage = Math.max(1, Math.min(S.totalPages || 1, S.curPage || 1));
+  const anchorWrap = S.pages?.[anchorPage]?.wrap;
+  let anchorRatio = 0;
+  if (scrollEl && anchorWrap && anchorWrap.offsetHeight > 0) {
+    anchorRatio = Math.max(0, Math.min(0.95, (scrollEl.scrollTop - anchorWrap.offsetTop + 16) / anchorWrap.offsetHeight));
+  }
+  _activeZoomAnchor = { page: anchorPage, ratio: anchorRatio };
+  setIsJumping(true);
+  return _activeZoomAnchor;
+}
 
 // ── Memory-Safe Page Canvas Eviction for Large PDFs (500+ pages) ──
 const MAX_RENDERED_CANVAS_PAGES = 30;
@@ -484,6 +500,8 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
   _currentFolderDocId = null;
 
   // Destroy previous PDF.js document immediately to free RAM/GPU memory
+  _activeZoomAnchor = null;
+  ++_renderScaleGen;
   if (S.pdfDoc) {
     try { S.pdfDoc.destroy(); } catch {}
     S.pdfDoc = null;
@@ -809,18 +827,40 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
 
 // ── Re-render all pages (after zoom change) ──
 export async function reRenderAll() {
-  if (!S.pdfDoc) return;
+  if (!S.pdfDoc) {
+    _activeZoomAnchor = null;
+    setIsJumping(false);
+    return;
+  }
+
+  // Capture reading anchor before any wrapper heights change (reuses gesture anchor if already captured)
+  const anchor = captureZoomAnchor();
+  const anchorPage = Math.max(1, Math.min(S.totalPages || 1, anchor.page || S.curPage || 1));
+  const anchorRatio = anchor.ratio || 0;
+
+  setIsJumping(true);
+  const myScaleGen = ++_renderScaleGen;
+  ++_bgRenderGen;
+
   const p1 = await S.pdfDoc.getPage(1);
+  if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
   const vp1 = p1.getViewport({ scale: S.scale });
 
-  // Update sizes on all page wrappers
+  // Update sizes on all page wrappers synchronously
   for (let p = 1; p <= S.totalPages; p++) {
     const pg = S.pages[p];
     if (pg?.wrap) {
       pg.wrap.style.width = vp1.width + 'px';
       pg.wrap.style.height = vp1.height + 'px';
-      if (pg.rendered) {
+      pg.viewport = vp1;
+      if (pg.rendered || pg.rendering) {
         pg.rendered = false;
+        pg.rendering = false;
+        pg.pdfCanvas = null;
+        pg.drawCanvas = null;
+        pg.txtLayer = null;
+        pg.annOv = null;
+        pg.srchOv = null;
         pg.wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:'Inter',sans-serif">Page ${p}</div>`;
       }
     }
@@ -831,11 +871,40 @@ export async function reRenderAll() {
   _textDone.clear();
   _renderedPages.clear();
 
-  // Re-render current page and all remaining pages in the PDF
-  await ensurePageRendered(S.curPage);
-  if (S.curPage > 1) ensurePageRendered(S.curPage - 1);
-  if (S.curPage < S.totalPages) ensurePageRendered(S.curPage + 1);
-  startBackgroundDocRenderer(S.curPDF?.id || 'zoom');
+  // Synchronously restore scroll position to anchorPage + anchorRatio before yielding
+  S.curPage = anchorPage;
+  const pgInput = document.getElementById('pg-input');
+  if (pgInput) pgInput.value = anchorPage;
+
+  const scrollEl = document.getElementById('canvas-scroll');
+  const anchorWrap = S.pages?.[anchorPage]?.wrap;
+  if (scrollEl && anchorWrap) {
+    const pageHeightWithGap = vp1.height + 24;
+    const algebraicTop = Math.max(0, 28 + (anchorPage - 1) * pageHeightWithGap - 16 + Math.round(anchorRatio * vp1.height));
+    const liveTop = anchorWrap.offsetTop > 0
+      ? Math.max(0, anchorWrap.offsetTop - 16 + Math.round(anchorRatio * (anchorWrap.offsetHeight || vp1.height)))
+      : algebraicTop;
+    scrollEl.scrollTop = liveTop;
+  }
+
+  // Re-render anchor page and adjacent neighbors
+  await ensurePageRendered(anchorPage);
+  if (myScaleGen !== _renderScaleGen) return;
+
+  if (scrollEl && anchorWrap) {
+    scrollEl.scrollTop = Math.max(0, anchorWrap.offsetTop - 16 + Math.round(anchorRatio * (anchorWrap.offsetHeight || vp1.height)));
+  }
+
+  if (anchorPage > 1) ensurePageRendered(anchorPage - 1);
+  if (anchorPage < S.totalPages) ensurePageRendered(anchorPage + 1);
+
+  const { scrollToPageAndRatio } = await import('./ui.js');
+  await scrollToPageAndRatio(anchorPage, anchorRatio, false);
+
+  if (myScaleGen === _renderScaleGen) {
+    _activeZoomAnchor = null;
+    startBackgroundDocRenderer(S.curPDF?.id || 'zoom');
+  }
 }
 
 // ── Render a single page on-demand ──
@@ -853,9 +922,11 @@ export async function ensurePageRendered(pageNum, container = null) {
   const pgState = S.pages[pageNum];
   if (pgState.rendered || pgState.rendering) return;
   pgState.rendering = true;
+  const myScaleGen = _renderScaleGen;
 
   try {
     const page = await S.pdfDoc.getPage(pageNum);
+    if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
     const vp = page.getViewport({ scale: S.scale });
     pgState.viewport = vp;
 
@@ -905,6 +976,7 @@ export async function ensurePageRendered(pageNum, container = null) {
 
     // Render PDF page canvas
     await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: vp }).promise;
+    if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
 
     // Build text layer.
     // tx[5] is the PDF baseline in CSS pixel coordinates (Y already flipped by vp.transform).
@@ -912,6 +984,7 @@ export async function ensurePageRendered(pageNum, container = null) {
     //   top = tx[5] - fh * 0.8   (places the span so its internal baseline == tx[5])
     // The old code used tx[5] - fh (1.0×), which sat ~15-20% of fh too high vs the canvas.
     const tc = await page.getTextContent();
+    if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
     const textItems = [];
     for (const item of tc.items) {
       if (!item.str || !item.transform) continue;
@@ -980,7 +1053,9 @@ export async function ensurePageRendered(pageNum, container = null) {
   } catch (err) {
     console.error(`Failed to render page ${pageNum}:`, err);
   } finally {
-    pgState.rendering = false;
+    if (myScaleGen === _renderScaleGen) {
+      pgState.rendering = false;
+    }
   }
 }
 
@@ -1182,6 +1257,7 @@ export function updateActivePDF() {
     el.classList.toggle('active', el.dataset.id === S.curPDF?.id)
   );
   import('./ui.js').then(m => m.updateAppTitle?.()).catch(()=>{});
+  import('./smart-copy.js').then(m => m.updateCopyInstructionButtonState?.()).catch(()=>{});
 }
 
 // ── Recent PDFs tracking ──

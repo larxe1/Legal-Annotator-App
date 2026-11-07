@@ -74,9 +74,27 @@ if (invoke) {
       await invoke('desktop_clear_google_oauth', { forSyllabus: !!forSyllabus });
     } catch {}
   };
+
+  window.desktopOpenUrl = async (url) => {
+    try {
+      return await invoke('desktop_open_url', { url: String(url) });
+    } catch (err) {
+      console.warn('[Desktop] desktop_open_url failed:', err);
+      return false;
+    }
+  };
+
+  const _origWindowOpen = window.open ? window.open.bind(window) : null;
+  window.open = function (url, target, features) {
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+      window.desktopOpenUrl(url);
+      return { closed: false, close() {}, focus() {} };
+    }
+    return _origWindowOpen ? _origWindowOpen(url, target, features) : null;
+  };
 }
 
-import { reRenderAll } from './viewer.js';
+import { reRenderAll, captureZoomAnchor } from './viewer.js';
 
 window.__DESKTOP_PDFIUM__ = {
   async openPdf(docId, arrayBuffer, localPath = null, driveFileId = null) {
@@ -762,6 +780,7 @@ function injectDesktopUI() {
       const delta = e.deltaY < 0 ? 0.12 : -0.12;
       const nextScale = Math.min(3.0, Math.max(0.6, Math.round((S.scale + delta) * 100) / 100));
       if (nextScale === S.scale) return;
+      captureZoomAnchor();
       S.scale = nextScale;
       const zLbl = document.getElementById('zoom-lbl');
       if (zLbl) zLbl.textContent = Math.round(S.scale / 1.5 * 100) + '%';
