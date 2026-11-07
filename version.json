@@ -1,7 +1,7 @@
 {
-  "version": "1.13.1",
-  "build": 33,
+  "version": "1.13.2",
+  "build": 34,
   "updatedAt": "2026-11-07",
-  "notes": "Fix Perplexity 'Law' Digest Studio window launch by restoring desktop-bridge.js in ui/index.html and adding direct Tauri invoke fallback.",
+  "notes": "Fix Perplexity Studio flickering/reload loop when opening cases, and automatically include the folder Topic & Subfolder Subtopic main digest instruction on every Copy Text and Perplexity Digest.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

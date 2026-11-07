@@ -44,6 +44,65 @@ export function getFolderBreadcrumb(folderId) {
   return parts.length ? parts.join(' › ') : 'Current Subfolder';
 }
 
+/**
+ * Automatically builds the main digest instruction from the PDF's folder (Topic)
+ * and subfolder chain (Subtopic), e.g.:
+ * "Create a digest for this case. The topic is Sales, specifically Parties in a Sale (Sales > Parties in a Sale)."
+ */
+export function getDefaultDigestInstructionForFolder(folderId) {
+  if (!folderId || !Array.isArray(S.folders)) {
+    return 'Create a digest for this case.';
+  }
+  const folderChain = [];
+  let cur = S.folders.find(f => f.id === folderId);
+  let subjId = cur?.subject_id || null;
+  let guard = 0;
+  while (cur && guard++ < 20) {
+    const cleanName = (cur.name || '').trim();
+    if (cleanName) folderChain.unshift(cleanName);
+    if (cur.subject_id) subjId = cur.subject_id;
+    cur = cur.parent_folder_id ? S.folders.find(f => f.id === cur.parent_folder_id) : null;
+  }
+
+  let subjectName = '';
+  if (subjId && Array.isArray(S.subjects)) {
+    const subj = S.subjects.find(s => s.id === subjId);
+    if (subj?.name) subjectName = subj.name.trim();
+  }
+
+  if (folderChain.length >= 2) {
+    const topic = folderChain[0];
+    const subtopic = folderChain.slice(1).join(' > ');
+    const fullPath = folderChain.join(' > ');
+    return `Create a digest for this case. The topic is ${topic}, specifically ${subtopic} (${fullPath}).`;
+  }
+
+  if (folderChain.length === 1) {
+    const folderName = folderChain[0];
+    if (subjectName && subjectName.toLowerCase() !== folderName.toLowerCase()) {
+      const fullPath = `${subjectName} > ${folderName}`;
+      return `Create a digest for this case. The topic is ${subjectName}, specifically ${folderName} (${fullPath}).`;
+    }
+    return `Create a digest for this case. The topic is ${folderName}.`;
+  }
+
+  if (subjectName) {
+    return `Create a digest for this case. The topic is ${subjectName}.`;
+  }
+
+  return 'Create a digest for this case.';
+}
+
+/**
+ * Combines the automatic Topic/Subtopic Main Instruction with any optional extra
+ * subfolder instruction added via "+ Add Instruction".
+ */
+export function buildFullCopyInstruction(folderId) {
+  const mainInstruction = getDefaultDigestInstructionForFolder(folderId);
+  const extraInstruction = folderId ? getSubfolderCopyInstruction(folderId).trim() : '';
+  return extraInstruction ? `${mainInstruction}\n${extraInstruction}` : mainInstruction;
+}
+
 export function getSubfolderCopyInstruction(folderId) {
   if (!folderId) return '';
   return safeStorageGet('copy_instr_' + folderId, '') || '';
@@ -64,22 +123,23 @@ export function updateCopyInstructionButtonState() {
   if (!folderId) {
     btn.classList.remove('has-instr');
     btn.innerHTML = '<span>+ Add Instruction</span>';
-    btn.title = 'Open a PDF to add subfolder-specific instructions to Copy Text';
+    btn.title = 'Open a PDF to add extra subfolder-specific instructions to Copy Text';
     return;
   }
 
   const breadcrumb = getFolderBreadcrumb(folderId);
+  const autoMain = getDefaultDigestInstructionForFolder(folderId);
   const instr = getSubfolderCopyInstruction(folderId).trim();
 
   if (instr) {
     btn.classList.add('has-instr');
     btn.innerHTML = '<span>📝 Instruction ✓</span>';
     const preview = instr.length > 140 ? instr.slice(0, 140) + '…' : instr;
-    btn.title = `Active Copy Instruction for "${breadcrumb}" (click to edit):\n${preview}`;
+    btn.title = `Main Instruction: ${autoMain}\nExtra Subfolder Instruction for "${breadcrumb}" (click to edit):\n${preview}`;
   } else {
     btn.classList.remove('has-instr');
     btn.innerHTML = '<span>+ Add Instruction</span>';
-    btn.title = `Add instructions to include when copying PDFs in "${breadcrumb}"`;
+    btn.title = `Main Instruction (auto-included): ${autoMain}\nClick to add extra instructions for "${breadcrumb}"`;
   }
 
   // Lazy one-time cloud sync check for this subfolder if local is empty
@@ -106,11 +166,13 @@ export function openCopyInstructionModal() {
   }
   const modal = document.getElementById('mo-copy-instructions');
   const lbl = document.getElementById('copy-instr-folder-lbl');
+  const autoPreview = document.getElementById('copy-instr-auto-preview');
   const textarea = document.getElementById('copy-instr-textarea');
   if (!modal || !textarea) return;
 
   const breadcrumb = getFolderBreadcrumb(folderId);
   if (lbl) lbl.textContent = `Subfolder: ${breadcrumb}`;
+  if (autoPreview) autoPreview.textContent = getDefaultDigestInstructionForFolder(folderId);
   textarea.value = getSubfolderCopyInstruction(folderId);
   modal.dataset.folderId = folderId;
   modal.classList.add('open');
@@ -664,8 +726,9 @@ export async function copyEntirePdfTextSmart() {
     fullText = stripPageNumbersAndFooters(fullText);
 
     const activeFolderId = getActiveSubfolderId();
-    const subfolderInstr = activeFolderId ? getSubfolderCopyInstruction(activeFolderId).trim() : '';
-    const finalCopyText = subfolderInstr ? `${subfolderInstr}\n\n${fullText}` : fullText;
+    const fullInstruction = buildFullCopyInstruction(activeFolderId);
+    const extraInstr = activeFolderId ? getSubfolderCopyInstruction(activeFolderId).trim() : '';
+    const finalCopyText = `${fullInstruction}\n\n${fullText}`;
 
     const ok = await copyToClipboard(finalCopyText);
     if (!ok) {
@@ -687,10 +750,10 @@ export async function copyEntirePdfTextSmart() {
       }, 2200);
     }
 
-    if (subfolderInstr) {
-      toast(`✅ Copied PDF text + Subfolder Instruction (${wordCount.toLocaleString()} words, ${pageLabel})!`);
+    if (extraInstr) {
+      toast(`✅ Copied PDF + Topic/Subtopic & Extra Instruction (${wordCount.toLocaleString()} words, ${pageLabel})!`);
     } else {
-      toast(`✅ Copied entire PDF text (${wordCount.toLocaleString()} words, ${pageLabel}) to clipboard!`);
+      toast(`✅ Copied PDF + Topic/Subtopic Digest Instruction (${wordCount.toLocaleString()} words, ${pageLabel})!`);
     }
   } catch (err) {
     console.error('[smart-copy] Error:', err);
@@ -811,8 +874,8 @@ export async function openPerplexityDigestForCurrentPdf() {
 
     const activeFolderId = getActiveSubfolderId();
     const subfolderName = activeFolderId ? getFolderBreadcrumb(activeFolderId) : '';
-    const instructionText = activeFolderId ? getSubfolderCopyInstruction(activeFolderId).trim() : '';
-    const fullPromptText = instructionText ? `${instructionText}\n\n${pdfText}` : pdfText;
+    const instructionText = buildFullCopyInstruction(activeFolderId);
+    const fullPromptText = `${instructionText}\n\n${pdfText}`;
 
     await copyToClipboard(fullPromptText);
 

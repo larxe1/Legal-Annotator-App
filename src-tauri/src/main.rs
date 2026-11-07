@@ -1499,13 +1499,25 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
   };
 
   try {
+    if (window.__INITIAL_PPLX_JOB__ && typeof window.__INITIAL_PPLX_JOB__ === 'object') {
+      for (var ik in window.__INITIAL_PPLX_JOB__) {
+        if (window.__INITIAL_PPLX_JOB__[ik] !== undefined && window.__INITIAL_PPLX_JOB__[ik] !== null) {
+          _state[ik] = window.__INITIAL_PPLX_JOB__[ik];
+        }
+      }
+    }
     var cached = sessionStorage.getItem('la_pplx_state_cache');
     if (cached) {
       var parsed = JSON.parse(cached);
       if (parsed && typeof parsed === 'object') {
-        for (var k in parsed) { _state[k] = parsed[k]; }
+        var initJobId = Number(window.__INITIAL_PPLX_JOB__?.jobId || 0);
+        var cachedJobId = Number(parsed.jobId || 0);
+        if (cachedJobId >= initJobId) {
+          for (var k in parsed) { _state[k] = parsed[k]; }
+        }
       }
     }
+    sessionStorage.setItem('la_pplx_state_cache', JSON.stringify(_state));
   } catch (e) {}
 
   function saveStateCache() {
@@ -1695,8 +1707,9 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
   }
 
   function tryAutoNavigateToLawSpace() {
-    // Look for any link to /spaces/ or /collections/ whose visible label is "Law" (or contains "Law")
-    var links = Array.from(document.querySelectorAll('a[href*="/spaces/"], a[href*="/collections/"]'));
+    var links = Array.from(document.querySelectorAll('a[href*="/spaces/"], a[href*="/collections/"]')).filter(function(a) {
+      return isSpaceOrCollectionUrl(a.href);
+    });
     var exact = links.find(function(a) {
       return (a.textContent || '').trim().toLowerCase() === 'law';
     });
@@ -1706,15 +1719,10 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (partial && partial.href) {
       var clean = cleanSpaceUrl(partial.href);
       _state.pinnedProjectUrl = clean;
-      syncPrefsToApp();
+      saveStateCache();
       updateBarUI();
       showStatus('📌 Found "Law" Project! Opening…', '#4ade80');
       partial.click();
-      setTimeout(function() {
-        if (!isSpaceOrCollectionUrl(window.location.href)) {
-          window.location.href = clean;
-        }
-      }, 300);
       return true;
     }
     return false;
@@ -1962,6 +1970,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     }
   };
 
+  var _jobTimer = null;
   function processActiveJob() {
     ensureStudioBar();
     if (!_state.jobId || !_state.fullPromptText) return;
@@ -1970,52 +1979,46 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (handledJob === String(_state.jobId)) return;
 
     var curUrl = window.location.href;
-    // Auto-pin if currently on a Space/Collection URL and either nothing is pinned yet or title contains Law
-    if (isSpaceOrCollectionUrl(curUrl) && !_state.pinnedProjectUrl) {
+    // Never force-redirect window.location.href! Only auto-paste when on a Space/Collection page.
+    if (!isSpaceOrCollectionUrl(curUrl)) {
+      showStatus('👉 Open your "Law" project (or click "📋 Paste Case" anytime to paste here).', '#fbbf24');
+      return;
+    }
+
+    if (!_state.pinnedProjectUrl) {
       _state.pinnedProjectUrl = cleanSpaceUrl(curUrl);
-      syncPrefsToApp();
+      saveStateCache();
       updateBarUI();
     }
 
-    // If user has a pinned Law Project URL and we are currently on a thread (/search/ or /page/) or root, navigate to the pinned Law Project first
-    if (_state.pinnedProjectUrl && !isSpaceOrCollectionUrl(curUrl)) {
-      showStatus('Opening pinned "Law" Project…', '#fbbf24');
-      window.location.href = _state.pinnedProjectUrl;
-      return;
-    }
-
-    // If no pinned project yet and not on a Space URL, try auto-finding "Law" in Spaces
-    if (!_state.pinnedProjectUrl && !isSpaceOrCollectionUrl(curUrl)) {
-      if (tryAutoNavigateToLawSpace()) return;
-      showStatus('👉 Click your "Law" project on the left — it will auto-paste & pin automatically!', '#fbbf24');
-      return;
-    }
-
-    // We are inside the Law Project space! Wait for prompt input and auto-paste
+    if (_jobTimer) clearInterval(_jobTimer);
     var attempts = 0;
-    var timer = setInterval(function() {
+    _jobTimer = setInterval(function() {
       attempts++;
       if (sessionStorage.getItem('la_pplx_handled_job_id') === String(_state.jobId)) {
-        clearInterval(timer);
+        clearInterval(_jobTimer);
+        _jobTimer = null;
         return;
       }
       var inputEl = findPromptInput();
       if (inputEl) {
-        clearInterval(timer);
+        clearInterval(_jobTimer);
+        _jobTimer = null;
         sessionStorage.setItem('la_pplx_handled_job_id', String(_state.jobId));
         setTimeout(function() {
           pasteAndMaybeSubmit(false);
         }, 250);
-      } else if (attempts >= 25) {
-        clearInterval(timer);
+      } else if (attempts >= 20) {
+        clearInterval(_jobTimer);
+        _jobTimer = null;
+        sessionStorage.setItem('la_pplx_handled_job_id', String(_state.jobId));
         showStatus('Click "📋 Paste Case" above when prompt box is ready.', '#fbbf24');
       }
-    }, 300);
+    }, 350);
   }
 
   window.__PPLX_STUDIO_RECEIVE_JOB = function(job) {
     if (!job || typeof job !== 'object') return;
-    var isNewJob = job.jobId && String(job.jobId) !== String(_state.jobId);
     for (var k in job) {
       if (job[k] !== undefined && job[k] !== null) {
         _state[k] = job[k];
@@ -2023,34 +2026,21 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     }
     saveStateCache();
     ensureStudioBar();
-
-    if (isNewJob) {
-      var curUrl = window.location.href;
-      // If we are on an old thread page instead of the Law Space home page, navigate back to Law Space home page for the new case
-      if (_state.pinnedProjectUrl && cleanSpaceUrl(curUrl) !== cleanSpaceUrl(_state.pinnedProjectUrl)) {
-        showStatus('Starting new thread in "Law" Project…', '#fbbf24');
-        window.location.href = _state.pinnedProjectUrl;
-        return;
-      }
-    }
     processActiveJob();
   };
 
-  // Watch for SPA URL changes inside Perplexity (e.g. when user clicks into "Law" project)
+  // Gentle check to keep Studio bar mounted during SPA navigation without ever redirecting or reloading
   var _lastHref = window.location.href;
   setInterval(function() {
     ensureStudioBar();
     if (window.location.href !== _lastHref) {
       _lastHref = window.location.href;
-      if (isSpaceOrCollectionUrl(_lastHref) && !_state.pinnedProjectUrl) {
-        _state.pinnedProjectUrl = cleanSpaceUrl(_lastHref);
-        syncPrefsToApp();
-        updateBarUI();
-        showStatus('📌 Auto-pinned "Law" Project!', '#4ade80');
+      updateBarUI();
+      if (isSpaceOrCollectionUrl(_lastHref)) {
+        processActiveJob();
       }
-      processActiveJob();
     }
-  }, 500);
+  }, 800);
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function() {
@@ -2166,7 +2156,9 @@ async fn desktop_open_perplexity_studio(
         return Ok(true);
     }
 
-    let start_url_str = if eff_pinned.starts_with("https://www.perplexity.ai") {
+    let start_url_str = if eff_pinned.starts_with("https://www.perplexity.ai/spaces/")
+        || eff_pinned.starts_with("https://www.perplexity.ai/collections/")
+    {
         eff_pinned.clone()
     } else {
         "https://www.perplexity.ai/spaces".to_string()
@@ -2175,6 +2167,10 @@ async fn desktop_open_perplexity_studio(
     let parsed_url = tauri::Url::parse(&start_url_str).map_err(|e| e.to_string())?;
     let app_for_nav = app.clone();
     let state_for_nav = get_pplx_job_state();
+    let init_script_with_job = format!(
+        "window.__INITIAL_PPLX_JOB__ = {};\n{}",
+        job_json_str, PERPLEXITY_INIT_SCRIPT
+    );
 
     let mut builder = WebviewWindowBuilder::new(&app, win_label, WebviewUrl::External(parsed_url))
         .title(format!(
@@ -2185,7 +2181,7 @@ async fn desktop_open_perplexity_studio(
         .center()
         .visible(true)
         .focused(true)
-        .initialization_script(PERPLEXITY_INIT_SCRIPT);
+        .initialization_script(&init_script_with_job);
 
     builder = builder.on_navigation(move |url| {
         let url_str = url.as_str();
@@ -2249,29 +2245,6 @@ async fn desktop_open_perplexity_studio(
                 }
             }
             return false;
-        }
-
-        // For real Perplexity page navigations, push the active job state once DOM loads
-        if url_str.starts_with("https://www.perplexity.ai") {
-            let app_push = app_for_nav.clone();
-            let st_push = state_for_nav.clone();
-            std::thread::spawn(move || {
-                for delay_ms in [450_u64, 1100_u64, 2200_u64] {
-                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                    let cur_json = st_push
-                        .lock()
-                        .ok()
-                        .and_then(|g| serde_json::to_string(&*g).ok())
-                        .unwrap_or_else(|| "{}".to_string());
-                    if let Some(pw) = app_push.get_webview_window("perplexity-studio") {
-                        let js = format!(
-                            "window.__PPLX_STUDIO_RECEIVE_JOB && window.__PPLX_STUDIO_RECEIVE_JOB({});",
-                            cur_json
-                        );
-                        let _ = pw.eval(&js);
-                    }
-                }
-            });
         }
         true
     });
