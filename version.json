@@ -1,7 +1,7 @@
 {
-  "version": "1.13.2",
-  "build": 34,
+  "version": "1.13.3",
+  "build": 35,
   "updatedAt": "2026-11-07",
-  "notes": "Fix Perplexity Studio flickering/reload loop when opening cases, and automatically include the folder Topic & Subfolder Subtopic main digest instruction on every Copy Text and Perplexity Digest.",
+  "notes": "Fix Send to Case Digest capturing the full generated digest instead of only the last bullet point, and remove redundant folder path in parentheses from the default Topic/Subtopic instruction.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

@@ -1901,24 +1901,58 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       return;
     }
 
-    // 2. Find latest assistant answer block (.prose)
-    var proseBlocks = Array.from(document.querySelectorAll('.prose, [class*="prose"]')).filter(function(el) {
+    // 2. Find latest assistant answer block(s) — filter out nested inner .prose inside <li> bullet points!
+    var rawProse = Array.from(document.querySelectorAll('.prose, [class*="prose"], .markdown-body')).filter(function(el) {
       if (el.closest('#la-pplx-studio-bar')) return false;
+      if (el.closest('textarea, [contenteditable="true"]')) return false;
       var txt = (el.innerText || '').trim();
-      return txt.length > 40;
+      return txt.length > 5;
     });
 
-    if (proseBlocks.length > 0) {
-      var latest = proseBlocks[proseBlocks.length - 1];
-      var clone = latest.cloneNode(true);
-      // Remove citation badge numbers, buttons, SVGs
-      clone.querySelectorAll('button, svg, sup, .citation, [data-testid*="citation"], [class*="citation"]').forEach(function(n) {
-        n.remove();
+    // Keep ONLY outermost prose blocks (exclude any child/bullet element that is inside an outer .prose)
+    var outerProse = rawProse.filter(function(el) {
+      return !rawProse.some(function(other) {
+        return other !== el && other.contains(el);
       });
-      var html = clone.innerHTML.trim();
-      var text = (clone.innerText || clone.textContent || '').trim();
-      if (text.length > 10) {
-        sendDigestPayload(html, text);
+    });
+
+    if (outerProse.length > 0) {
+      var lastOuter = outerProse[outerProse.length - 1];
+      // Find the answer turn container (up to 4 levels up) in case a single answer was split into sibling .prose blocks
+      var turnContainer = lastOuter;
+      for (var lvl = 0; lvl < 4; lvl++) {
+        var p = turnContainer.parentElement;
+        if (!p || p === document.body || p.tagName === 'MAIN') break;
+        // Stop climbing if parent contains multiple separate answer copy/share toolbars
+        var copyBtns = p.querySelectorAll('button[aria-label*="Copy" i]');
+        if (copyBtns.length > 1) break;
+        turnContainer = p;
+      }
+
+      var turnBlocks = outerProse.filter(function(el) {
+        return turnContainer.contains(el);
+      });
+      if (turnBlocks.length === 0) turnBlocks = [lastOuter];
+
+      var htmlParts = [];
+      var textParts = [];
+      turnBlocks.forEach(function(block) {
+        var clone = block.cloneNode(true);
+        clone.querySelectorAll('button, svg, sup, .citation, [data-testid*="citation"], [class*="citation"]').forEach(function(n) {
+          n.remove();
+        });
+        var h = clone.innerHTML.trim();
+        var t = (clone.innerText || clone.textContent || '').trim();
+        if (t) {
+          htmlParts.push(h);
+          textParts.push(t);
+        }
+      });
+
+      var fullHtml = htmlParts.join('<br>');
+      var fullText = textParts.join('\n\n');
+      if (fullText.length > 10) {
+        sendDigestPayload(fullHtml, fullText);
         return;
       }
     }

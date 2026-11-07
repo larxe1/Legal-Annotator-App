@@ -73,15 +73,13 @@ export function getDefaultDigestInstructionForFolder(folderId) {
   if (folderChain.length >= 2) {
     const topic = folderChain[0];
     const subtopic = folderChain.slice(1).join(' > ');
-    const fullPath = folderChain.join(' > ');
-    return `Create a digest for this case. The topic is ${topic}, specifically ${subtopic} (${fullPath}).`;
+    return `Create a digest for this case. The topic is ${topic}, specifically ${subtopic}.`;
   }
 
   if (folderChain.length === 1) {
     const folderName = folderChain[0];
     if (subjectName && subjectName.toLowerCase() !== folderName.toLowerCase()) {
-      const fullPath = `${subjectName} > ${folderName}`;
-      return `Create a digest for this case. The topic is ${subjectName}, specifically ${folderName} (${fullPath}).`;
+      return `Create a digest for this case. The topic is ${subjectName}, specifically ${folderName}.`;
     }
     return `Create a digest for this case. The topic is ${folderName}.`;
   }
