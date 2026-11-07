@@ -1086,13 +1086,31 @@
         <button class="btn-sec" id="btn-export-settings" style="width:100%; padding:7px 10px; font-size:12px;">Export to Markdown</button>
       </div>
 
-      <!-- Offline PDF Storage Manager -->
+      <!-- Offline PDF & Notes Storage Manager -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-          <div style="font-size:13px; font-weight:600; color:#e8e4db;">📱 Offline PDF Storage</div>
+          <div style="font-size:13px; font-weight:600; color:#e8e4db;">📴 Offline Study &amp; Storage</div>
           <span id="cache-stats-lbl" style="font-size:10px; color:var(--gold); font-weight:500;">Calculating…</span>
         </div>
-        <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Opened PDFs are cached locally on your device for instant offline reading and annotation without Wi-Fi.</div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Pre-download all your notes/digests or right-click any folder → <strong>Make Folder Available Offline</strong> so you can study with zero Wi-Fi and remove cached files afterwards.</div>
+
+        <!-- All Notes Offline Pre-Download -->
+        <div style="background:rgba(0,0,0,0.28); border:1px solid var(--navy-b); border-radius:4px; padding:8px; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
+            <span style="font-size:11px; font-weight:600; color:#e8e4db;">📝 All Notes, Digests &amp; Highlights</span>
+            <span id="offline-notes-status-lbl" style="font-size:10px; color:var(--muted);">On-demand</span>
+          </div>
+          <div style="display:flex; gap:6px;">
+            <button class="btn-sec" id="btn-offline-all-notes" style="flex:1; padding:6px 8px; font-size:11px; color:#4ade80; border-color:rgba(74,222,128,0.35);">📥 Download All Notes for Offline</button>
+            <button class="btn-sec" id="btn-clear-offline-notes" style="padding:6px 8px; font-size:11px; color:var(--muted);" title="Delete pre-downloaded offline notes cache">🗑</button>
+          </div>
+        </div>
+
+        <!-- Pinned Offline Folders List -->
+        <div id="offline-folders-wrap" style="display:none; background:rgba(0,0,0,0.28); border:1px solid var(--navy-b); border-radius:4px; padding:8px; margin-bottom:8px;">
+          <div style="font-size:11px; font-weight:600; color:#e8e4db; margin-bottom:6px;">📂 Folders Saved Offline</div>
+          <div id="offline-folders-list" style="display:flex; flex-direction:column; gap:4px; max-height:130px; overflow-y:auto;"></div>
+        </div>
         
         <!-- Storage Folder Path Display -->
         <div style="background:rgba(0,0,0,0.3); border:1px solid var(--navy-b); border-radius:4px; padding:6px 8px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
@@ -1106,7 +1124,7 @@
           <button class="btn-sec" id="btn-reset-folder" style="display:none; padding:6px 8px; font-size:11px;" title="Reset back to default browser sandbox">↩ Default</button>
         </div>
 
-        <button class="btn-sec" id="btn-clear-cache" style="width:100%; padding:6px 8px; font-size:11px; color:var(--red);" onmouseover="this.style.borderColor='var(--red)'" onmouseout="this.style.borderColor=''">🗑 Clear Offline PDF Cache</button>
+        <button class="btn-sec" id="btn-clear-cache" style="width:100%; padding:6px 8px; font-size:11px; color:var(--red);" onmouseover="this.style.borderColor='var(--red)'" onmouseout="this.style.borderColor=''">🗑 Clear All Offline PDF Cache</button>
       </div>
 
       <!-- Download Folder Setting -->

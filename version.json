@@ -1,7 +1,7 @@
 {
-  "version": "1.10.5",
-  "build": 29,
-  "updatedAt": "2026-04-20",
-  "notes": "Wrap and scroll reader toolbar cleanly so right-side controls never clip, remove static green OCR status badges, and move compact Zoom controls to the bottom-right corner.",
+  "version": "1.11.0",
+  "build": 30,
+  "updatedAt": "2026-11-07",
+  "notes": "Add Offline Study Mode (pre-download all notes or specific folders for offline review and delete cached copies afterwards), make startup and login work offline with zero errors, fix endless page jumping when searching large PDFs, and fix duplicate subfolder printing when parent and child folders are both selected.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

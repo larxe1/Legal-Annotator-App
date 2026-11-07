@@ -595,6 +595,64 @@ RULES:
         dlChooseBtn.textContent = '⚠ Not supported in this browser';
         dlChooseBtn.disabled = true;
       }
+
+      // Update Offline Study status (all notes + pinned folders)
+      const {
+        getAllNotesOfflineMeta,
+        getOfflineFoldersMap,
+        removeFolderOfflineCache,
+      } = await import('./offline.js');
+      const notesMeta = getAllNotesOfflineMeta();
+      const notesLbl = document.getElementById('offline-notes-status-lbl');
+      const notesBtn = document.getElementById('btn-offline-all-notes');
+      if (notesLbl) {
+        if (notesMeta && notesMeta.savedAt) {
+          const dStr = new Date(notesMeta.savedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          notesLbl.textContent = `✓ Saved (${notesMeta.pdfCount || 0} cases · ${dStr})`;
+          notesLbl.style.color = '#4ade80';
+        } else {
+          notesLbl.textContent = 'On-demand';
+          notesLbl.style.color = 'var(--muted)';
+        }
+      }
+      if (notesBtn) {
+        notesBtn.textContent = notesMeta?.savedAt
+          ? '🔄 Refresh All Offline Notes'
+          : '📥 Download All Notes for Offline';
+      }
+
+      const foldMap = getOfflineFoldersMap();
+      const foldEntries = Object.values(foldMap || {});
+      const foldWrap = document.getElementById('offline-folders-wrap');
+      const foldList = document.getElementById('offline-folders-list');
+      if (foldWrap && foldList) {
+        if (foldEntries.length === 0) {
+          foldWrap.style.display = 'none';
+          foldList.innerHTML = '';
+        } else {
+          foldWrap.style.display = 'block';
+          foldList.innerHTML = '';
+          for (const entry of foldEntries) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 6px;background:rgba(255,255,255,0.04);border-radius:4px;font-size:11px;color:#e8e4db;';
+            const nameSpan = document.createElement('span');
+            nameSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+            const liveFold = (S.folders || []).find(f => f.id === entry.folderId);
+            nameSpan.textContent = `📁 ${liveFold?.name || entry.name || 'Folder'} (${entry.pdfCount || 0} cases)`;
+            const delBtn = document.createElement('button');
+            delBtn.className = 'btn-sec';
+            delBtn.style.cssText = 'padding:2px 7px;font-size:10px;color:var(--red);flex-shrink:0;';
+            delBtn.textContent = '🗑 Remove';
+            delBtn.addEventListener('click', async () => {
+              const targetFold = liveFold || { id: entry.folderId, name: entry.name || 'Folder' };
+              await removeFolderOfflineCache(targetFold);
+              await refreshCacheStats();
+            });
+            row.append(nameSpan, delBtn);
+            foldList.appendChild(row);
+          }
+        }
+      }
     } catch {}
   }
 
@@ -733,12 +791,38 @@ RULES:
     }
   });
 
+  document.getElementById('btn-offline-all-notes')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-offline-all-notes');
+    const lbl = document.getElementById('offline-notes-status-lbl');
+    if (btn) btn.disabled = true;
+    try {
+      const { downloadAllNotesOffline } = await import('./offline.js');
+      await downloadAllNotesOffline((msg) => {
+        if (lbl) {
+          lbl.textContent = msg;
+          lbl.style.color = 'var(--gold)';
+        }
+      });
+      await refreshCacheStats();
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  document.getElementById('btn-clear-offline-notes')?.addEventListener('click', async () => {
+    const { removeAllNotesOffline } = await import('./offline.js');
+    await removeAllNotesOffline();
+    await refreshCacheStats();
+  });
+
   document.getElementById('btn-clear-cache')?.addEventListener('click', async () => {
     if (!confirm('Clear all offline-cached PDFs from this device? (Your annotations and cloud files in Google Drive will remain safe)')) return;
     try {
       const { clearAllCachedPDFs } = await import('./pdfcache.js');
       await clearAllCachedPDFs();
+      safeStorageRemove('offline_folders_map');
       S.pdfCache = {};
+      import('./library.js').then(m => m.renderLibrary?.()).catch(() => {});
       await refreshCacheStats();
       toast('Offline PDF cache cleared.');
     } catch (e) {

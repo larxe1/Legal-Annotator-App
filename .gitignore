@@ -1,8 +1,18 @@
 # Secrets / local config
 config.js
+config.local.js
 .env
 .env.*
+*.env
 *.local
+*.pem
+*.key
+*.cert
+credentials.json
+service-account*.json
+*.secret
+secrets.json
+client_secret*.json
 
 # Personal data — notes snapshots and SQLite mirror must never be committed
 tools/fidelity/snapshot/

@@ -171,9 +171,15 @@ function checkAndAlertSaveErrors() {
     const lastAckedTs = parseInt(safeStorageGet('notepad_warn_acked_ts', '0') || '0');
 
     // Collect ERR-level entries that are newer than the last acknowledgement
-    const unackedErrors = globalLogs.filter(
-      e => e.status === 'ERR' && e.ts > lastAckedTs
-    );
+    // (ignore offline/network entries since those are safely queued locally)
+    const unackedErrors = globalLogs.filter(e => {
+      if (!e || e.status !== 'ERR' || !(e.ts > lastAckedTs)) return false;
+      const code = String(e.code || '');
+      if (e.online === false || code === 'ERR_OFFLINE' || code === 'ERR_NETWORK' || code.startsWith('OFFLINE_')) {
+        return false;
+      }
+      return true;
+    });
 
     if (unackedErrors.length === 0) {
       _removeSaveErrorBanner();

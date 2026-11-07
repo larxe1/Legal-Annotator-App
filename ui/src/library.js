@@ -15,6 +15,7 @@ import {
   dbLoadAnnCounts, dbUpdateFolderNotes, dbSetSetting, dbGetSetting
 } from './db.js';
 import { safeStorageGet, safeStorageSet, safeStorageRemove } from './storage.js';
+import { isFolderOfflineReady, makeFolderAvailableOffline, removeFolderOfflineCache } from './offline.js';
 import { driveUploadPDF, driveDeleteFile, driveEnsureSubFolder, driveResolveFolderPath, scheduleDriveOrganize } from './drive.js';
 import { openPDFFromLibrary, updateActivePDF, openFolderDoc } from './viewer.js';
 import { closeSidebar } from './ui.js';
@@ -73,6 +74,65 @@ function ensureLibCtxMenuItems() {
       menu.appendChild(ocrItem);
     }
   }
+  const offlinePdfBtn = document.getElementById('lib-ctx-offline');
+  if (!document.getElementById('ctx-pdf-offline-remove')) {
+    const remPdfItem = document.createElement('div');
+    remPdfItem.className = 'ctx-item';
+    remPdfItem.id = 'ctx-pdf-offline-remove';
+    remPdfItem.textContent = '🗑 Remove Offline Copy';
+    if (offlinePdfBtn && offlinePdfBtn.nextSibling) {
+      menu.insertBefore(remPdfItem, offlinePdfBtn.nextSibling);
+    } else {
+      menu.appendChild(remPdfItem);
+    }
+    remPdfItem.addEventListener('click', async () => {
+      if (!_ctxTarget || _ctxIsFolder) return;
+      const pdf = _ctxTarget;
+      hideLibCtxMenu();
+      const driveId = pdf.drive_file_id || S.pdfs.find(p => p.id === pdf.linked_pdf_id)?.drive_file_id;
+      if (!driveId) return;
+      if (S.pdfCache) delete S.pdfCache[driveId];
+      const { deleteCachedPDF } = await import('./pdfcache.js');
+      await deleteCachedPDF(driveId);
+      toast(`🗑 Removed offline copy of "${pdf.name}".`);
+    });
+  }
+  if (!document.getElementById('ctx-folder-offline-save')) {
+    const saveFoldItem = document.createElement('div');
+    saveFoldItem.className = 'ctx-item';
+    saveFoldItem.id = 'ctx-folder-offline-save';
+    saveFoldItem.textContent = '📥 Make Folder Available Offline';
+    const forceSyncBtn = document.getElementById('lib-ctx-force-sync');
+    if (forceSyncBtn) {
+      menu.insertBefore(saveFoldItem, forceSyncBtn);
+    } else {
+      menu.appendChild(saveFoldItem);
+    }
+    saveFoldItem.addEventListener('click', async () => {
+      if (!_ctxTarget || !_ctxIsFolder) return;
+      const folderTarget = _ctxTarget;
+      hideLibCtxMenu();
+      await makeFolderAvailableOffline(folderTarget);
+    });
+  }
+  if (!document.getElementById('ctx-folder-offline-remove')) {
+    const remFoldItem = document.createElement('div');
+    remFoldItem.className = 'ctx-item';
+    remFoldItem.id = 'ctx-folder-offline-remove';
+    remFoldItem.textContent = '🗑 Remove Folder Offline Copy';
+    const forceSyncBtn = document.getElementById('lib-ctx-force-sync');
+    if (forceSyncBtn) {
+      menu.insertBefore(remFoldItem, forceSyncBtn);
+    } else {
+      menu.appendChild(remFoldItem);
+    }
+    remFoldItem.addEventListener('click', async () => {
+      if (!_ctxTarget || !_ctxIsFolder) return;
+      const folderTarget = _ctxTarget;
+      hideLibCtxMenu();
+      await removeFolderOfflineCache(folderTarget);
+    });
+  }
 }
 
 function showLibCtxMenu(item, x, y, isFolder = false) {
@@ -128,6 +188,26 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   const ocrStudioBtn = document.getElementById('ctx-ocr-studio');
   if (ocrStudioBtn) ocrStudioBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
   document.getElementById('lib-ctx-offline').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
+  const pdfOfflineRemBtn = document.getElementById('ctx-pdf-offline-remove');
+  if (pdfOfflineRemBtn) pdfOfflineRemBtn.style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
+  const foldOfflineSaveBtn = document.getElementById('ctx-folder-offline-save');
+  const foldOfflineRemBtn = document.getElementById('ctx-folder-offline-remove');
+  if (foldOfflineSaveBtn) {
+    foldOfflineSaveBtn.style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
+    if (isMultiFolder && Array.isArray(target)) {
+      foldOfflineSaveBtn.textContent = `📥 Make ${target.length} Folders Available Offline`;
+    } else if (isFolder && item && isFolderOfflineReady(item.id)) {
+      foldOfflineSaveBtn.textContent = '🔄 Refresh Folder Offline Copy';
+    } else {
+      foldOfflineSaveBtn.textContent = '📥 Make Folder Available Offline';
+    }
+  }
+  if (foldOfflineRemBtn) {
+    foldOfflineRemBtn.style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
+    foldOfflineRemBtn.textContent = (isMultiFolder && Array.isArray(target))
+      ? `🗑 Remove Offline Copy (${target.length} Folders)`
+      : '🗑 Remove Folder Offline Copy';
+  }
   document.getElementById('lib-ctx-download').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   document.getElementById('lib-ctx-gdrive').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
   const sylBtn = document.getElementById('lib-ctx-syllabus');
@@ -865,13 +945,16 @@ function buildFolderEl(fold) {
   const progBadgeHtml = prog.total > 0
     ? `<span class="fold-prog-badge ${allDigested ? 'done' : ''}" title="${prog.digested} of ${prog.total} cases have a Case Digest">${allDigested ? '✅ ' : '⚖️ '}${prog.digested}/${prog.total}</span>`
     : '';
+  const offlineBadgeHtml = isFolderOfflineReady(fold.id)
+    ? `<span class="fold-offline-badge" title="Folder cases & notes are saved on this device for offline study" style="font-size:9px;padding:1px 5px;border-radius:4px;background:rgba(16,185,129,0.16);color:#34d399;border:1px solid rgba(16,185,129,0.35);font-weight:600;margin-left:3px;flex-shrink:0">📴 Offline</span>`
+    : '';
 
   w.innerHTML = `
     <div class="li-fold-hd">
       <span class="li-chev ${exp ? '' : 'closed'}" title="Expand / collapse folder">▼</span>
       <span>${icons[fold.folder_type] || '📁'}</span>
       <span class="li-fold-name" title="${fold.name.replace(/"/g, '&quot;')}">${fold.name}</span>
-      ${progBadgeHtml}
+      ${progBadgeHtml}${offlineBadgeHtml}
       <div class="li-acts">
         <button class="li-act-btn" title="Import / Auto-Order from Syllabus" data-act="syllabus">📋</button>
         <button class="li-act-btn" title="Add subfolder" data-act="subfolder">📁+</button>

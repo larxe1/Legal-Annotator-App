@@ -263,9 +263,18 @@ export function unrenderFarPages(centerPage = S.curPage || 1) {
   if (!S.totalPages || S.totalPages <= 50 || _renderedPages.size <= MAX_RENDERED_CANVAS_PAGES) {
     return;
   }
+  const scrollEl = document.getElementById('canvas-scroll');
+  const viewTop = scrollEl ? scrollEl.scrollTop - 1200 : -Infinity;
+  const viewBottom = scrollEl ? scrollEl.scrollTop + scrollEl.clientHeight + 1200 : Infinity;
   for (const pNum of Array.from(_renderedPages)) {
     if (Math.abs(pNum - centerPage) > EVICT_PAGE_DISTANCE) {
       const pg = S.pages?.[pNum];
+      // Never unload a page that is on (or near) the screen — the
+      // IntersectionObserver would not re-render it and it would stay blank.
+      if (pg?.wrap && scrollEl) {
+        const top = pg.wrap.offsetTop;
+        if (top + pg.wrap.offsetHeight > viewTop && top < viewBottom) continue;
+      }
       if (pg && pg.rendered && !pg.rendering) {
         try {
           if (pg.pdfCanvas) { pg.pdfCanvas.width = 1; pg.pdfCanvas.height = 1; }
@@ -750,6 +759,21 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
 
     syncOK('Ready');
   } catch (e) {
+    const isOfflineMiss = !!e?.offline || e?.message === 'OFFLINE_NOT_DOWNLOADED' || (typeof navigator !== 'undefined' && navigator.onLine === false);
+    if (isOfflineMiss) {
+      // Not downloaded on this device and no internet — explain calmly, no retries.
+      const _pdfRefOff = pdfFile;
+      scroll.innerHTML = `<div style="color:var(--text);padding:20px;font-size:13px;max-width:440px;line-height:1.7"><strong>📴 You're offline</strong><br>
+        This case hasn't been downloaded to this device yet, so it can't be opened without internet.<br><br>
+        <span style="color:var(--muted)">Tip: next time you're online, right-click a folder → <strong>📥 Make Folder Available Offline</strong> to keep its cases and notes ready for offline review.</span><br><br>
+        <button id="btn-retry-load" style="padding:6px 14px;background:var(--accent,#3b82f6);border:none;color:#fff;border-radius:6px;cursor:pointer;font-size:12px">↺ Try again</button></div>`;
+      document.getElementById('btn-retry-load')?.addEventListener('click', () => {
+        openPDFFromLibrary(_pdfRefOff, 2);
+      });
+      const { syncOK: _syncOK } = await import('./ui.js');
+      _syncOK('Offline Mode (Local Cache)');
+      return;
+    }
     if (retries > 0 && !e.message?.includes('Not signed in') && !e.message?.includes('session expired') && !e.message?.includes('No Google Drive file')) {
       console.warn('PDF load failed, retrying...', e);
       await new Promise(r => setTimeout(r, 300));
@@ -837,15 +861,17 @@ export async function ensurePageRendered(pageNum, container = null) {
 
     const wrap = pgState.wrap;
     const prevHeight = wrap.offsetHeight || vp.height;
+    const scrollEl = document.getElementById('canvas-scroll');
+    // Only pages lying entirely above the viewport need scroll compensation —
+    // a page that straddles the top edge keeps its top fixed so the visible
+    // content does not shift.
+    const wasFullyAbove = !!scrollEl && (wrap.offsetTop + prevHeight) <= scrollEl.scrollTop;
     wrap.style.width  = vp.width  + 'px';
     wrap.style.height = vp.height + 'px';
     wrap.innerHTML = ''; // remove placeholder
 
-    const scrollEl = document.getElementById('canvas-scroll');
-    if (scrollEl && Math.abs(vp.height - prevHeight) > 1) {
-      if (wrap.offsetTop < scrollEl.scrollTop) {
-        scrollEl.scrollTop += (vp.height - prevHeight);
-      }
+    if (scrollEl && wasFullyAbove && Math.abs(vp.height - prevHeight) > 1) {
+      scrollEl.scrollTop += (vp.height - prevHeight);
     }
 
     const pdfCanvas = document.createElement('canvas');

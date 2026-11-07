@@ -4,7 +4,7 @@
 import { S } from './state.js';
 import { toast, syncSpin, syncOK, syncErr } from './ui.js';
 import { getCachedPDF, setCachedPDF, deleteCachedPDF } from './pdfcache.js';
-import { safeStorageSet, safeStorageGet, safeStorageRemove } from './storage.js';
+import { safeStorageSet, safeStorageGet, safeStorageRemove, isNetworkError } from './storage.js';
 
 const CLIENT_ID   = window.APP_CONFIG?.GOOGLE_CLIENT_ID || '';
 const SCOPE       = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
@@ -90,14 +90,38 @@ let _isAutoPrompting = false;
 function _scheduleRefresh() {
   if (_tokenRefreshTimer) clearTimeout(_tokenRefreshTimer);
   _tokenRefreshTimer = setTimeout(async () => {
+    // Offline: a renewal can't succeed — try again later instead of treating
+    // the session as expired (which would sign the user out).
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      _tokenRefreshTimer = null;
+      window.addEventListener('online', () => _scheduleRefreshSoon(), { once: true });
+      return;
+    }
     try {
       await _requestToken(true, true); // silent background renewal
       await _verifyToken();            // confirm it actually works
-    } catch {
+    } catch (err) {
+      if (isNetworkError(err)) {
+        window.addEventListener('online', () => _scheduleRefreshSoon(), { once: true });
+        return;
+      }
       // Silent refresh failed — automatically trigger account picker prompt
       _onSessionExpired();
     }
   }, 50 * 60 * 1000); // 50 minutes
+}
+
+function _scheduleRefreshSoon() {
+  if (_tokenRefreshTimer) clearTimeout(_tokenRefreshTimer);
+  _tokenRefreshTimer = setTimeout(async () => {
+    _tokenRefreshTimer = null;
+    try {
+      await _requestToken(true, true);
+      await _verifyToken();
+    } catch (err) {
+      if (!isNetworkError(err)) _onSessionExpired();
+    }
+  }, 3000);
 }
 
 // -- Start a periodic health check every 5 minutes --
@@ -138,8 +162,10 @@ async function _verifyToken() {
       hideDriveWarning();
     }
   } catch {
-    // Network error — don't sign out, just warn
-    showDriveWarning('No internet connection. Drive is offline.');
+    // Network error — don't sign out and don't show a scary banner: the app
+    // works offline from this device's local copy. Re-check once back online.
+    console.info('[Drive] Offline — Google Drive will reconnect automatically when internet returns.');
+    window.addEventListener('online', () => { setTimeout(() => _verifyToken(), 1500); }, { once: true });
   }
 }
 
@@ -956,6 +982,14 @@ export async function driveFetchPDF(drive_file_id, onProgress = null, pdfName = 
     return cachedBuf;
   }
 
+  // Not on this device and no internet → fail fast with a clear message
+  // (instead of waiting on sign-in renewals that cannot succeed offline).
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    const offErr = new Error('OFFLINE_NOT_DOWNLOADED');
+    offErr.offline = true;
+    throw offErr;
+  }
+
   if (!S.driveToken) {
     await ensureDriveTokenFresh();
   }
@@ -1185,13 +1219,22 @@ export function initDriveBar() {
       try {
         await _requestToken(true, false);
         await _verifyToken();
-      } catch {
+      } catch (err) {
+        // Offline: keep the remembered account shown and retry when back online
+        if (isNetworkError(err)) {
+          window.addEventListener('online', () => setTimeout(trySilent, 1500), { once: true });
+          return;
+        }
         // Silent restore requires interactive login; leave button ready without annoying popup if first time
         S.driveUser = null;
         updateDriveBar();
       }
     };
-    if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function' || typeof google !== 'undefined') {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      // No internet at startup: don't attempt Google sign-in now (it can only
+      // fail and would show "Not connected"); reconnect automatically later.
+      window.addEventListener('online', () => setTimeout(trySilent, 1500), { once: true });
+    } else if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function' || typeof google !== 'undefined') {
       trySilent();
     } else {
       setTimeout(trySilent, 1000);

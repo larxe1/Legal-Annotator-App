@@ -1,14 +1,20 @@
-﻿// ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════
 // DIAGNOSTICS & AUDIT LOG FOR PDF NOTEPAD & CASE DIGESTS
 // ═══════════════════════════════════════════════
 
-import { safeStorageSet, safeStorageGet } from './storage.js';
+import { safeStorageSet, safeStorageGet, isNetworkError } from './storage.js';
 
 const MAX_LOGS_PER_PDF = 60;
 const MAX_GLOBAL_LOGS  = 120;
 
 export function logNotepadDiagnostic(pdfId, action, status, code, message, extra = null) {
   if (!pdfId) pdfId = 'UNKNOWN_PDF';
+  // Being offline is not a save error: notes are kept locally and queued for
+  // upload, so record it as a warning (no red "save errors" banner).
+  if (status === 'ERR' && (isNetworkError(message) || isNetworkError(extra?.error))) {
+    status = 'WARN';
+    code = 'OFFLINE_' + String(code || 'UNKNOWN').replace(/^OFFLINE_/, '');
+  }
   const entry = {
     id: 'diag_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
     ts: Date.now(),

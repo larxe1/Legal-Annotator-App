@@ -282,12 +282,20 @@ export function drawSearchHL(res, isCurrent) {
   pg.srchOv.appendChild(d);
 }
 
+let _highlightGen = 0;
+
 async function highlightCurrentResult() {
+  const myGen = ++_highlightGen;
   document.querySelectorAll('.srch-hi').forEach(el => el.classList.remove('current'));
   const res = S.searchResults[S.searchIdx]; if (!res) return;
   
+  // Scroll to the match itself (a little above it), not just the page top.
+  const pageH = S.pages?.[res.page]?.viewport?.height || 0;
+  const ratio = pageH ? Math.min(0.95, Math.max(0, (res.matchY - 150) / pageH)) : 0;
+
   const { jumpToPage } = await import('./ui.js');
-  await jumpToPage(res.page);
+  await jumpToPage(res.page, false, ratio);
+  if (myGen !== _highlightGen) return; // user already moved to another result
 
   drawSearchHL(res, true);
   const el = document.querySelector(`.srch-hi[data-sridx="${S.searchIdx}"]`);

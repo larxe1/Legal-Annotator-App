@@ -130,6 +130,10 @@ async function downloadBackup() {
 
 // ── Option 2: Upload backup JSON to Google Drive ──
 async function driveBackup({ silent = false } = {}) {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    if (!silent) _toast('📴 Offline — connect to the internet to back up to Google Drive');
+    return;
+  }
   const token = _driveToken();
   if (!token) return; // not signed in — skip silently
 

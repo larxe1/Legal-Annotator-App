@@ -1489,6 +1489,24 @@ async fn desktop_cache_read_pdf(
     Ok(Some(BASE64.encode(&bytes)))
 }
 
+/// Delete one cached PDF from the on-disk offline cache (used by
+/// "Remove Offline Copy"). Missing files are not an error.
+#[tauri::command]
+async fn desktop_cache_delete_pdf(
+    state: tauri::State<'_, AppState>,
+    file_id: String,
+) -> Result<bool, String> {
+    let safe_id = sanitize_cache_id(&file_id);
+    if safe_id.is_empty() {
+        return Ok(false);
+    }
+    let path = state.pdf_cache_dir.join(format!("{}.pdf", safe_id));
+    if !path.exists() {
+        return Ok(false);
+    }
+    Ok(fs::remove_file(&path).is_ok())
+}
+
 fn decode_html_entities(s: &str) -> String {
     s.replace("&amp;", "&")
         .replace("&#39;", "'")
@@ -2839,6 +2857,7 @@ fn main() {
             desktop_cache_get_path,
             desktop_cache_save_pdf,
             desktop_cache_read_pdf,
+            desktop_cache_delete_pdf,
             desktop_gdrive_download_file,
             desktop_gdrive_list_folder,
             desktop_vault_get_page_text,

@@ -312,6 +312,10 @@ html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; b
   padding: 28px 20px;
   gap: 24px;
   background: #2a2a2c;
+  /* The viewer compensates scroll position itself when lazily-rendered pages
+     change height (viewer.js ensurePageRendered). Browser scroll anchoring
+     would apply the same correction a second time and make large PDFs jump. */
+  overflow-anchor: none;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: auto;
   scrollbar-color: #50628a rgba(20, 28, 45, 0.85);

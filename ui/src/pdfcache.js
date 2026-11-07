@@ -342,6 +342,10 @@ export async function setCachedPDF(fileId, data, name = '') {
 }
 
 export async function deleteCachedPDF(fileId) {
+  // Also remove the on-disk copy, otherwise getCachedPDF() would still find it
+  if (tauriInvoke && fileId) {
+    await tauriInvoke('desktop_cache_delete_pdf', { fileId: String(fileId) }).catch(() => {});
+  }
   try {
     const db = await getDB();
     if (!db) return;

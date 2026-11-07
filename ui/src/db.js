@@ -11,7 +11,7 @@ import {
 } from './drive.js';
 import { broadcastSync } from './sync.js';
 import { safeDbWrite, enqueueAction } from './outbox.js';
-import { safeStorageSet, safeStorageGet, safeStorageRemove } from './storage.js';
+import { safeStorageSet, safeStorageGet, safeStorageRemove, isNetworkError } from './storage.js';
 import { logNotepadDiagnostic } from './diag.js';
 
 // Inline sync helpers (avoids circular dep with ui.js)
@@ -29,6 +29,7 @@ export const db = supabase.createClient(SURL, SKEY);
 export async function dbLoad(retries = 3) {
   syncSpin(retries < 3 ? `Retrying load... (${3 - retries})` : 'Loading…');
   try {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
     const [s, f, p, c] = await Promise.all([
       db.from('subjects').select('*').order('created_at'),
       db.from('folders').select('*').order('sort_order').order('created_at'),
@@ -92,12 +93,15 @@ export async function dbLoad(retries = 3) {
 
     syncOK('DB Sync Active');
   } catch (e) {
-    if (retries > 0) {
+    // No internet: skip the retry loop (it only delays startup) and go straight
+    // to the local copy of the library.
+    const offline = isNetworkError(e) || isNetworkError(e?.details);
+    if (retries > 0 && !(offline && safeStorageGet('local_lib_snapshot'))) {
       await new Promise(r => setTimeout(r, 1500));
       return dbLoad(retries - 1);
     }
 
-    import('./ui.js').then(m => m.recordError(e, 'Database Load'));
+    if (!offline) import('./ui.js').then(m => m.recordError(e, 'Database Load'));
 
     // Fallback: Restore from local snapshot if device is offline
     const snapStr = safeStorageGet('local_lib_snapshot');
@@ -129,10 +133,12 @@ function _hasMeaningfulDigest(html) {
 
 export async function dbLoadAnnCounts() {
   try {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
     const [annRes, notesRes] = await Promise.all([
       db.from('annotations').select('pdf_file_id'),
       db.from('pdf_notes').select('pdf_id, digest').not('digest', 'is', null).neq('digest', ''),
     ]);
+    if (annRes.error || notesRes.error) throw annRes.error || notesRes.error;
     if (annRes.data) {
       S.annCounts = {};
       for (const row of annRes.data) {
@@ -438,18 +444,38 @@ export async function dbDelPDF(id) {
   scheduleDriveOrganize(800);
 }
 
+// ── Offline fallback for per-PDF data ──
+// When the cloud can't be reached, use this device's local copy first, then
+// the Offline Study download (offline.js). Never overwrite local data with an
+// empty result just because the network is down.
+async function _loadOfflineCopy(pfid, localKey, field, emptyVal) {
+  const raw = safeStorageGet(localKey);
+  if (raw) {
+    try { return JSON.parse(raw); } catch {}
+  }
+  try {
+    const { getOfflineRecord } = await import('./offline.js');
+    const rec = await getOfflineRecord(pfid);
+    if (rec && rec[field] != null) return rec[field];
+  } catch {}
+  return emptyVal;
+}
+
 // ── Annotations ──
 export async function dbLoadAnnotations(pfid) {
   try {
-    const { data: anns } = await db
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
+    const { data: anns, error: annErr } = await db
       .from('annotations').select('*')
       .eq('pdf_file_id', pfid).order('created_at');
+    if (annErr) throw annErr;
     const ids = (anns || []).map(a => a.id);
     let notes = [];
     if (ids.length) {
-      const { data: nd } = await db
+      const { data: nd, error: noteErr } = await db
         .from('annotation_notes').select('*')
         .in('annotation_id', ids).order('order_index');
+      if (noteErr) throw noteErr;
       notes = nd || [];
     }
     S.annotations = (anns || []).map(a => ({
@@ -458,12 +484,9 @@ export async function dbLoadAnnotations(pfid) {
     }));
     safeStorageSet('local_anns_' + pfid, JSON.stringify(S.annotations));
   } catch {
-    try {
-      S.annotations = JSON.parse(safeStorageGet('local_anns_' + pfid, '[]') || '[]');
-      console.log(`[DB] Restored annotations for ${pfid} from local cache`);
-    } catch {
-      S.annotations = [];
-    }
+    S.annotations = await _loadOfflineCopy(pfid, 'local_anns_' + pfid, 'annotations', []);
+    if (!Array.isArray(S.annotations)) S.annotations = [];
+    console.log(`[DB] Restored annotations for ${pfid} from local/offline copy`);
   }
 }
 
@@ -500,15 +523,14 @@ export async function dbDelAnnotation(id) {
 // ── Custom Bookmarks (TOC) ──
 export async function dbLoadBookmarks(pfid) {
   try {
-    const { data } = await db.from('pdf_bookmarks').select('*').eq('pdf_file_id', pfid).order('page');
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
+    const { data, error } = await db.from('pdf_bookmarks').select('*').eq('pdf_file_id', pfid).order('page');
+    if (error) throw error;
     S.bookmarks = data || [];
     safeStorageSet('local_bms_' + pfid, JSON.stringify(S.bookmarks));
   } catch {
-    try {
-      S.bookmarks = JSON.parse(safeStorageGet('local_bms_' + pfid, '[]') || '[]');
-    } catch {
-      S.bookmarks = [];
-    }
+    S.bookmarks = await _loadOfflineCopy(pfid, 'local_bms_' + pfid, 'bookmarks', []);
+    if (!Array.isArray(S.bookmarks)) S.bookmarks = [];
   }
 }
 
@@ -565,16 +587,15 @@ export async function dbDelNote(id) {
 // ── Drawings ──
 export async function dbLoadDrawings(pfid) {
   try {
-    const { data } = await db.from('drawings').select('*').eq('pdf_file_id', pfid);
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
+    const { data, error } = await db.from('drawings').select('*').eq('pdf_file_id', pfid);
+    if (error) throw error;
     S.drawData = {};
     for (const d of data || []) S.drawData[d.page] = d.strokes || [];
     safeStorageSet('local_draws_' + pfid, JSON.stringify(S.drawData));
   } catch {
-    try {
-      S.drawData = JSON.parse(safeStorageGet('local_draws_' + pfid, '{}') || '{}');
-    } catch {
-      S.drawData = {};
-    }
+    S.drawData = await _loadOfflineCopy(pfid, 'local_draws_' + pfid, 'drawings', {});
+    if (!S.drawData || typeof S.drawData !== 'object') S.drawData = {};
   }
 }
 
@@ -627,6 +648,7 @@ export async function dbLoadNotepad(pdf_id) {
   let diagStatus = 'OK';
 
   try {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
     let { data, error } = await db.from('pdf_notes').select('content, digest').eq('pdf_id', truePdfId).maybeSingle();
     
     // If not found or empty on truePdfId, and truePdfId differs from pdf_id, check alias ID
@@ -702,6 +724,23 @@ export async function dbLoadNotepad(pdf_id) {
     logNotepadDiagnostic(truePdfId, 'LOAD', 'INFO', 'INFO_LOCAL_DIGEST', `Restored digest from local storage (${digest.length} chars)`);
   }
 
+  // Cloud unreachable and nothing on this device's local cache → use the
+  // Offline Study download (offline.js), if this case was downloaded.
+  if (!cloudOk && (!content || !digest)) {
+    try {
+      const { getOfflineRecord } = await import('./offline.js');
+      const rec = (await getOfflineRecord(truePdfId)) || (truePdfId !== pdf_id ? await getOfflineRecord(pdf_id) : null);
+      if (rec) {
+        if (!content && rec.content) content = rec.content;
+        if (!digest && rec.digest) digest = rec.digest;
+        if (rec.content || rec.digest) {
+          source = 'offline';
+          logNotepadDiagnostic(truePdfId, 'LOAD', 'INFO', 'INFO_OFFLINE_COPY', `Loaded from Offline Study download (Notes: ${content.length} chars, Digest: ${digest.length} chars)`);
+        }
+      }
+    } catch {}
+  }
+
   // Fallback to history snapshot (both IndexedDB and localStorage) if still empty
   if (!content && !digest) {
     try {
@@ -764,6 +803,7 @@ export async function dbFetchCloudNotepadRaw(pdf_id) {
   if (!pdf_id) return { ok: false, error: 'Missing pdf_id' };
   const truePdfId = S.pdfs?.find(p => p.id === pdf_id)?.linked_pdf_id || pdf_id;
   try {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
     let { data, error } = await db.from('pdf_notes').select('content, digest').eq('pdf_id', truePdfId).maybeSingle();
     if (!error && (!data || (!data.content && !data.digest)) && truePdfId !== pdf_id) {
       try {
@@ -920,6 +960,7 @@ export async function dbSaveNotepad(pdf_id, content, digest) {
   const dTxt = payload.digest  === undefined ? 'unchanged' : `${dLen} chars`;
 
   try {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
     let { error } = await db.from('pdf_notes').upsert(payload, { onConflict: 'pdf_id' });
 
     // Auto-heal Foreign Key error (23503): ensure subject -> folder -> pdf_files exist in Supabase, then retry!
@@ -987,8 +1028,10 @@ export async function dbSaveNotepad(pdf_id, content, digest) {
 // ───────────────────────────────────────────────
 export async function dbLoadLinks() {
   try {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
     const { data, error } = await db.from('dictionary').select('definition').eq('word', '__sys_links').maybeSingle();
-    if (error || !data) return [];
+    if (error) throw error; // offline → use the local copy below
+    if (!data) return [];
     const links = JSON.parse(data.definition) || [];
     safeStorageSet('local_sys_links', JSON.stringify(links));
     return links;
@@ -1010,6 +1053,7 @@ export async function dbSaveLinks(links) {
 // Used for Gemini API key and other cross-device settings.
 export async function dbGetSetting(key) {
   try {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return null;
     const { data } = await db.from('app_settings').select('value').eq('key', key).maybeSingle();
     return data?.value || null;
   } catch { return null; }

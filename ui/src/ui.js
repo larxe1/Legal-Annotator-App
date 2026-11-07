@@ -794,33 +794,42 @@ export function flushCurrentReadingPosition() {
   }
 }
 
+let _jumpGen = 0;
+
 export async function scrollToPageAndRatio(pageNum, ratio = 0, smooth = false) {
   if (!S.totalPages || pageNum < 1 || pageNum > S.totalPages) return;
+  const myJump = ++_jumpGen;
   _isJumping = true;
 
   const { ensurePageRendered } = await import('./viewer.js');
   await ensurePageRendered(pageNum);
+  if (myJump !== _jumpGen) return; // a newer jump took over
   if (pageNum > 1) ensurePageRendered(pageNum - 1);
 
   const scrollEl = document.getElementById('canvas-scroll');
   const wrap = S.pages?.[pageNum]?.wrap;
+  // Always recompute the target from the page element's live position, so
+  // pages above that finish rendering (and change height) don't make us snap
+  // back to a stale pixel offset.
+  const targetTop = () => Math.max(0, wrap.offsetTop - 16 + Math.round((ratio || 0) * (wrap.offsetHeight || 0)));
   if (wrap && scrollEl) {
-    const exactTop = Math.max(0, wrap.offsetTop - 16 + Math.round((ratio || 0) * (wrap.offsetHeight || 0)));
+    const exactTop = targetTop();
     if (smooth && scrollEl.scrollTo) {
       scrollEl.scrollTo({ top: exactTop, behavior: 'smooth' });
     } else {
       scrollEl.scrollTop = exactTop;
     }
-    requestAnimationFrame(() => {
-      if (Math.abs(scrollEl.scrollTop - exactTop) > 8) scrollEl.scrollTop = exactTop;
-    });
-    setTimeout(() => {
-      if (Math.abs(scrollEl.scrollTop - exactTop) > 8) scrollEl.scrollTop = exactTop;
-    }, 120);
+    const settle = () => {
+      if (myJump !== _jumpGen) return;
+      const t = targetTop();
+      if (Math.abs(scrollEl.scrollTop - t) > 8) scrollEl.scrollTop = t;
+    };
+    requestAnimationFrame(settle);
+    setTimeout(settle, 120);
   }
 
   setTimeout(() => {
-    _isJumping = false;
+    if (myJump === _jumpGen) _isJumping = false;
   }, 280);
 }
 
@@ -849,25 +858,19 @@ export function initNavButtons() {
       _scrollTimer = null;
       if (_isJumping || !S.totalPages) return;
 
-      // ── Zero-Layout Algebraic Page Detection ──
-      // Pure mathematical calculation in O(1) time — eliminates all getBoundingClientRect() layout thrashing
       const targetY = scrollEl.scrollTop + 80;
-      const vpHeight = S.pages?.[1]?.viewport?.height || 1000;
-      const slotHeight = vpHeight + 24;
 
-      // Estimated page based on uniform slot height
-      let foundPage = Math.max(1, Math.min(S.totalPages, Math.floor((targetY - 28) / slotHeight) + 1));
-
-      // Fast verification with target page element's relative offsetTop (0 layout reflow since #canvas-scroll is position:relative)
-      const wrap = S.pages?.[foundPage]?.wrap;
-      if (wrap) {
-        const top = wrap.offsetTop;
-        const bottom = top + (wrap.offsetHeight || vpHeight) + 24;
-        if (targetY < top && foundPage > 1) {
-          foundPage--;
-        } else if (targetY > bottom && foundPage < S.totalPages) {
-          foundPage++;
-        }
+      // Binary search over the real page positions. Pages can have different
+      // sizes (and placeholders differ from rendered pages), so a uniform-slot
+      // estimate can be many pages off in large PDFs — which used to set the
+      // wrong current page, evict the visible pages and cause endless jumps.
+      let lo = 1, hi = S.totalPages, foundPage = 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const w = S.pages?.[mid]?.wrap;
+        if (!w) break;
+        if (w.offsetTop <= targetY) { foundPage = mid; lo = mid + 1; }
+        else hi = mid - 1;
       }
 
       if (foundPage && foundPage !== S.curPage && foundPage >= 1 && foundPage <= S.totalPages) {
@@ -893,12 +896,12 @@ export function initNavButtons() {
   });
 }
 
-export async function jumpToPage(pg, smooth = false) {
+export async function jumpToPage(pg, smooth = false, ratio = 0) {
   if (!S.totalPages || pg < 1 || pg > S.totalPages) return;
   S.curPage = pg;
   document.getElementById('pg-input').value = pg;
   if (S.curPDF) {
-    saveReadingPosition(S.curPDF, pg, 0, false);
+    saveReadingPosition(S.curPDF, pg, ratio || 0, false);
   }
 
   // Efficient thumbnail highlight
@@ -912,7 +915,7 @@ export async function jumpToPage(pg, smooth = false) {
   }
 
   updateAppTitle();
-  await scrollToPageAndRatio(pg, 0, smooth);
+  await scrollToPageAndRatio(pg, ratio || 0, smooth);
 }
 
 // ── Keyboard shortcuts ──

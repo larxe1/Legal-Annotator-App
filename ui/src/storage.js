@@ -17,9 +17,28 @@ export function isQuotaError(err) {
   );
 }
 
+// ── Check if an error just means "no internet" (offline / unreachable server) ──
+export function isNetworkError(err) {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+  const msg = String(err?.message || err?.details || err || '');
+  return /failed to fetch|networkerror|network request failed|load failed|err_internet|err_name_not_resolved|err_network|err_connection|offline|timed? ?out|aborterror|the user aborted/i.test(msg);
+}
+
+// ── Optional mirror hook: lets the Offline Study Mode keep its offline copy of
+// notes/highlights in sync with every local save (see offline.js) ──
+let _storageMirrorHook = null;
+export function setStorageMirrorHook(fn) {
+  _storageMirrorHook = typeof fn === 'function' ? fn : null;
+}
+function _mirror(key, value) {
+  if (!_storageMirrorHook) return;
+  try { _storageMirrorHook(key, value); } catch {}
+}
+
 // ── Safe LocalStorage Set with Quota Auto-Recovery ──
 export function safeStorageSet(key, value) {
   if (typeof localStorage === 'undefined') return false;
+  _mirror(key, value);
   try {
     localStorage.setItem(key, value);
     return true;

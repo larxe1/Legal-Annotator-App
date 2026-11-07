@@ -113,11 +113,16 @@ function extractAllTablesFromHtml(html) {
 }
 
 // Fallback: check if the PDF has a summary table inside its Annotation Case Summary cards
-function fetchFirstAnnotationTable(pdf) {
+async function fetchFirstAnnotationTable(pdf) {
   const trueId = pdf.linked_pdf_id || pdf.id;
   try {
     const raw = safeStorageGet('local_anns_' + trueId, '');
-    const anns = raw ? JSON.parse(raw) : (S.annotations || []).filter(a => a.pdf_file_id === trueId);
+    let anns = raw ? JSON.parse(raw) : (S.annotations || []).filter(a => a.pdf_file_id === trueId);
+    if (!anns || !anns.length) {
+      const { getOfflineRecord } = await import('./offline.js').catch(() => ({}));
+      const rec = getOfflineRecord ? await getOfflineRecord(trueId) : null;
+      if (rec && Array.isArray(rec.annotations)) anns = rec.annotations;
+    }
     for (const ann of (anns || [])) {
       for (const n of (ann.notes || [])) {
         const tbl = extractFirstTableFromHtml(n.note_html || '');
@@ -152,6 +157,9 @@ function getFolderPathString(folder) {
 
 // Build HTML tree for folder export. Only registers cases that actually have notes/digest (or a summary table in tablesOnly mode).
 async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}) {
+  const visitedFolders = opts.visitedFolders || (opts.visitedFolders = new Set());
+  if (!folderId || visitedFolders.has(folderId)) return '';
+  visitedFolders.add(folderId);
   const folder = S.folders.find(f => f.id === folderId);
   if (!folder) return '';
 
@@ -175,7 +183,7 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}
       const firstTable =
         extractFirstTableFromHtml(digest) ||
         extractFirstTableFromHtml(content) ||
-        fetchFirstAnnotationTable(pdf);
+        (await fetchFirstAnnotationTable(pdf));
 
       if (firstTable && hasMeaningfulContent(firstTable)) {
         hasAnyContent = true;
@@ -313,7 +321,26 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}
 }
 
 export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
-  const folders = Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder];
+  const rawFolders = (Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder]).filter(Boolean);
+  // If a folder AND one of its subfolders are both selected, the subfolder is
+  // already printed as part of its parent — drop it (and any duplicates) so it
+  // is not printed twice. Selection order of the remaining folders is kept.
+  const selectedIds = new Set(rawFolders.map(f => f.id));
+  const seenIds = new Set();
+  const folders = rawFolders.filter(f => {
+    if (seenIds.has(f.id)) return false;
+    seenIds.add(f.id);
+    const guard = new Set();
+    let parentId = f.parent_folder_id;
+    while (parentId && !guard.has(parentId)) {
+      if (selectedIds.has(parentId)) return false;
+      guard.add(parentId);
+      const parent = S.folders.find(x => x.id === parentId);
+      parentId = parent ? parent.parent_folder_id : null;
+    }
+    return true;
+  });
+  if (!folders.length) return;
   const orientation = opts.orientation === 'landscape' ? 'landscape' : 'portrait';
   const tablesOnly = Boolean(opts.tablesOnly);
   // 1. Flush any pending active editor notes from memory to state
@@ -329,10 +356,11 @@ export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
   toast(tablesOnly ? 'Gathering summary tables for export...' : 'Gathering notes for export...');
 
   const caseRegistry = [];
+  const visitedFolders = new Set();
   const htmlParts = [];
   for (const f of folders) {
     const depth = folders.length > 1 ? 2 : 1;
-    const fHtml = await buildFolderHTML(f.id, depth, caseRegistry, { tablesOnly });
+    const fHtml = await buildFolderHTML(f.id, depth, caseRegistry, { tablesOnly, visitedFolders });
     if (fHtml && hasMeaningfulContent(fHtml)) {
       htmlParts.push(fHtml);
     }
