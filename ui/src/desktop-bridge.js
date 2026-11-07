@@ -84,6 +84,41 @@ if (invoke) {
     }
   };
 
+  window.desktopGetPerplexityPrefs = async () => {
+    try {
+      return await invoke('desktop_get_perplexity_prefs');
+    } catch {
+      return null;
+    }
+  };
+
+  window.desktopSavePerplexityPrefs = async (prefs) => {
+    try {
+      return await invoke('desktop_save_perplexity_prefs', { prefs });
+    } catch {
+      return false;
+    }
+  };
+
+  window.desktopOpenPerplexityStudio = async (opts = {}) => {
+    try {
+      return await invoke('desktop_open_perplexity_studio', {
+        pdfId: String(opts.pdfId || ''),
+        pdfName: String(opts.pdfName || 'Current PDF'),
+        subfolderName: opts.subfolderName ? String(opts.subfolderName) : '',
+        instructionText: opts.instructionText ? String(opts.instructionText) : '',
+        pdfText: String(opts.pdfText || ''),
+        fullPromptText: String(opts.fullPromptText || ''),
+        pinnedProjectUrl: opts.pinnedProjectUrl ? String(opts.pinnedProjectUrl) : null,
+        autoSubmit: typeof opts.autoSubmit === 'boolean' ? opts.autoSubmit : null,
+        digestMode: opts.digestMode ? String(opts.digestMode) : null,
+      });
+    } catch (err) {
+      console.warn('[Desktop] desktop_open_perplexity_studio failed:', err);
+      return false;
+    }
+  };
+
   const _origWindowOpen = window.open ? window.open.bind(window) : null;
   window.open = function (url, target, features) {
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) {

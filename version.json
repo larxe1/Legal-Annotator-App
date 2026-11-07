@@ -1,7 +1,7 @@
 {
-  "version": "1.12.0",
-  "build": 31,
+  "version": "1.13.0",
+  "build": 32,
   "updatedAt": "2026-11-07",
-  "notes": "Add subfolder-specific Copy Text Instructions (+ Add Instruction button beside Copy Text that persists per subfolder/subtopic), fix zooming/scrolling out from resetting PDF to page 1, and fix right-click 'Open in Google Drive' on the left sidebar.",
+  "notes": "Add built-in Perplexity 'Law' Project Digest Studio (⚡ Perplexity Digest button with Auto-Submit toggle and 1-click Send to Case Digest with Append/Replace toggle), subfolder-specific Copy Text Instructions, zoom-out page reset fix, and Open in Google Drive fix.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

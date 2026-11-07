@@ -15,7 +15,7 @@ import {
   dbLoadBookmarks,
 } from './db.js';
 import { replayOutbox } from './outbox.js';
-import { showTablePicker, handlePaste, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown, copyFirstSummaryTable } from './tablepicker.js';
+import { showTablePicker, handlePaste, sanitizeRichPasteHtml, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
 import { closeOtherPanels, toast } from './ui.js';
 import { safeStorageSet, safeStorageGet } from './storage.js';
@@ -859,6 +859,88 @@ export function switchNotepadTab(tab) {
     if (notesEd) notesEd.style.display = 'block';
     notesEd?.focus();
   }
+}
+
+// ── Import formatted digest strictly into Case Digest tab (leaves Notes tab untouched) ──
+export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText = '', mode = 'append') {
+  const targetPdfId = pdfId
+    || (S.curPDF ? (S.curPDF.linked_pdf_id || S.curPDF.id) : null)
+    || _activePdfId;
+  if (!targetPdfId) {
+    toast('⚠️ Open a PDF first so the Case Digest knows which case to save to.');
+    return false;
+  }
+
+  const formattedHtml = sanitizeRichPasteHtml(rawHtml, rawText).trim();
+  if (!formattedHtml) {
+    toast('⚠️ No digest text found to import.');
+    return false;
+  }
+
+  const panel = $panel();
+  if (!panel?.classList.contains('open') || _activePdfId !== targetPdfId) {
+    await openNotepad(targetPdfId);
+  }
+  switchNotepadTab('digest');
+
+  const cached = _notepadCache.get(targetPdfId) || {
+    content: safeStorageGet('local_notepad_' + targetPdfId, '') || '',
+    digest: safeStorageGet('local_digest_' + targetPdfId, '') || '',
+    dirty: false,
+    timestamp: Date.now()
+  };
+
+  // Strictly preserve Notes tab (content) untouched — only update Case Digest tab (digest)
+  const notesContent = (_activePdfId === targetPdfId && _domBoundPdfId === targetPdfId && $notesEditor())
+    ? ($notesEditor().innerHTML ?? cached.content ?? '')
+    : (cached.content ?? '');
+
+  const digestEd = $digestEditor();
+  const currentDigestRaw = (_activePdfId === targetPdfId && _domBoundPdfId === targetPdfId && digestEd)
+    ? (digestEd.innerHTML ?? cached.digest ?? '')
+    : (cached.digest ?? '');
+
+  const hasExistingDigest = Boolean(
+    currentDigestRaw &&
+    currentDigestRaw.replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/gi, '').trim().length > 0
+  );
+
+  let nextDigest = formattedHtml;
+  const effectiveMode = (mode === 'replace') ? 'replace' : 'append';
+  if (hasExistingDigest && effectiveMode === 'append') {
+    nextDigest = `${currentDigestRaw.replace(/(?:<br\s*\/?>\s*)+$/i, '')}<br><hr style="border:none;border-top:1px solid var(--navy-b);margin:14px 0;"><br>${formattedHtml}`;
+  }
+
+  if (digestEd && _activePdfId === targetPdfId) {
+    digestEd.innerHTML = nextDigest;
+    _domBoundPdfId = targetPdfId;
+    try {
+      digestEd.scrollTop = digestEd.scrollHeight;
+    } catch {}
+  }
+
+  _notepadCache.set(targetPdfId, {
+    content: notesContent,
+    digest: nextDigest,
+    dirty: true,
+    hadUserInput: true,
+    timestamp: Date.now(),
+  });
+  safeStorageSet('local_digest_' + targetPdfId, nextDigest);
+  setWriteTs(targetPdfId);
+  await saveHistorySnapshot(targetPdfId, notesContent, nextDigest);
+  executeSaveForPdf(targetPdfId);
+
+  toast(
+    hasExistingDigest && effectiveMode === 'append'
+      ? '✅ Appended Perplexity Digest to the bottom of Case Digest tab!'
+      : '✅ Saved Perplexity Digest into Case Digest tab!'
+  );
+  return true;
+}
+
+if (typeof window !== 'undefined') {
+  window.__importDigestIntoCaseDigestTab = importDigestIntoCaseDigestTab;
 }
 
 // ── Called whenever the active PDF changes in viewer or dual-view ──

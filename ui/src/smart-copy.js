@@ -708,6 +708,138 @@ export async function copyEntirePdfTextSmart() {
   }
 }
 
+let _isDigestingPerplexity = false;
+
+/**
+ * Extracts entire PDF text + Subfolder Instruction, copies to clipboard, and opens
+ * the Perplexity "Law" Project Digest Studio window (with auto-paste & auto-submit).
+ */
+export async function openPerplexityDigestForCurrentPdf() {
+  if (_isDigestingPerplexity) return;
+  if (!S.pdfDoc || !S.totalPages || S.totalPages <= 0 || !S.curPDF) {
+    toast('⚠️ Open a PDF first to generate a Case Digest in Perplexity.');
+    return;
+  }
+
+  const btn = document.getElementById('btn-perplexity-digest');
+  const origHtml = btn ? btn.innerHTML : '';
+  _isDigestingPerplexity = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span>⏳ Preparing…</span>';
+  }
+
+  const total = S.totalPages;
+  const doc = S.pdfDoc;
+  const pdfObj = S.curPDF;
+  const trueId = pdfObj.linked_pdf_id || pdfObj.id;
+  const pageTexts = new Array(total);
+  const BATCH_SIZE = 10;
+
+  try {
+    toast(`⏳ Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Perplexity "Law" Project…`);
+
+    for (let i = 1; i <= total; i += BATCH_SIZE) {
+      if (doc !== S.pdfDoc) throw new Error('PDF changed during extraction');
+      const batchPromises = [];
+      for (let p = i; p < i + BATCH_SIZE && p <= total; p++) {
+        const pageNum = p;
+        batchPromises.push((async () => {
+          try {
+            const page = await doc.getPage(pageNum);
+            const tc = await page.getTextContent();
+            const viewport = page.getViewport({ scale: 1.0 });
+            let pageText = '';
+            if (tc && tc.items && tc.items.length > 0) {
+              pageText = formatPageTextContent(tc, viewport, pageNum);
+            }
+            if (!pageText || !pageText.trim()) {
+              if (trueId) {
+                try {
+                  const ocrMod = await import('./ocr.js').catch(() => null);
+                  if (ocrMod && typeof ocrMod.getOcrPageText === 'function') {
+                    const ocrText = await ocrMod.getOcrPageText(trueId, pageNum);
+                    if (ocrText && ocrText.trim()) {
+                      pageText = stripPageNumbersAndFooters(ocrText, pageNum);
+                    }
+                  }
+                } catch {}
+              }
+            }
+            pageTexts[pageNum - 1] = pageText ? pageText.trim() : '';
+          } catch {
+            pageTexts[pageNum - 1] = '';
+          }
+        })());
+      }
+      await Promise.all(batchPromises);
+      if (i + BATCH_SIZE <= total) await new Promise(r => setTimeout(r, 0));
+    }
+
+    const validPages = pageTexts.filter(t => t && t.trim().length > 0);
+    if (!validPages.length) {
+      toast('⚠️ No selectable text found in this PDF (run Scan OCR first).');
+      return;
+    }
+
+    let pdfText = validPages.join('\n\n').trim();
+    pdfText = stripPageNumbersAndFooters(pdfText);
+
+    const activeFolderId = getActiveSubfolderId();
+    const subfolderName = activeFolderId ? getFolderBreadcrumb(activeFolderId) : '';
+    const instructionText = activeFolderId ? getSubfolderCopyInstruction(activeFolderId).trim() : '';
+    const fullPromptText = instructionText ? `${instructionText}\n\n${pdfText}` : pdfText;
+
+    await copyToClipboard(fullPromptText);
+
+    let pinnedProjectUrl = safeStorageGet('pplx_pinned_project_url', '') || '';
+    if (!pinnedProjectUrl) {
+      try {
+        const cloudUrl = await dbGetSetting('pplx_pinned_project_url');
+        if (cloudUrl && typeof cloudUrl === 'string' && cloudUrl.trim()) {
+          pinnedProjectUrl = cloudUrl.trim();
+          safeStorageSet('pplx_pinned_project_url', pinnedProjectUrl);
+        }
+      } catch {}
+    }
+
+    const autoSubmitPref = safeStorageGet('pplx_auto_submit', 'true') !== 'false';
+    const digestModePref = safeStorageGet('pplx_digest_mode', 'append') === 'replace' ? 'replace' : 'append';
+
+    if (typeof window.desktopOpenPerplexityStudio === 'function') {
+      const opened = await window.desktopOpenPerplexityStudio({
+        pdfId: trueId,
+        pdfName: pdfObj.name || 'Case.pdf',
+        subfolderName,
+        instructionText,
+        pdfText,
+        fullPromptText,
+        pinnedProjectUrl,
+        autoSubmit: autoSubmitPref,
+        digestMode: digestModePref,
+      });
+      if (opened) {
+        toast('⚡ Opened Perplexity "Law" Digest Studio!');
+        return;
+      }
+    }
+
+    // Web browser fallback
+    const fallbackUrl = pinnedProjectUrl || 'https://www.perplexity.ai/spaces';
+    window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+    toast('✅ Copied case + instructions! Paste (Ctrl+V) in your Perplexity "Law" Project.');
+  } catch (err) {
+    console.error('[perplexity-digest] Error:', err);
+    toast(`⚠️ Could not start Perplexity Digest: ${err.message || err}`);
+  } finally {
+    _isDigestingPerplexity = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  }
+}
+
 let _smartCopyInitialized = false;
 
 /**
@@ -861,12 +993,48 @@ export function initSmartCopy() {
   }
 
   updateCopyInstructionButtonState();
+
+  const btnPplx = document.getElementById('btn-perplexity-digest');
+  if (btnPplx) {
+    btnPplx.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPerplexityDigestForCurrentPdf();
+    });
+  }
 }
 
 if (typeof window !== 'undefined') {
   window.copySelectedTextClean = copySelectedTextClean;
   window.copyEntirePdfTextSmart = copyEntirePdfTextSmart;
+  window.openPerplexityDigestForCurrentPdf = openPerplexityDigestForCurrentPdf;
   window.stripPageNumbersAndFooters = stripPageNumbersAndFooters;
   window.formatPageTextContent = formatPageTextContent;
   window.initSmartCopy = initSmartCopy;
+
+  window.__onPerplexityPrefsUpdated = (prefs) => {
+    if (!prefs || typeof prefs !== 'object') return;
+    if (typeof prefs.pinnedProjectUrl === 'string') {
+      safeStorageSet('pplx_pinned_project_url', prefs.pinnedProjectUrl);
+      if (prefs.pinnedProjectUrl) {
+        dbSetSetting('pplx_pinned_project_url', prefs.pinnedProjectUrl).catch(() => {});
+      }
+    }
+    if (typeof prefs.autoSubmit === 'boolean') {
+      safeStorageSet('pplx_auto_submit', prefs.autoSubmit ? 'true' : 'false');
+    }
+    if (prefs.digestMode === 'replace' || prefs.digestMode === 'append') {
+      safeStorageSet('pplx_digest_mode', prefs.digestMode);
+    }
+  };
+
+  window.__onPerplexityDigestReceived = async (msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    const { importDigestIntoCaseDigestTab } = await import('./notepad.js');
+    await importDigestIntoCaseDigestTab(
+      msg.pdfId || '',
+      msg.html || '',
+      msg.text || '',
+      msg.digestMode === 'replace' ? 'replace' : 'append'
+    );
+  };
 }

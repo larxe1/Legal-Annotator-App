@@ -183,6 +183,106 @@ function parseTextToList(text) {
   return null;
 }
 
+export function sanitizeRichPasteHtml(html, text = '') {
+  if (!html && text) {
+    const tableHtml = parseTextToTable(text);
+    if (tableHtml) return tableHtml;
+    const listHtml = parseTextToList(text);
+    if (listHtml) return listHtml;
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r?\n/g, '<br>');
+  }
+  if (!html) return '';
+
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('.ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder, button, svg').forEach(el => el.remove());
+
+  const hasHtmlTable = doc.querySelector('table');
+  if (!hasHtmlTable && text) {
+    const tableFromText = parseTextToTable(text);
+    if (tableFromText) return tableFromText;
+  }
+
+  function cleanNode(node) {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    if (node.matches && node.matches('.ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder, button, svg')) {
+      return '';
+    }
+
+    let inner = '';
+    node.childNodes.forEach(c => inner += cleanNode(c));
+    if (!inner && !['br', 'hr', 'td', 'th', 'li'].includes(node.tagName.toLowerCase())) return '';
+
+    const tag = node.tagName.toLowerCase();
+    const style = node.style || {};
+    const fontWeight = (style.fontWeight || '').toLowerCase();
+    const fontStyle = (style.fontStyle || '').toLowerCase();
+    const textDeco = (style.textDecoration || '').toLowerCase();
+    const isGoogleDocsWrapper = node.id?.startsWith('docs-internal-guid') || (tag === 'b' && (fontWeight === 'normal' || fontWeight === '400' || fontWeight === 'lighter'));
+
+    const isBold = (['b', 'strong'].includes(tag) && !isGoogleDocsWrapper && fontWeight !== 'normal' && fontWeight !== '400' && fontWeight !== 'lighter') ||
+                   (fontWeight === 'bold' || fontWeight === '700' || fontWeight === '800' || fontWeight === '900' || parseInt(fontWeight) >= 600);
+    const isItalic = (['i', 'em'].includes(tag) && fontStyle !== 'normal') || fontStyle === 'italic';
+    const isUnderline = (tag === 'u' && !textDeco.includes('none')) || textDeco.includes('underline');
+    const isStrike = ['s', 'strike'].includes(tag) || textDeco.includes('line-through');
+
+    if (isStrike) inner = `<s>${inner}</s>`;
+    if (isUnderline) inner = `<u>${inner}</u>`;
+    if (isItalic) inner = `<i>${inner}</i>`;
+    if (isBold) inner = `<b>${inner}</b>`;
+
+    if (tag === 'sup') return `<sup>${inner}</sup>`;
+    if (tag === 'sub') return `<sub>${inner}</sub>`;
+    if (tag === 'a') {
+      const href = node.getAttribute('href') || '#';
+      if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('mailto:') || href.startsWith('#')) {
+        return `<a href="${href}" target="_blank" rel="noopener">${inner}</a>`;
+      }
+      return inner;
+    }
+    if (tag === 'span') {
+      if (node.classList?.contains('dim-text')) {
+        return `<span class="dim-text" style="opacity: 0.45; color: #94a3b8; display: inline; transition: opacity .15s;">${inner}</span>`;
+      }
+      return inner;
+    }
+    if (['ul', 'ol'].includes(tag)) {
+      return `<${tag} style="margin:6px 0; padding-left:24px;">${inner}</${tag}>`;
+    }
+    if (tag === 'li') return `<li>${inner || '<br>'}</li>`;
+    if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) {
+      return `<${tag} style="margin:8px 0 4px;">${inner}</${tag}>`;
+    }
+    if (tag === 'blockquote') {
+      return `<blockquote style="border-left:3px solid var(--gold); margin:8px 0; padding-left:10px; color:var(--text-d);">${inner}</blockquote>`;
+    }
+    if (tag === 'table') {
+      return `<table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:break-word;">${inner}</table>`;
+    }
+    if (['tbody', 'thead', 'tfoot'].includes(tag)) return `<${tag}>${inner}</${tag}>`;
+    if (tag === 'tr') return `<tr>${inner}</tr>`;
+    if (tag === 'th') {
+      const colspan = node.getAttribute('colspan') ? ` colspan="${node.getAttribute('colspan')}"` : '';
+      const rowspan = node.getAttribute('rowspan') ? ` rowspan="${node.getAttribute('rowspan')}"` : '';
+      return `<th style="border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:break-word; overflow-wrap:anywhere;"${colspan}${rowspan}>${inner || '<br>'}</th>`;
+    }
+    if (tag === 'td') {
+      const colspan = node.getAttribute('colspan') ? ` colspan="${node.getAttribute('colspan')}"` : '';
+      const rowspan = node.getAttribute('rowspan') ? ` rowspan="${node.getAttribute('rowspan')}"` : '';
+      return `<td style="border:1px solid var(--navy-b); padding:6px 10px; word-break:break-word; overflow-wrap:anywhere;"${colspan}${rowspan}>${inner || '<br>'}</td>`;
+    }
+    if (['p', 'div'].includes(tag)) {
+      return inner ? `${inner}<br>` : '<br>';
+    }
+    if (tag === 'br') return '<br>';
+    return inner;
+  }
+
+  let cleanHtml = cleanNode(doc.body);
+  cleanHtml = cleanHtml.replace(/(?:<br\s*\/?>\s*)+$/i, '');
+  return cleanHtml || text.replace(/\n/g, '<br>');
+}
+
 export function handlePaste(e) {
   const html = e.clipboardData.getData('text/html');
   const text = e.clipboardData.getData('text/plain');

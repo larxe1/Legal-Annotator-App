@@ -272,6 +272,8 @@ html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; b
 #btn-copy-pdf-instr { font-size: 11px; padding: 4px 7px; border-color: rgba(255,255,255,0.08); }
 #btn-copy-pdf-instr:hover { color: var(--gold); border-color: rgba(201,168,76,0.35); background: rgba(201,168,76,0.08); }
 #btn-copy-pdf-instr.has-instr { color: var(--gold); border-color: rgba(201,168,76,0.45); background: rgba(201,168,76,0.12); font-weight: 500; }
+#btn-perplexity-digest { font-size: 11px; padding: 4px 8px; color: var(--gold); border-color: rgba(201,168,76,0.35); background: rgba(201,168,76,0.08); font-weight: 500; }
+#btn-perplexity-digest:hover { background: rgba(201,168,76,0.18); border-color: var(--gold); }
 @media (max-width: 900px) { #btn-copy-pdf-text span { display: none; } }
 #zoom-lbl { min-width: 34px; text-align: center; font-size: 12px; color: var(--muted); flex-shrink: 0; }
 #pg-info { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; margin-left: auto; flex-shrink: 0; }
