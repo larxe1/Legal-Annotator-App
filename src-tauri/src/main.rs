@@ -1807,103 +1807,350 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     return null;
   }
 
+  function showClickCursorAt(x, y, labelText) {
+    try {
+      var ring = document.getElementById('la-pplx-click-cursor');
+      if (!ring) {
+        ring = document.createElement('div');
+        ring.id = 'la-pplx-click-cursor';
+        ring.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;transition:left 0.14s ease,top 0.14s ease,opacity 0.2s ease;display:flex;align-items:center;gap:6px;transform:translate(-12px,-12px);';
+        ring.innerHTML =
+          '<div style="width:24px;height:24px;border-radius:50%;border:2.5px solid #c084fc;background:rgba(192,132,252,0.28);box-shadow:0 0 14px rgba(192,132,252,0.85);"></div>' +
+          '<span id="la-pplx-click-cursor-lbl" style="background:#0f172a;border:1px solid #c084fc;color:#f3e8ff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:999px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.6);"></span>';
+        document.body.appendChild(ring);
+      }
+      ring.style.left = Math.round(x) + 'px';
+      ring.style.top = Math.round(y) + 'px';
+      ring.style.opacity = '1';
+      var lbl = document.getElementById('la-pplx-click-cursor-lbl');
+      if (lbl) lbl.textContent = labelText || '🤖 Selecting Claude';
+      clearTimeout(ring._hideTimer);
+      ring._hideTimer = setTimeout(function() {
+        if (ring) ring.style.opacity = '0';
+      }, 1500);
+    } catch (e) {}
+  }
+
+  function realPointerClick(el) {
+    if (!el || !el.isConnected) return false;
+    try {
+      var r = el.getBoundingClientRect();
+      var cx = Math.round(r.left + r.width / 2);
+      var cy = Math.round(r.top + r.height / 2);
+      var opts = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX: cx,
+        clientY: cy,
+        screenX: cx,
+        screenY: cy,
+        button: 0,
+        buttons: 1,
+        pointerId: 1,
+        pointerType: 'mouse',
+        isPrimary: true
+      };
+      el.dispatchEvent(new PointerEvent('pointerover', opts));
+      el.dispatchEvent(new MouseEvent('mouseover', opts));
+      el.dispatchEvent(new PointerEvent('pointerenter', opts));
+      el.dispatchEvent(new MouseEvent('mouseenter', opts));
+      el.dispatchEvent(new PointerEvent('pointermove', opts));
+      el.dispatchEvent(new MouseEvent('mousemove', opts));
+      el.dispatchEvent(new PointerEvent('pointerdown', opts));
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      if (typeof el.focus === 'function') el.focus();
+      var upOpts = Object.assign({}, opts, { buttons: 0 });
+      el.dispatchEvent(new PointerEvent('pointerup', upOpts));
+      el.dispatchEvent(new MouseEvent('mouseup', upOpts));
+      el.dispatchEvent(new MouseEvent('click', Object.assign({}, upOpts, { detail: 1 })));
+      return true;
+    } catch (e) {
+      try { el.click(); return true; } catch (e2) { return false; }
+    }
+  }
+
+  function findModelSelectorButton(inputEl) {
+    var ir = (inputEl && inputEl.isConnected) ? inputEl.getBoundingClientRect() : null;
+    var allCandidates = Array.from(document.querySelectorAll('button, [role="button"], [aria-haspopup], [data-state], div, span')).filter(function(el) {
+      if (!el.isConnected || el.closest('#la-pplx-studio-bar') || el.id === 'la-pplx-fab-send' || el.closest('#la-pplx-fab-send') || el.closest('#la-pplx-click-cursor')) return false;
+      if (el.closest('.prose, .markdown-body, nav, aside')) return false;
+      var r = el.getBoundingClientRect();
+      if (r.left < 160 || r.top < 45) return false;
+      if (r.width < 22 || r.width > 260 || r.height < 12 || r.height > 56) return false;
+      if (ir && ir.width > 40) {
+        if (r.top < ir.top - 110 || r.bottom > ir.bottom + 190) return false;
+      }
+      return true;
+    });
+
+    function getCleanLabel(el) {
+      return ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+    }
+
+    var matches = allCandidates.filter(function(el) {
+      var txt = getCleanLabel(el);
+      var aria = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.getAttribute('data-testid') || '')).toLowerCase();
+      if (/^(search|computer|research|labs|share|new|law|sales|insurance|plugins|artifacts|automations|teammates|projects|recents|answer|links|images)$/i.test(txt)) return false;
+      if (/^model$/i.test(txt) || /^model\s*[▾⌄∨v]?$/i.test(txt)) return true;
+      if (/^(claude|sonar|gpt-|gpt\s|gemini|grok|deepseek|o1|o3|o4|r1|best|auto)\b/i.test(txt) && txt.length <= 38) return true;
+      if (/\b(model|choose a model|select model)\b/i.test(aria) && aria.indexOf('submit') === -1 && aria.indexOf('attach') === -1) return true;
+      return false;
+    });
+
+    // If not found near inputEl, search the whole main area for the "Model" button
+    if (matches.length === 0 && ir) {
+      return findModelSelectorButton(null);
+    }
+
+    if (matches.length > 0) {
+      var resolved = matches.map(function(m) {
+        var btnAncestor = m.closest('button, [role="button"], [aria-haspopup], [data-state]');
+        if (btnAncestor && !btnAncestor.closest('#la-pplx-studio-bar')) {
+          var br = btnAncestor.getBoundingClientRect();
+          if (br.width >= 28 && br.width <= 260 && br.height >= 16 && br.height <= 56) {
+            return btnAncestor;
+          }
+        }
+        return m;
+      });
+      if (ir && ir.width > 40) {
+        resolved.sort(function(a, b) {
+          var ra = a.getBoundingClientRect();
+          var rb = b.getBoundingClientRect();
+          return Math.abs(ra.top - ir.bottom) - Math.abs(rb.top - ir.bottom);
+        });
+      }
+      return resolved[0];
+    }
+    return null;
+  }
+
+  function isInsideOpenModelMenu(el, triggerEl) {
+    var cur = el.parentElement;
+    var depth = 0;
+    while (cur && cur !== document.body && depth < 10) {
+      if (cur === triggerEl) return false;
+      if (cur.matches && cur.matches('[data-radix-popper-content-wrapper], [role="menu"], [role="listbox"], [role="dialog"]')) {
+        return true;
+      }
+      var cr = cur.getBoundingClientRect();
+      if (cr.width >= 120 && cr.width <= 620 && cr.height >= 60 && cr.height <= 760) {
+        var ctxt = ((cur.innerText || cur.textContent || '') + '').toLowerCase();
+        if (/\b(sonar|gpt|gemini|grok|deepseek|best|auto|anthropic|openai|reasoning)\b/i.test(ctxt)) {
+          return true;
+        }
+      }
+      cur = cur.parentElement;
+      depth++;
+    }
+    return false;
+  }
+
+  function findClaudeMenuItem(triggerEl) {
+    var candidates = [];
+    var nodes = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], [data-radix-collection-item], button, a, div, span, li'));
+
+    nodes.forEach(function(el) {
+      if (!el.isConnected || el === triggerEl || (triggerEl && triggerEl.contains(el))) return;
+      if (el.closest('#la-pplx-studio-bar') || el.closest('#la-pplx-fab-send') || el.closest('#la-pplx-click-cursor')) return;
+      if (el.closest('.prose, .markdown-body, nav, aside')) return;
+
+      var txt = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+      if (!txt || txt.length < 4 || txt.length > 110) return;
+      if (!/\bclaude\b/i.test(txt)) return;
+
+      // Never match an outer container that holds multiple different model families
+      if (/\b(sonar|gpt-|gpt\s|gemini|grok|deepseek|llama|mistral)\b/i.test(txt)) return;
+
+      var r = el.getBoundingClientRect();
+      if (r.left < 160 || r.top < 45) return;
+      if (r.width < 24 || r.width > 460 || r.height < 12 || r.height > 76) return;
+
+      if (!isInsideOpenModelMenu(el, triggerEl)) return;
+
+      var rowEl = el.closest('[role="menuitem"], [role="option"], [role="menuitemradio"], [data-radix-collection-item], button') || el;
+      var rr = rowEl.getBoundingClientRect();
+      var target = (rr.height >= 16 && rr.height <= 72 && rr.width >= 36 && rr.width <= 460) ? rowEl : el;
+      var targetTxt = ((target.innerText || target.textContent || '') + '').replace(/\s+/g, ' ').trim();
+      if (/\b(sonar|gpt-|gpt\s|gemini|grok|deepseek|llama|mistral)\b/i.test(targetTxt)) {
+        target = el;
+        targetTxt = txt;
+      }
+
+      var score = 0;
+      if (target.closest('[data-radix-popper-content-wrapper], [role="menu"], [role="listbox"], [role="dialog"]')) score += 1000;
+      if (/claude\s*5\.5\s*sonnet/i.test(targetTxt)) score += 600;
+      else if (/claude[^,\n]*sonnet/i.test(targetTxt) && !/thinking|reasoning/i.test(targetTxt)) score += 500;
+      else if (/claude[^,\n]*sonnet/i.test(targetTxt)) score += 420;
+      else if (/\bclaude\b/i.test(targetTxt) && !/thinking|reasoning/i.test(targetTxt)) score += 340;
+      else if (/\bclaude\b/i.test(targetTxt)) score += 300;
+
+      if (target.matches('[role="menuitem"], [role="option"], [role="menuitemradio"], [data-radix-collection-item], button')) {
+        score += 80;
+      }
+      if (el.children.length === 0) {
+        score += 40;
+      }
+
+      candidates.push({ el: target, leafEl: el, text: targetTxt, score: score });
+    });
+
+    if (candidates.length === 0) return null;
+    candidates.sort(function(a, b) { return b.score - a.score; });
+    return candidates[0];
+  }
+
   function ensureClaudeModelSelected(inputEl, callback, forceOpenMenu) {
-    var done = function(label) {
+    var done = function(label, verified) {
       var mBtn = document.getElementById('la-pplx-model-btn');
-      if (mBtn && label) {
-        mBtn.textContent = '🤖 ' + label + ' ✓';
+      if (mBtn) {
+        if (verified !== false) {
+          mBtn.textContent = '🤖 ' + (label || 'Claude Sonnet') + ' ✓';
+          mBtn.style.borderColor = 'rgba(74,222,128,0.6)';
+          mBtn.style.color = '#86efac';
+        } else {
+          mBtn.textContent = '🤖 Click to Select Claude';
+          mBtn.style.borderColor = 'rgba(248,113,113,0.6)';
+          mBtn.style.color = '#fca5a5';
+        }
       }
       if (typeof callback === 'function') callback(label || 'Claude Sonnet');
     };
 
-    try {
-      var container = (inputEl && (inputEl.closest('form') || inputEl.parentElement?.parentElement?.parentElement?.parentElement)) || document;
-      var btns = Array.from(container.querySelectorAll('button, [role="button"], [aria-haspopup="menu"], [aria-haspopup="listbox"], [aria-haspopup="dialog"]')).filter(function(b) {
-        if (!b.isConnected || b.closest('#la-pplx-studio-bar')) return false;
-        var r = b.getBoundingClientRect();
-        return r.width > 16 && r.height > 16;
-      });
-
-      // Check if a button in the prompt area already explicitly shows Claude
-      var alreadyClaudeBtn = btns.find(function(b) {
-        var txt = ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).trim();
-        return /\bclaude\b/i.test(txt);
-      });
-
-      if (alreadyClaudeBtn && !forceOpenMenu) {
-        var claudeTxt = (alreadyClaudeBtn.textContent || alreadyClaudeBtn.getAttribute('aria-label') || '').trim();
-        var cleanLabel = /5\.5/i.test(claudeTxt) ? 'Claude 5.5 Sonnet' : (/sonnet/i.test(claudeTxt) ? 'Claude Sonnet' : 'Claude');
-        done(cleanLabel);
-        return;
-      }
-
-      // Find the model selector button in the prompt toolbar or Space settings
-      var modelTrigger = alreadyClaudeBtn || btns.find(function(b) {
-        var combined = ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.getAttribute('data-testid') || '')).toLowerCase();
-        if (combined.indexOf('submit') !== -1 || combined.indexOf('attach') !== -1 || combined.indexOf('voice') !== -1 || combined.indexOf('dictat') !== -1 || combined.indexOf('source') !== -1 || combined.indexOf('focus') !== -1) {
-          return false;
-        }
-        return /\b(model|choose a model|select model|best|auto|sonar|gpt|o1|o3|o4|gemini|grok|deepseek|r1|claude)\b/i.test(combined);
-      });
-
-      // Fallback: check all visible buttons on the page for a model selector
-      if (!modelTrigger) {
-        var pageBtns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(function(b) {
-          if (!b.isConnected || b.closest('#la-pplx-studio-bar')) return false;
-          var r = b.getBoundingClientRect();
-          return r.width > 16 && r.height > 16;
-        });
-        modelTrigger = pageBtns.find(function(b) {
-          var combined = ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).toLowerCase();
-          return /\b(choose a model|select model|model:|claude|gpt-4|gpt-5|sonar|gemini|grok)\b/i.test(combined);
-        });
-      }
-
-      if (!modelTrigger) {
-        done('Claude Sonnet');
-        return;
-      }
-
-      modelTrigger.click();
-
-      setTimeout(function() {
-        try {
-          var menuNodes = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], [data-radix-collection-item], [ role="menu"] *, [role="listbox"] *, [role="dialog"] *')).filter(function(el) {
-            if (!el.isConnected || el.closest('#la-pplx-studio-bar')) return false;
-            var r = el.getBoundingClientRect();
-            return r.width > 30 && r.height > 14 && r.height < 90;
-          });
-
-          // Priority 1: Claude 5.5 Sonnet (exact match)
-          // Priority 2: Any Claude Sonnet (e.g. current or future Claude X.X Sonnet)
-          // Priority 3: Any Claude model
-          var pickTarget =
-            menuNodes.find(function(el) { return /claude\s*5\.5\s*sonnet/i.test(el.textContent || ''); }) ||
-            menuNodes.find(function(el) { return /claude[^,\n]{0,20}sonnet/i.test(el.textContent || ''); }) ||
-            menuNodes.find(function(el) { return /\bclaude\b/i.test(el.textContent || ''); });
-
-          if (pickTarget) {
-            var clickable = pickTarget.closest('[role="menuitem"], [role="option"], [role="menuitemradio"], [data-radix-collection-item], button, [tabindex]') || pickTarget;
-            var pickedText = (clickable.textContent || '').trim();
-            var label = /5\.5/i.test(pickedText) ? 'Claude 5.5 Sonnet' : (/sonnet/i.test(pickedText) ? 'Claude Sonnet' : 'Claude');
-            clickable.click();
-            setTimeout(function() {
-              // Ensure menu is closed if it stayed open
-              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-              done(label);
-            }, 180);
-          } else {
-            // Close dropdown if opened
-            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-            done('Claude Sonnet');
+    var findAttempts = 0;
+    function tryLocateAndSelect() {
+      findAttempts++;
+      try {
+        var modelTrigger = findModelSelectorButton(inputEl || findPromptInput());
+        if (!modelTrigger) {
+          if (findAttempts < 8) {
+            showStatus('⏳ Waiting for "Model ⌄" button…', '#c084fc');
+            setTimeout(tryLocateAndSelect, 220);
+            return;
           }
-        } catch (err) {
-          done('Claude Sonnet');
+          showStatus('⚠️ Could not locate "Model ⌄" button yet.', '#fbbf24');
+          done('Claude Sonnet', false);
+          return;
         }
-      }, 240);
-    } catch (e) {
-      done('Claude Sonnet');
+
+        var triggerTxt = ((modelTrigger.innerText || modelTrigger.textContent || '') + ' ' + (modelTrigger.getAttribute('aria-label') || '')).replace(/\s+/g, ' ').trim();
+        var alreadyShowsClaude = /\bclaude\b/i.test(triggerTxt);
+        var jobKey = String(_state.jobId || 'manual');
+        var alreadyVerifiedForJob = sessionStorage.getItem('la_pplx_claude_verified_job') === jobKey;
+
+        if ((alreadyShowsClaude && alreadyVerifiedForJob) && !forceOpenMenu) {
+          var cleanLbl = /5\.5/i.test(triggerTxt) ? 'Claude 5.5 Sonnet' : 'Claude Sonnet';
+          done(cleanLbl, true);
+          return;
+        }
+
+        // 1. Physically move OS mouse cursor to "Model ⌄" button and click it to open the dropdown
+        var tr = modelTrigger.getBoundingClientRect();
+        var tx = Math.round(tr.left + tr.width / 2);
+        var ty = Math.round(tr.top + tr.height / 2);
+        showStatus('🤖 Moving mouse to "Model ⌄" to select Claude…', '#c084fc');
+        showClickCursorAt(tx, ty, 'Clicking Model ⌄');
+        sendBridgeMsg({
+          action: 'native_click',
+          x: tx,
+          y: ty,
+          dpr: window.devicePixelRatio || 1
+        });
+
+        var pollAttempts = 0;
+        var pollTimer = setInterval(function() {
+          pollAttempts++;
+          var found = findClaudeMenuItem(modelTrigger);
+
+          if (!found && pollAttempts === 3) {
+            // Backup: dispatch Radix pointerdown/click + ArrowDown on modelTrigger if menu hasn't opened yet
+            realPointerClick(modelTrigger);
+            try {
+              modelTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true }));
+            } catch (e) {}
+            return;
+          }
+
+          if (!found && pollAttempts === 6) {
+            var tr2 = modelTrigger.getBoundingClientRect();
+            sendBridgeMsg({
+              action: 'native_click',
+              x: Math.round(tr2.left + tr2.width / 2),
+              y: Math.round(tr2.top + tr2.height / 2),
+              dpr: window.devicePixelRatio || 1
+            });
+            return;
+          }
+
+          if (found && found.el) {
+            clearInterval(pollTimer);
+            try { found.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+            var clickTargetEl = (found.leafEl && found.leafEl.isConnected) ? found.leafEl : found.el;
+            var cr = clickTargetEl.getBoundingClientRect();
+            var cx = Math.round(cr.left + Math.min(cr.width / 2, 80));
+            var cy = Math.round(cr.top + cr.height / 2);
+            var pickedLabel = /5\.5/i.test(found.text) ? 'Claude 5.5 Sonnet' : (/sonnet/i.test(found.text) ? 'Claude Sonnet' : 'Claude');
+
+            showStatus('🤖 Selecting ' + pickedLabel + '…', '#c084fc');
+            showClickCursorAt(cx, cy, 'Selecting ' + pickedLabel);
+
+            // Physically move OS mouse cursor onto Claude in the dropdown and click it!
+            sendBridgeMsg({
+              action: 'native_click',
+              x: cx,
+              y: cy,
+              dpr: window.devicePixelRatio || 1
+            });
+
+            setTimeout(function() {
+              // Check if a sub-menu with specific Claude Sonnet versions opened or if menu is still open
+              var subFound = findClaudeMenuItem(modelTrigger);
+              if (subFound && subFound.el && subFound.el !== found.el && /sonnet/i.test(subFound.text)) {
+                var subTarget = (subFound.leafEl && subFound.leafEl.isConnected) ? subFound.leafEl : subFound.el;
+                var scr = subTarget.getBoundingClientRect();
+                var scx = Math.round(scr.left + Math.min(scr.width / 2, 80));
+                var scy = Math.round(scr.top + scr.height / 2);
+                showClickCursorAt(scx, scy, 'Selecting ' + subFound.text);
+                sendBridgeMsg({
+                  action: 'native_click',
+                  x: scx,
+                  y: scy,
+                  dpr: window.devicePixelRatio || 1
+                });
+                setTimeout(function() {
+                  if (subFound.el && subFound.el.isConnected) realPointerClick(subFound.el);
+                  sessionStorage.setItem('la_pplx_claude_verified_job', jobKey);
+                  done(pickedLabel, true);
+                }, 260);
+              } else {
+                if (subFound && subFound.el && found.el && found.el.isConnected) {
+                  // Menu remained open after native click; fire synthetic Radix click and Escape to close menu
+                  realPointerClick(found.el);
+                  setTimeout(function() {
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+                  }, 90);
+                }
+                sessionStorage.setItem('la_pplx_claude_verified_job', jobKey);
+                done(pickedLabel, true);
+              }
+            }, 260);
+            return;
+          }
+
+          if (pollAttempts >= 12) {
+            clearInterval(pollTimer);
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+            done('Claude Sonnet', false);
+          }
+        }, 160);
+      } catch (e) {
+        done('Claude Sonnet', false);
+      }
     }
+
+    tryLocateAndSelect();
   }
 
   function setInputText(inputEl, text) {
@@ -2209,6 +2456,11 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         return;
       }
 
+      try {
+        realPointerClick(activeInput);
+        activeInput.focus();
+      } catch (e) {}
+
       setInputText(activeInput, fullText);
 
       setTimeout(function() {
@@ -2392,6 +2644,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (isNewJob) {
       sessionStorage.removeItem('la_pplx_handled_job_id');
       sessionStorage.removeItem('la_pplx_awaiting_autosend_job_id');
+      sessionStorage.removeItem('la_pplx_claude_verified_job');
       _isPasting = false;
     }
     saveStateCache();
@@ -2644,6 +2897,25 @@ async fn desktop_open_perplexity_studio(
                                     let _ = pw.eval("window.__onPerplexityDigestSentAck && window.__onPerplexityDigestSentAck(true);");
                                 }
                             });
+                        } else if action == "native_click" {
+                            let css_x = msg_val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let css_y = msg_val.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let js_dpr = msg_val.get("dpr").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let app_click = app_for_nav.clone();
+                            std::thread::spawn(move || {
+                                if let Some(pw) = app_click.get_webview_window("perplexity-studio") {
+                                    let _ = pw.show();
+                                    let _ = pw.unminimize();
+                                    let _ = pw.set_focus();
+                                    if let Ok(inner_pos) = pw.inner_position() {
+                                        let win_scale = pw.scale_factor().unwrap_or(1.0);
+                                        let scale = if js_dpr > 0.2 { js_dpr } else { win_scale };
+                                        let screen_x = inner_pos.x + (css_x * scale).round() as i32;
+                                        let screen_y = inner_pos.y + (css_y * scale).round() as i32;
+                                        perform_native_os_mouse_click(screen_x, screen_y);
+                                    }
+                                }
+                            });
                         }
                     }
                 }
@@ -2659,6 +2931,45 @@ async fn desktop_open_perplexity_studio(
     let _ = win.set_focus();
     Ok(true)
 }
+
+#[cfg(target_os = "windows")]
+fn perform_native_os_mouse_click(screen_x: i32, screen_y: i32) {
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetCursorPos(lp_point: *mut Point) -> i32;
+        fn SetCursorPos(x: i32, y: i32) -> i32;
+        fn mouse_event(dw_flags: u32, dx: u32, dy: u32, dw_data: u32, dw_extra_info: usize);
+    }
+    const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+    const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+    unsafe {
+        let mut start = Point {
+            x: screen_x,
+            y: screen_y,
+        };
+        let _ = GetCursorPos(&mut start);
+        let steps = 5;
+        for i in 1..=steps {
+            let nx = start.x + ((screen_x - start.x) * i) / steps;
+            let ny = start.y + ((screen_y - start.y) * i) / steps;
+            SetCursorPos(nx, ny);
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
+        SetCursorPos(screen_x, screen_y);
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn perform_native_os_mouse_click(_screen_x: i32, _screen_y: i32) {}
 
 fn percent_decode_str(input: &str) -> String {
     let bytes = input.as_bytes();
