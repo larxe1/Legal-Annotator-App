@@ -1,7 +1,7 @@
 {
-  "version": "1.15.0",
-  "build": 37,
+  "version": "1.15.1",
+  "build": 38,
   "updatedAt": "2026-11-07",
-  "notes": "Fix Case 1 to Case 2 seamless single-click transition, strip trailing Sources section from all digests, enforce Claude 5.5 Sonnet (or latest Claude model) in Perplexity Studio, and add right-click PDF & right-click Subfolder en-masse automatic batch Perplexity Digest.",
+  "notes": "Fix PDF loader hanging on Loading PDF, fix Scan OCR / Legal OCR Studio desktop bridge detection, purge stale WebView2 Service Worker cache on launch, and ensure frontend assets re-embed cleanly on every release.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

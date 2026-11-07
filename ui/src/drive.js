@@ -42,20 +42,44 @@ async function _applyAccessToken(accessToken) {
   _startHealthCheck();
 }
 
-function _requestToken(silent = false, forceRefresh = false) {
+async function _requestToken(silent = false, forceRefresh = false) {
   const hintEmail = S.driveUser || safeStorageGet('driveUser') || DEFAULT_DRIVE_EMAIL;
+  if (typeof window !== 'undefined' && typeof window.__DESKTOP_GOOGLE_OAUTH__ !== 'function' && window.__TAURI_INTERNALS__?.invoke) {
+    try {
+      await import('./desktop-bridge.js');
+    } catch {}
+  }
   if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function') {
-    return window.__DESKTOP_GOOGLE_OAUTH__(CLIENT_ID, SCOPE, silent, false, hintEmail, forceRefresh).then(async (resp) => {
-      if (!resp || !resp.access_token) throw new Error(resp?.error || 'Cancelled');
-      await _applyAccessToken(resp.access_token);
-    });
+    const resp = await window.__DESKTOP_GOOGLE_OAUTH__(CLIENT_ID, SCOPE, silent, false, hintEmail, forceRefresh);
+    if (!resp || !resp.access_token) throw new Error(resp?.error || 'Cancelled');
+    await _applyAccessToken(resp.access_token);
+    return;
   }
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = silent
+      ? setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            reject(new Error('Silent token refresh timed out'));
+          }
+        }, 10000)
+      : null;
+
+    if (typeof google === 'undefined' || !google.accounts?.oauth2) {
+      if (timer) clearTimeout(timer);
+      reject(new Error('Google OAuth client not ready'));
+      return;
+    }
+
     const client = google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
       scope: SCOPE,
       hint: hintEmail,
       callback: async (resp) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
         if (resp.error) { reject(resp); return; }
         try {
           await _applyAccessToken(resp.access_token);

@@ -1236,8 +1236,14 @@ function wireOcrToolModalEvents() {
 }
 
 // ── Open and Populate the Modal ──
-export function openOcrToolModal() {
+export async function openOcrToolModal() {
   initOcrTool();
+
+  if (typeof window !== 'undefined' && !window.__DESKTOP_PDFIUM__ && window.__TAURI_INTERNALS__?.invoke) {
+    try {
+      await import('./desktop-bridge.js');
+    } catch {}
+  }
 
   if (!S.pdfDoc || !S.curPDF) {
     toast('⚠️ Please open a PDF in the viewer first to scan.');

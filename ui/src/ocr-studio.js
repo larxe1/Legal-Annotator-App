@@ -225,15 +225,22 @@ export function showPersistentOcrCompletionBanner({
 // ═════════════════════════════════════════════════════════════════════════════
 
 export async function launchLinkedOcrStudioForPdf(pdfObj = null, preset = 'balanced', autoStart = false) {
-  const targetPdf = pdfObj || S.curPDF;
-  if (!targetPdf && !window.__DESKTOP_PDFIUM__?.launchOcrStudio) {
-    toast('⚠️ Please open or select a PDF first.');
+  if (typeof window !== 'undefined' && !window.__DESKTOP_PDFIUM__?.launchOcrStudio && window.__TAURI_INTERNALS__?.invoke) {
+    try {
+      await import('./desktop-bridge.js');
+    } catch {}
+  }
+
+  const hasTauriInvoke = typeof window !== 'undefined' && typeof window.__TAURI_INTERNALS__?.invoke === 'function';
+  const isDesktop = typeof window !== 'undefined' && (typeof window.__DESKTOP_PDFIUM__?.launchOcrStudio === 'function' || hasTauriInvoke);
+  if (!isDesktop) {
+    toast('ℹ️ The standalone Legal OCR & Compressor Studio app requires the Windows Desktop app.');
     return;
   }
 
-  const isDesktop = typeof window !== 'undefined' && typeof window.__DESKTOP_PDFIUM__?.launchOcrStudio === 'function';
-  if (!isDesktop) {
-    toast('ℹ️ The standalone Legal OCR & Compressor Studio app requires the Windows Desktop app.');
+  const targetPdf = pdfObj || S.curPDF;
+  if (!targetPdf && !isDesktop) {
+    toast('⚠️ Please open or select a PDF first.');
     return;
   }
 
@@ -253,15 +260,18 @@ export async function launchLinkedOcrStudioForPdf(pdfObj = null, preset = 'balan
       S.driveToken ||
       (typeof localStorage !== 'undefined' ? localStorage.getItem('driveToken') : null) ||
       null;
-    const res = await window.__DESKTOP_PDFIUM__.launchOcrStudio({
-      docId: tid,
-      driveId,
-      filePath,
-      pdfName,
-      preset,
-      autoStart,
-      oauthToken: activeToken,
-    });
+    const launchArgs = {
+      docId: tid ? String(tid) : null,
+      driveId: driveId ? String(driveId) : null,
+      filePath: filePath ? String(filePath) : null,
+      pdfName: pdfName ? String(pdfName) : null,
+      preset: preset ? String(preset) : 'balanced',
+      autoStart: !!autoStart,
+      oauthToken: activeToken ? String(activeToken) : null,
+    };
+    const res = typeof window.__DESKTOP_PDFIUM__?.launchOcrStudio === 'function'
+      ? await window.__DESKTOP_PDFIUM__.launchOcrStudio(launchArgs)
+      : await window.__TAURI_INTERNALS__.invoke('desktop_launch_ocr_studio', launchArgs);
     if (res?.ok) {
       toast(`🚀 Launched "Legal OCR & Compressor Studio" for "${pdfName}"!`);
       if (tid) {

@@ -4038,11 +4038,27 @@ fn cleanup_old_update_files() {
     });
 }
 
+
+fn purge_stale_webview_service_worker() {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let sw_dir = std::path::PathBuf::from(local_app_data)
+            .join("com.legalannotator.desktop")
+            .join("EBWebView")
+            .join("Default")
+            .join("Service Worker");
+        if sw_dir.exists() {
+            let _ = fs::remove_dir_all(&sw_dir);
+        }
+    }
+}
+
 fn main() {
     // If we were just started by the self-updater, let the old copy close first.
     wait_for_previous_instance_exit();
     // Clean up any leftover .old.exe from a previous self-update
     cleanup_old_update_files();
+    // Purge any stale/poisoned Chromium Service Worker cache in WebView2 profile
+    purge_stale_webview_service_worker();
 
     let data_dir = resolve_data_dir();
     let sqlite_path = data_dir.join("notes_mirror.sqlite");

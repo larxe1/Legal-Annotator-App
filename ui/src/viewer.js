@@ -596,7 +596,21 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       // Pass `onlyCopyIfSmall || blob` so 100MB+ PDFs stream to disk cache in 4MB slices from `blob` without duplicating `buf`
       window.__DESKTOP_PDFIUM__.openPdf(trueId, onlyCopyIfSmall || blob, pdfFile._localPath || null, targetDriveId).catch(() => {});
     }
-    S.pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+    let loadedDoc = null;
+    let workerTask = null;
+    try {
+      workerTask = pdfjsLib.getDocument({ data: buf });
+      loadedDoc = await Promise.race([
+        workerTask.promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('PDF_WORKER_TIMEOUT')), 7000)),
+      ]);
+    } catch (workerErr) {
+      console.warn('[Viewer] PDF.js worker load stalled or failed, falling back to disableWorker=true:', workerErr);
+      try { workerTask?.destroy?.(); } catch {}
+      const fallbackBuf = await blob.arrayBuffer();
+      loadedDoc = await pdfjsLib.getDocument({ data: fallbackBuf, disableWorker: true }).promise;
+    }
+    S.pdfDoc = loadedDoc;
     S.pdfDoc._desktopDocId = trueId;
     S.pdfDoc._driveFileId = targetDriveId;
     S.pdfDoc._byteLength = byteLen;

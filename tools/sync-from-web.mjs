@@ -102,10 +102,13 @@ indexHtml = indexHtml
   .replace('https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js', './vendor/mermaid.min.js')
   .replace('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js', './vendor/html2pdf.bundle.min.js')
   .replace(
-    '<script type="module" src="./src/backup.js"></script>',
-    '<script type="module" src="./src/backup.js"></script>\n<script type="module" src="./src/desktop-bridge.js"></script>'
+    '<script type="module" src="./src/main.js"></script>',
+    '<script type="module" src="./src/desktop-bridge.js"></script>\n<script type="module" src="./src/main.js"></script>'
   )
-  .replace("if ('serviceWorker' in navigator)", "if (false && 'serviceWorker' in navigator)");
+  .replace(
+    "if ('serviceWorker' in navigator)",
+    "if ('serviceWorker' in navigator) { try { navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(()=>{}); if (typeof caches !== 'undefined' && caches.keys) caches.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(()=>{}); } catch {} } if (false && 'serviceWorker' in navigator)"
+  );
 
 writeFileSync(join(uiDir, 'index.html'), indexHtml, 'utf8');
 

@@ -2,8 +2,8 @@
 // DESKTOP BRIDGE — Tauri 2 + Native C++ PDFium + Local SQLite Notes Mirror
 // ═════════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
-import { openPDFFromLibrary } from './viewer.js';
 import { driveSignIn } from './drive.js';
+import { safeStorageGet, safeStorageSet } from './storage.js';
 
 const invoke = window.__TAURI_INTERNALS__?.invoke
   ? (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args)
