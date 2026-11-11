@@ -1,7 +1,7 @@
 {
-  "version": "1.15.3",
-  "build": 40,
-  "updatedAt": "2026-11-07",
-  "notes": "Automatically strip introductory commentary, case titles, and the RECIT READY SUMMARY header above the table so Perplexity digests always start directly with the summary table.",
+  "version": "1.15.4",
+  "build": 41,
+  "updatedAt": "2026-11-11",
+  "notes": "Fix top bar clipping and hidden panel close (X) button by restoring floating positioning for the desktop engine indicator and preventing unintended page-level scroll clipping.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

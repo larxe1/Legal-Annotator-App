@@ -55,17 +55,29 @@ const desktopCssAppend = `
   }
 }
 .desktop-engine-bar {
-  display: flex;
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  z-index: 25;
+  display: none;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  margin: 6px 12px;
   padding: 6px 10px;
   background: rgba(20, 30, 50, 0.85);
   border: 1px solid var(--navy-b);
   border-radius: 6px;
   font-size: 11px;
   color: var(--text);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.desktop-engine-bar.visible {
+  display: flex;
+  opacity: 1;
 }
 .desktop-open-local-btn {
   display: flex;

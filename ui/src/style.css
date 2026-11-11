@@ -19,8 +19,8 @@
   --tb-h:    48px;
 }
 
-html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; background: var(--navy); color: #e8e4db; }
-#app { display: flex; height: 100vh; position: relative; overflow: hidden; }
+html, body { height: 100%; overflow: hidden; overflow: clip; font-family: 'Inter', sans-serif; background: var(--navy); color: #e8e4db; }
+#app { display: flex; height: 100vh; position: relative; overflow: hidden; overflow: clip; }
 
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -239,7 +239,7 @@ html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; b
 /* ════════════════════════════════════════
    VIEWER WRAPPER
 ════════════════════════════════════════ */
-#viewer-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; position: relative; }
+#viewer-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; overflow: clip; min-width: 0; position: relative; }
 
 /* ── Toolbar ── */
 #toolbar { min-height: var(--tb-h); height: auto; background: var(--navy-l); border-bottom: 1px solid var(--navy-b); display: flex; align-items: center; flex-wrap: wrap; gap: 4px 5px; padding: 4px 10px; flex-shrink: 0; overflow-x: auto; scrollbar-width: thin; }
@@ -2317,17 +2317,29 @@ body.theme-paper #floating-zoom-ctrl #zoom-lbl {
   }
 }
 .desktop-engine-bar {
-  display: flex;
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  z-index: 25;
+  display: none;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  margin: 6px 12px;
   padding: 6px 10px;
   background: rgba(20, 30, 50, 0.85);
   border: 1px solid var(--navy-b);
   border-radius: 6px;
   font-size: 11px;
   color: var(--text);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.desktop-engine-bar.visible {
+  display: flex;
+  opacity: 1;
 }
 .desktop-open-local-btn {
   display: flex;
