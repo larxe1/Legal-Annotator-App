@@ -20,6 +20,7 @@ use std::{
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod ocr_studio;
+mod print_studio;
 
 struct RawPdfDoc {
     handle: usize,
@@ -4515,6 +4516,10 @@ fn main() {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_title("Legal OCR & Compressor Studio — Linked with Legal Annotator");
                 }
+            } else if print_studio::is_print_studio_process() {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_title("Legal Print Studio — Notes & Case Digests");
+                }
             }
             Ok(())
         })
@@ -4537,6 +4542,12 @@ fn main() {
             ocr_studio::desktop_get_pdf_ocr_summary,
             ocr_studio::desktop_close_studio_window,
             ocr_studio::desktop_cache_write_chunk,
+            print_studio::desktop_get_print_studio_mode,
+            print_studio::desktop_save_print_job,
+            print_studio::desktop_load_print_job,
+            print_studio::desktop_open_print_studio,
+            print_studio::desktop_launch_print_studio_process,
+            print_studio::desktop_close_print_studio,
             pdfium_pick_local_pdf,
             desktop_start_google_oauth,
             desktop_poll_google_oauth,

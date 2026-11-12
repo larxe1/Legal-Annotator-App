@@ -184,6 +184,7 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
 
   const exportBtn = document.getElementById('lib-ctx-export-pdf');
   const exportTablesBtn = document.getElementById('lib-ctx-export-tables-pdf');
+  const printStudioBtn = document.getElementById('lib-ctx-open-print-studio');
   const forceSyncBtn = document.getElementById('lib-ctx-force-sync');
   let isMultiFolder = false;
   let isMultiPdf = false;
@@ -198,10 +199,12 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
       isMultiFolder = true;
       if (exportBtn) exportBtn.textContent = `📥 Export ${selectedFolders.length} Folders to PDF`;
       if (exportTablesBtn) exportTablesBtn.textContent = `📊 Export ${selectedFolders.length} Folders (Tables Only)`;
+      if (printStudioBtn) printStudioBtn.textContent = `🖨️ Open ${selectedFolders.length} Folders in Print Studio…`;
       if (forceSyncBtn) forceSyncBtn.textContent = `☁️ Force Sync ${selectedFolders.length} Folders & PDFs`;
     } else {
       if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
       if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
+      if (printStudioBtn) printStudioBtn.textContent = '🖨️ Open in Print Studio…';
       if (forceSyncBtn) forceSyncBtn.textContent = '☁️ Force Sync Folder & PDFs';
     }
   } else if (!isFolder && S.selectedIds && S.selectedIds.size > 1 && S.selectedIds.has(item.id)) {
@@ -220,14 +223,17 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
       isMultiPdf = true;
       if (exportBtn) exportBtn.textContent = `📥 Export ${selectedPdfs.length} PDFs to PDF`;
       if (exportTablesBtn) exportTablesBtn.textContent = `📊 Export ${selectedPdfs.length} PDFs (Tables Only)`;
+      if (printStudioBtn) printStudioBtn.textContent = `🖨️ Open ${selectedPdfs.length} PDFs in Print Studio…`;
     } else {
       if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
       if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
+      if (printStudioBtn) printStudioBtn.textContent = '🖨️ Open in Print Studio…';
       if (forceSyncBtn) forceSyncBtn.textContent = '☁️ Force Sync PDF to Cloud';
     }
   } else {
     if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
     if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
+    if (printStudioBtn) printStudioBtn.textContent = '🖨️ Open in Print Studio…';
     if (forceSyncBtn) {
       forceSyncBtn.textContent = isFolder
         ? '☁️ Force Sync Folder & PDFs'
@@ -290,6 +296,7 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   if (sylBtn) sylBtn.style.display = (isFolder && !isMultiFolder) ? 'block' : 'none';
   if (exportBtn) exportBtn.style.display = 'block';
   if (exportTablesBtn) exportTablesBtn.style.display = 'block';
+  if (printStudioBtn) printStudioBtn.style.display = 'block';
   if (forceSyncBtn) forceSyncBtn.style.display = isMultiPdf ? 'none' : 'block';
 
   // Position off-screen first so we can measure actual rendered dimensions
@@ -441,6 +448,7 @@ function showExportOptsModal(targetsOrTarget, defaultMode = 'all', isFolder = tr
   // Cancel
   const cancelBtn = document.getElementById('export-opts-cancel');
   const goBtn     = document.getElementById('export-opts-go');
+  const studioBtn = document.getElementById('export-opts-studio-btn');
 
   const cleanup = () => { modal.style.display = 'none'; };
 
@@ -455,6 +463,36 @@ function showExportOptsModal(targetsOrTarget, defaultMode = 'all', isFolder = tr
         await exportFolderToPDF(targets, { orientation, tablesOnly });
       } else {
         await exportPdfsToPDF(targets, { orientation, tablesOnly });
+      }
+    };
+  }
+
+  if (studioBtn) {
+    studioBtn.onclick = async () => {
+      const orientation = landscapeRadio?.checked ? 'landscape' : 'portrait';
+      const defaultMode = modeTablesRadio?.checked ? 'tables-only' : 'all';
+      cleanup();
+      const { openPrintStudio } = await import('./print-studio.js');
+      if (isFolder) {
+        await openPrintStudio({
+          targetType: 'folder',
+          folderIds: targets.map(t => t.id),
+          defaultMode,
+          orientation,
+          title: targets.length > 1
+            ? `${targets.length} Folders — Print Studio`
+            : `${targets[0]?.name || 'Folder'} — Print Studio`,
+        });
+      } else {
+        await openPrintStudio({
+          targetType: 'pdf',
+          pdfIds: targets.map(t => t.id),
+          defaultMode,
+          orientation,
+          title: targets.length > 1
+            ? `${targets.length} Cases — Print Studio`
+            : `${(targets[0]?.name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
+        });
       }
     };
   }
@@ -681,6 +719,34 @@ export function initContextMenu() {
     const isFolder = _ctxIsFolder;
     hideLibCtxMenu();
     showExportOptsModal(target, 'tables-only', isFolder);
+  });
+
+  // "Open in Print Studio…"
+  document.getElementById('lib-ctx-open-print-studio')?.addEventListener('click', async () => {
+    if (!_ctxTarget) return;
+    const target = _ctxTarget;
+    const isFolder = _ctxIsFolder;
+    hideLibCtxMenu();
+    const list = (Array.isArray(target) ? target : [target]).filter(Boolean);
+    if (!list.length) return;
+    const { openPrintStudio } = await import('./print-studio.js');
+    if (isFolder) {
+      await openPrintStudio({
+        targetType: 'folder',
+        folderIds: list.map(f => f.id),
+        title: list.length > 1
+          ? `${list.length} Folders — Print Studio`
+          : `${list[0]?.name || 'Folder'} — Print Studio`,
+      });
+    } else {
+      await openPrintStudio({
+        targetType: 'pdf',
+        pdfIds: list.map(p => p.id),
+        title: list.length > 1
+          ? `${list.length} Cases — Print Studio`
+          : `${(list[0]?.name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
+      });
+    }
   });
 
   // "Force Sync to Cloud" (Folder + all child PDFs/Notes/Digests, or Single PDF)

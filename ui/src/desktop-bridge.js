@@ -120,6 +120,63 @@ if (invoke) {
     }
   };
 
+  window.__DESKTOP_PRINT_STUDIO__ = {
+    async getMode() {
+      try {
+        return await invoke('desktop_get_print_studio_mode');
+      } catch {
+        return { isPrintStudio: false, jobId: null, docId: null, folderId: null };
+      }
+    },
+
+    async saveJob(jobId, payloadObj) {
+      const payloadJson = typeof payloadObj === 'string'
+        ? payloadObj
+        : JSON.stringify(payloadObj ?? {});
+      return await invoke('desktop_save_print_job', {
+        jobId: String(jobId || ''),
+        payloadJson,
+      });
+    },
+
+    async loadJob(jobId) {
+      if (!jobId) return null;
+      try {
+        const raw = await invoke('desktop_load_print_job', {
+          jobId: String(jobId),
+        });
+        if (!raw) return null;
+        return typeof raw === 'string' ? JSON.parse(raw) : raw;
+      } catch {
+        return null;
+      }
+    },
+
+    async openWindow(jobId = null, title = null) {
+      await invoke('desktop_open_print_studio', {
+        jobId: jobId ? String(jobId) : null,
+        title: title ? String(title) : null,
+      });
+    },
+
+    async launchProcess(opts = {}) {
+      const { jobId = null, docId = null, folderId = null } = opts || {};
+      await invoke('desktop_launch_print_studio_process', {
+        jobId: jobId ? String(jobId) : null,
+        docId: docId ? String(docId) : null,
+        folderId: folderId ? String(folderId) : null,
+      });
+    },
+
+    async closeWindow() {
+      try {
+        await invoke('desktop_close_print_studio');
+      } catch {
+        window.close();
+      }
+    },
+  };
+
   const _origWindowOpen = window.open ? window.open.bind(window) : null;
   window.open = function (url, target, features) {
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
@@ -1112,6 +1169,16 @@ async function refreshSettingsVersionCard(manual) {
 }
 
 async function initDesktopBridge() {
+  const isPrintStudioQuery = new URLSearchParams(window.location.search || '').get('print-studio') === '1';
+  let isPrintStudioMode = isPrintStudioQuery || !!document.getElementById('print-studio-app');
+  if (!isPrintStudioMode && window.__DESKTOP_PRINT_STUDIO__?.getMode) {
+    try {
+      const mode = await window.__DESKTOP_PRINT_STUDIO__.getMode();
+      if (mode?.isPrintStudio) isPrintStudioMode = true;
+    } catch {}
+  }
+  if (isPrintStudioMode) return;
+
   injectDesktopUI();
   try { injectSettingsVersionCard(); } catch (e) { console.warn('[Desktop Bridge] version card error:', e); }
   if (invoke) {

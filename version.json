@@ -1,7 +1,7 @@
 {
-  "version": "1.16.0",
-  "build": 42,
+  "version": "1.17.0",
+  "build": 43,
   "updatedAt": "2026-11-12",
-  "notes": "Allow right-click Export Notes to PDF and Export Summary Tables Only (Print/Save as PDF) on individual and multi-selected PDFs as well as folders.",
+  "notes": "Add modular standalone Legal Print Studio window for previewing, customizing, and printing Notes, Case Digests, Folder Docs, and Summary Tables.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

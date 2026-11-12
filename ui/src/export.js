@@ -5,7 +5,7 @@ import { safeStorageGet } from './storage.js';
 import { getCachedNotepad } from './notepad.js';
 
 // Strip emojis using Unicode property escapes and common icon sets
-const stripEmojis = (str) => {
+export const stripEmojis = (str) => {
   if (!str) return '';
   return str
     .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\u200D\u20E3]/gu, '')
@@ -14,7 +14,7 @@ const stripEmojis = (str) => {
 };
 
 // Clean HTML to ensure dark text and strip light colors
-function cleanAndSanitizeHtml(html) {
+export function cleanAndSanitizeHtml(html) {
   if (!html) return '';
   let clean = stripEmojis(html);
   // Replace inline light colors (white, off-white, light gray) with dark slate
@@ -25,7 +25,7 @@ function cleanAndSanitizeHtml(html) {
 }
 
 // Clean HTML check to verify if a section contains actual text, tables, or images
-function hasMeaningfulContent(html) {
+export function hasMeaningfulContent(html) {
   if (!html) return false;
   const stripped = html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
   const hasImg = /<img\b/i.test(html);
@@ -34,7 +34,7 @@ function hasMeaningfulContent(html) {
 }
 
 // Fetch notes and digest for a specific PDF (checking active memory, DB, and local cache)
-async function fetchPdfNotesAndDigest(pdf) {
+export async function fetchPdfNotesAndDigest(pdf) {
   const trueId = pdf.linked_pdf_id || pdf.id;
   let content = '';
   let digest = '';
@@ -77,8 +77,20 @@ async function fetchPdfNotesAndDigest(pdf) {
   return { content, digest };
 }
 
+// Fetch folder doc notes (checking in-memory folder record, local storage, and native SQLite mirror)
+export async function fetchFolderNotes(folder) {
+  if (!folder) return '';
+  let folderNotes = folder.notes || safeStorageGet('local_folder_notes_' + folder.id, '') || '';
+  if (!folderNotes && typeof window !== 'undefined' && window.__DESKTOP_SQLITE__?.loadFolderNote) {
+    try {
+      folderNotes = (await window.__DESKTOP_SQLITE__.loadFolderNote(folder.id)) || '';
+    } catch {}
+  }
+  return folderNotes || '';
+}
+
 // Extract only the 1st summary <table> from an HTML string (ignoring untabled Facts/text below)
-function extractFirstTableFromHtml(html) {
+export function extractFirstTableFromHtml(html) {
   if (!html || !/<table\b/i.test(html)) return '';
   try {
     const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -95,7 +107,7 @@ function extractFirstTableFromHtml(html) {
 }
 
 // Extract all <table> elements from an HTML string (fallback for folder-level summary tables)
-function extractAllTablesFromHtml(html) {
+export function extractAllTablesFromHtml(html) {
   if (!html || !/<table\b/i.test(html)) return '';
   try {
     const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -113,7 +125,7 @@ function extractAllTablesFromHtml(html) {
 }
 
 // Fallback: check if the PDF has a summary table inside its Annotation Case Summary cards
-async function fetchFirstAnnotationTable(pdf) {
+export async function fetchFirstAnnotationTable(pdf) {
   const trueId = pdf.linked_pdf_id || pdf.id;
   try {
     const raw = safeStorageGet('local_anns_' + trueId, '');
@@ -133,10 +145,12 @@ async function fetchFirstAnnotationTable(pdf) {
   return '';
 }
 
-function getFolderPathString(folder) {
+export function getFolderPathString(folder) {
   const parts = [];
   let currFolder = folder;
-  while (currFolder) {
+  const seen = new Set();
+  while (currFolder && !seen.has(currFolder.id)) {
+    seen.add(currFolder.id);
     const rawName = stripEmojis(currFolder.name) || 'Folder';
     parts.unshift(rawName);
     if (currFolder.parent_folder_id) {
@@ -145,7 +159,7 @@ function getFolderPathString(folder) {
       break;
     }
   }
-  if (folder.subject_id) {
+  if (folder?.subject_id) {
     const subj = S.subjects.find(s => s.id === folder.subject_id);
     if (subj) {
       const subjName = stripEmojis(subj.name) || 'Subject';
@@ -155,7 +169,7 @@ function getFolderPathString(folder) {
   return parts.join(' > ');
 }
 
-function escapeHtml(str) {
+export function escapeHtml(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -163,37 +177,57 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-function getCleanPdfTitle(pdf) {
+export function getCleanPdfTitle(pdf) {
   return (stripEmojis(pdf?.name) || 'Case Document').replace(/\.pdf$/i, '').trim() || 'Case Document';
 }
 
-function resolvePdfFolderPath(pdf) {
+export function resolvePdfFolderPath(pdf) {
   const folderId = pdf?.folder_id ?? pdf?.folderId ?? null;
   const folder = folderId ? S.folders.find(f => f.id === folderId) : null;
   return folder ? getFolderPathString(folder) : 'Library';
 }
 
 // Build HTML section for a single PDF and register its named @page entry in caseRegistry
-async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
+export async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
   if (!pdf) return '';
+  if (opts.excludedPdfIds?.has(pdf.id)) return '';
+  if (opts.seenPdfIds) {
+    if (opts.seenPdfIds.has(pdf.id)) return '';
+    opts.seenPdfIds.add(pdf.id);
+  }
+
   const tablesOnly = Boolean(opts.tablesOnly);
+  const includeDigest = opts.includeDigest !== false;
+  const includeNotes = opts.includeNotes !== false;
+  if (!tablesOnly && !includeDigest && !includeNotes) return '';
+
   const folderPath = opts.folder
     ? getFolderPathString(opts.folder)
     : resolvePdfFolderPath(pdf);
 
-  const { content, digest } = await fetchPdfNotesAndDigest(pdf);
+  const prefetched = opts.prefetched;
+  const { content, digest } = prefetched
+    ? { content: prefetched.content || '', digest: prefetched.digest || '' }
+    : await fetchPdfNotesAndDigest(pdf);
 
   if (tablesOnly) {
     // Extract ONLY the 1st summary table (check Case Digest first, then Notes, then Annotation Case Summaries)
-    const firstTable =
-      extractFirstTableFromHtml(digest) ||
-      extractFirstTableFromHtml(content) ||
-      (await fetchFirstAnnotationTable(pdf));
+    const digestTable = includeDigest ? extractFirstTableFromHtml(digest) : '';
+    const notesTable = includeNotes ? extractFirstTableFromHtml(content) : '';
+    const annTable = (!digestTable && !notesTable)
+      ? (prefetched && Object.prototype.hasOwnProperty.call(prefetched, 'annotationTable')
+          ? (prefetched.annotationTable || '')
+          : await fetchFirstAnnotationTable(pdf))
+      : '';
+    const firstTable = digestTable || notesTable || annTable;
 
     if (firstTable && hasMeaningfulContent(firstTable)) {
       const pdfName = getCleanPdfTitle(pdf);
       const pageId = `cp${caseRegistry.length}`;
       caseRegistry.push({ pageId, pdfName, folderPath });
+      if (Array.isArray(opts.tocCollector)) {
+        opts.tocCollector.push({ label: pdfName, sublabel: folderPath, badge: 'Summary Table' });
+      }
 
       return `
         <div class="case-section" style="page: ${pageId}; margin: 8pt 0; padding: 8pt 10pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
@@ -209,13 +243,19 @@ async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
     return '';
   }
 
-  const hasDigest = hasMeaningfulContent(digest);
-  const hasContent = hasMeaningfulContent(content);
+  const hasDigest = includeDigest && hasMeaningfulContent(digest);
+  const hasContent = includeNotes && hasMeaningfulContent(content);
   if (!hasDigest && !hasContent) return '';
 
   const pdfName = getCleanPdfTitle(pdf);
   const pageId = `cp${caseRegistry.length}`;
   caseRegistry.push({ pageId, pdfName, folderPath });
+  if (Array.isArray(opts.tocCollector)) {
+    const badges = [];
+    if (hasDigest) badges.push('Case Digest');
+    if (hasContent) badges.push('Notes');
+    opts.tocCollector.push({ label: pdfName, sublabel: folderPath, badge: badges.join(' + ') });
+  }
 
   let html = `
     <div class="case-section" style="page: ${pageId}; margin: 8pt 0; padding: 8pt 10pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
@@ -253,15 +293,21 @@ async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
 }
 
 // Build HTML tree for folder export. Only registers cases that actually have notes/digest (or a summary table in tablesOnly mode).
-async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}) {
+export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}) {
   const visitedFolders = opts.visitedFolders || (opts.visitedFolders = new Set());
   if (!folderId || visitedFolders.has(folderId)) return '';
+  if (opts.excludedFolderIds?.has(folderId)) return '';
   visitedFolders.add(folderId);
   const folder = S.folders.find(f => f.id === folderId);
   if (!folder) return '';
 
   const tablesOnly = Boolean(opts.tablesOnly);
+  const includeFolderDocs = opts.includeFolderDocs !== false;
+  const includeDigest = opts.includeDigest !== false;
+  const includeNotes = opts.includeNotes !== false;
+  const includeSubfolders = opts.includeSubfolders !== false;
   const startCaseIdx = caseRegistry.length;
+  const startTocIdx = Array.isArray(opts.tocCollector) ? opts.tocCollector.length : -1;
 
   let casesHtml = '';
   let subfoldersHtml = '';
@@ -273,7 +319,18 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
   for (const pdf of pdfs) {
-    const pdfHtml = await buildPdfCaseHTML(pdf, caseRegistry, { tablesOnly, folder });
+    const trueId = pdf.linked_pdf_id || pdf.id;
+    const prefetched = opts.notesCache?.get(trueId);
+    const pdfHtml = await buildPdfCaseHTML(pdf, caseRegistry, {
+      tablesOnly,
+      includeDigest,
+      includeNotes,
+      folder,
+      prefetched,
+      excludedPdfIds: opts.excludedPdfIds,
+      seenPdfIds: opts.seenPdfIds,
+      tocCollector: opts.tocCollector,
+    });
     if (pdfHtml) {
       hasAnyContent = true;
       casesHtml += pdfHtml;
@@ -281,15 +338,17 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}
   }
 
   // 2. Subfolders recursively
-  const subfolders = S.folders
-    .filter(f => f.parent_folder_id === folderId)
-    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  if (includeSubfolders) {
+    const subfolders = S.folders
+      .filter(f => f.parent_folder_id === folderId)
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
-  for (const sf of subfolders) {
-    const subHtml = await buildFolderHTML(sf.id, depth + 1, caseRegistry, opts);
-    if (subHtml) {
-      subfoldersHtml += subHtml;
-      hasAnyContent = true;
+    for (const sf of subfolders) {
+      const subHtml = await buildFolderHTML(sf.id, depth + 1, caseRegistry, opts);
+      if (subHtml) {
+        subfoldersHtml += subHtml;
+        hasAnyContent = true;
+      }
     }
   }
 
@@ -299,30 +358,48 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}
 
   // 3. Folder Notes
   let folderNotesHtml = '';
-  let folderNotes = folder.notes || safeStorageGet('local_folder_notes_' + folder.id, '') || '';
-  if (!folderNotes && window.__DESKTOP_SQLITE__?.loadFolderNote) {
-    try {
-      folderNotes = (await window.__DESKTOP_SQLITE__.loadFolderNote(folder.id)) || '';
-    } catch {}
-  }
-  if (!tablesOnly && hasMeaningfulContent(folderNotes)) {
-    hasAnyContent = true;
-    folderNotesHtml += `
-      <div class="folder-notes-section" style="${firstPageStyle} margin-bottom: 10pt; padding: 6pt 10pt; background: #f8fafc; border: 0.75pt solid #e2e8f0; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
-        <div class="section-badge" style="font-size: 7pt; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3pt;">Folder Notes</div>
-        <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderNotes)}</div>
-      </div>
-    `;
-  } else if (tablesOnly && !casesHtml && hasMeaningfulContent(folderNotes)) {
-    // Fallback if a folder has summary tables stored inside Folder Notes rather than per-PDF digests
-    const folderTables = extractAllTablesFromHtml(folderNotes);
-    if (folderTables && hasMeaningfulContent(folderTables)) {
+  if (includeFolderDocs) {
+    const folderNotes = opts.folderNotesCache?.has(folder.id)
+      ? opts.folderNotesCache.get(folder.id)
+      : await fetchFolderNotes(folder);
+
+    if (!tablesOnly && hasMeaningfulContent(folderNotes)) {
       hasAnyContent = true;
+      if (Array.isArray(opts.tocCollector)) {
+        const entry = {
+          label: `${stripEmojis(folder.name) || 'Folder'} — Folder Notes`,
+          sublabel: getFolderPathString(folder),
+          badge: 'Folder Doc',
+        };
+        if (startTocIdx >= 0) opts.tocCollector.splice(startTocIdx, 0, entry);
+        else opts.tocCollector.push(entry);
+      }
       folderNotesHtml += `
-        <div class="folder-notes-section" style="${firstPageStyle} margin-bottom: 10pt; padding: 6pt 10pt; background: #ffffff; border: 0.75pt solid #cbd5e1; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
-          <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderTables)}</div>
+        <div class="folder-notes-section" style="${firstPageStyle} margin-bottom: 10pt; padding: 6pt 10pt; background: #f8fafc; border: 0.75pt solid #e2e8f0; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
+          <div class="section-badge" style="font-size: 7pt; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3pt;">Folder Notes</div>
+          <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderNotes)}</div>
         </div>
       `;
+    } else if (tablesOnly && !casesHtml && hasMeaningfulContent(folderNotes)) {
+      // Fallback if a folder has summary tables stored inside Folder Notes rather than per-PDF digests
+      const folderTables = extractAllTablesFromHtml(folderNotes);
+      if (folderTables && hasMeaningfulContent(folderTables)) {
+        hasAnyContent = true;
+        if (Array.isArray(opts.tocCollector)) {
+          const entry = {
+            label: `${stripEmojis(folder.name) || 'Folder'} — Summary Tables`,
+            sublabel: getFolderPathString(folder),
+            badge: 'Folder Table',
+          };
+          if (startTocIdx >= 0) opts.tocCollector.splice(startTocIdx, 0, entry);
+          else opts.tocCollector.push(entry);
+        }
+        folderNotesHtml += `
+          <div class="folder-notes-section" style="${firstPageStyle} margin-bottom: 10pt; padding: 6pt 10pt; background: #ffffff; border: 0.75pt solid #cbd5e1; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
+            <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderTables)}</div>
+          </div>
+        `;
+      }
     }
   }
 
@@ -336,7 +413,7 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}
   // preventing an empty intermediate page with only the folder header!
   let headerHtml = '';
   if (depth >= 2) {
-    const folderName = stripEmojis(folder.name) || 'Folder';
+    const folderName = escapeHtml(stripEmojis(folder.name) || 'Folder');
     const hSize = depth === 2 ? '11.5pt' : '10.5pt';
     const hTag = depth === 2 ? 'h2' : 'h3';
     headerHtml = `
@@ -351,7 +428,7 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}
   return headerHtml + folderNotesHtml + casesHtml + subfoldersHtml;
 }
 
-async function flushPendingNotesForExport() {
+export async function flushPendingNotesForExport() {
   // Flush any pending active editor notes from memory to state
   try {
     const { flushFolderDoc } = await import('./viewer.js');
@@ -512,14 +589,119 @@ export async function exportPdfsToPDF(pdfsOrPdf, opts = {}) {
   });
 }
 
-function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pageTitle, subtitleHtml, fallbackPath }) {
-  const firstPageStyle = caseRegistry.length > 0 ? `page: ${caseRegistry[0].pageId};` : '';
+function resolvePrintPageMetrics(paperSize, orientation, marginPreset) {
+  const paper = ['letter', 'a4', 'legal'].includes(paperSize) ? paperSize : 'letter';
+  const orient = orientation === 'landscape' ? 'landscape' : 'portrait';
+  const margin = ['normal', 'narrow', 'wide'].includes(marginPreset) ? marginPreset : 'normal';
+
+  const dims = {
+    letter: { w: '8.5in', h: '11in' },
+    a4: { w: '210mm', h: '297mm' },
+    legal: { w: '8.5in', h: '14in' },
+  }[paper];
+
+  const width = orient === 'landscape' ? dims.h : dims.w;
+  const minHeight = orient === 'landscape' ? dims.w : dims.h;
+
+  const margins = {
+    narrow: { page: '0.45in 0.35in 0.45in 0.35in', preview: '0.35in' },
+    normal: { page: '0.75in 0.5in 0.65in 0.5in', preview: '0.5in' },
+    wide: { page: '1.0in 0.85in 0.9in 0.85in', preview: '0.85in' },
+  }[margin];
+
+  return {
+    paper,
+    orient,
+    margin,
+    width,
+    minHeight,
+    pageMargin: margins.page,
+    previewPadding: margins.preview,
+  };
+}
+
+function buildTocBlockHtml({ safeTitleHtml, subtitleHtml, tocEntries, caseRegistry, tablesOnly, hasBody }) {
+  const entries = (Array.isArray(tocEntries) && tocEntries.length > 0)
+    ? tocEntries
+    : (caseRegistry || []).map(c => ({
+        label: c.pdfName || 'Case Document',
+        sublabel: c.folderPath || '',
+        badge: tablesOnly ? 'Summary Table' : 'Case',
+      }));
+
+  const dateStr = new Date().toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+
+  const rowsHtml = entries.length > 0
+    ? entries.map((item, idx) => `
+        <div class="ps-toc-row">
+          <div class="ps-toc-num">${idx + 1}.</div>
+          <div class="ps-toc-main">
+            <div class="ps-toc-label">${escapeHtml(item.label || 'Untitled')}</div>
+            ${item.sublabel ? `<div class="ps-toc-sub">${escapeHtml(item.sublabel)}</div>` : ''}
+          </div>
+          ${item.badge ? `<div class="ps-toc-badge">${escapeHtml(item.badge)}</div>` : ''}
+        </div>
+      `).join('')
+    : `<div class="ps-toc-empty">No indexed sections in this packet.</div>`;
+
+  return `
+    <div class="print-cover-toc${hasBody ? ' has-page-break' : ''}">
+      <div class="ps-cover-kicker">LEGAL ANNOTATOR &bull; PRINT PACKET</div>
+      <h1 class="ps-cover-title">${safeTitleHtml}</h1>
+      ${subtitleHtml ? `<div class="ps-cover-sub">${subtitleHtml}</div>` : ''}
+      <div class="ps-cover-meta">
+        <span>Generated ${escapeHtml(dateStr)}</span>
+        <span>&bull;</span>
+        <span>${entries.length} ${entries.length === 1 ? 'Section' : 'Sections'}</span>
+        ${tablesOnly ? '<span>&bull;</span><span>Summary Tables Only</span>' : ''}
+      </div>
+      <div class="ps-toc-heading">Table of Contents</div>
+      <div class="ps-toc-list">${rowsHtml}</div>
+    </div>
+  `;
+}
+
+export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {}) {
+  const pageTitle = opts.title || opts.pageTitle || 'Legal Print Studio';
+  const safeTitleHtml = escapeHtml(pageTitle);
+  const subtitleHtml = opts.subtitleHtml !== undefined
+    ? String(opts.subtitleHtml || '')
+    : escapeHtml(opts.subtitle || '');
+  const fallbackPath = opts.fallbackPath || 'Library';
+
+  const {
+    paper,
+    orient,
+    width,
+    minHeight,
+    pageMargin,
+    previewPadding,
+  } = resolvePrintPageMetrics(opts.paperSize, opts.orientation, opts.marginPreset);
+
+  const isStandard = opts.layout === 'standard';
+  const isTwoCol = Number(opts.columns) === 2;
+  const includeToc = Boolean(opts.includeToc);
+  const tablesOnly = Boolean(opts.tablesOnly);
+  const runningHeaders = opts.runningHeaders !== false;
+  const embeddedPreview = Boolean(opts.embeddedPreview);
+  const autoPrint = opts.autoPrint !== undefined ? Boolean(opts.autoPrint) : !embeddedPreview;
+  const rawZoom = Number(opts.previewZoom);
+  const previewZoom = Number.isFinite(rawZoom) && rawZoom >= 0.5 && rawZoom <= 2 ? rawZoom : 1;
+
+  const firstPageStyle = runningHeaders && caseRegistry.length > 0
+    ? `page: ${caseRegistry[0].pageId};`
+    : '';
 
   // Build one @page rule per case with the case name and its own folder path hardcoded as CSS string literals
-  const casePageCss = caseRegistry.map(({ pageId, pdfName, folderPath: casePath }) => {
-    const safeName = (pdfName || 'Case Document').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const safePath = (casePath || fallbackPath || 'Library').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    return `
+  const casePageCss = runningHeaders
+    ? (caseRegistry || []).map(({ pageId, pdfName, folderPath: casePath }) => {
+        const safeName = (pdfName || 'Case Document').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const safePath = (casePath || fallbackPath || 'Library').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        return `
     @page ${pageId} {
       @top-left {
         content: "${safePath}";
@@ -553,19 +735,11 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
         text-align: center;
       }
     }`;
-  }).join('\n');
+      }).join('\n')
+    : '';
 
-  const safeTitleHtml = escapeHtml(pageTitle);
-
-  const fullDocumentHtml = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>${safeTitleHtml}</title>
-  <style>
-    @page {
-      size: letter ${orientation};
-      margin: 0.75in 0.5in 0.65in 0.5in;
+  const pageFooterCss = runningHeaders
+    ? `
       @bottom-center {
         content: "Page " counter(page) " of " counter(pages);
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Calibri, Arial, sans-serif;
@@ -575,7 +749,113 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
         padding-top: 4pt;
         width: 100%;
         text-align: center;
+      }`
+    : `
+      @top-left { content: none; }
+      @top-right { content: none; }
+      @bottom-center { content: none; }`;
+
+  const hasBody = hasMeaningfulContent(sectionsHtml);
+  const tocHtml = includeToc
+    ? buildTocBlockHtml({
+        safeTitleHtml,
+        subtitleHtml,
+        tocEntries: opts.tocEntries,
+        caseRegistry,
+        tablesOnly,
+        hasBody,
+      })
+    : '';
+
+  const bodyClassList = [
+    isStandard ? 'standard-mode' : '',
+    isTwoCol ? 'two-column-layout' : '',
+  ].filter(Boolean).join(' ');
+
+  const topBarHtml = embeddedPreview
+    ? ''
+    : `
+  <div class="top-bar no-print">
+    <div class="top-bar-left">
+      <div class="top-bar-title">${safeTitleHtml}</div>
+      <div class="top-bar-sub">${subtitleHtml} &bull; <span style="color:#fcd34d;">Tip: In print settings, uncheck "Headers and footers" for a clean look without browser URLs.</span></div>
+    </div>
+    <div class="top-bar-actions">
+      <div class="btn-group">
+        <button id="btn-mode-compact" class="btn-toggle${isStandard ? '' : ' active'}" onclick="setLayoutMode('compact')" title="Save pages with compact margins and tight spacing">⚡ Compact (Save Pages)</button>
+        <button id="btn-mode-standard" class="btn-toggle${isStandard ? ' active' : ''}" onclick="setLayoutMode('standard')" title="Standard spacious layout">📐 Standard</button>
+      </div>
+      <div class="btn-group">
+        <button id="btn-col-1" class="btn-toggle${isTwoCol ? '' : ' active'}" onclick="setColumns(1)" title="Single column width">📄 1 Col</button>
+        <button id="btn-col-2" class="btn-toggle${isTwoCol ? ' active' : ''}" onclick="setColumns(2)" title="2-column newspaper style for text-heavy summaries">📰 2 Col</button>
+      </div>
+      <button class="btn-print" onclick="window.print()">
+        <span>Print / Save as PDF</span>
+      </button>
+      <button class="btn-close" onclick="window.close()">Close</button>
+    </div>
+  </div>`;
+
+  const scriptHtml = embeddedPreview
+    ? ''
+    : `
+  <script>
+    function setLayoutMode(mode) {
+      const container = document.getElementById('document-body');
+      const btnCompact = document.getElementById('btn-mode-compact');
+      const btnStandard = document.getElementById('btn-mode-standard');
+      if (mode === 'compact') {
+        container.classList.remove('standard-mode');
+        btnCompact.classList.add('active');
+        btnStandard.classList.remove('active');
+      } else {
+        container.classList.add('standard-mode');
+        btnStandard.classList.add('active');
+        btnCompact.classList.remove('active');
       }
+    }
+
+    function setColumns(cols) {
+      const container = document.getElementById('document-body');
+      const btn1 = document.getElementById('btn-col-1');
+      const btn2 = document.getElementById('btn-col-2');
+      if (cols === 2) {
+        container.classList.add('two-column-layout');
+        btn2.classList.add('active');
+        btn1.classList.remove('active');
+      } else {
+        container.classList.remove('two-column-layout');
+        btn1.classList.add('active');
+        btn2.classList.remove('active');
+      }
+    }
+    ${autoPrint ? `
+    window.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => {
+        window.focus();
+        window.print();
+      }, 400);
+    });` : ''}
+  </script>`;
+
+  const deskBg = embeddedPreview ? '#e2e8f0' : '#f1f5f9';
+  const paperWidthRule = embeddedPreview
+    ? `width: ${width}; min-height: ${minHeight}; margin: 20px auto; padding: ${previewPadding};`
+    : `max-width: ${width}; margin: 18px auto; padding: ${previewPadding};`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${safeTitleHtml}</title>
+  <style>
+    :root {
+      color-scheme: only light;
+    }
+    @page {
+      size: ${paper} ${orient};
+      margin: ${pageMargin};
+      ${pageFooterCss}
     }
     @page :blank {
       @top-left { content: none; }
@@ -586,12 +866,15 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
     * {
       box-sizing: border-box;
     }
+    html, body {
+      color-scheme: only light;
+      background: ${deskBg};
+      color: #0f172a;
+    }
     body {
       ${firstPageStyle}
       margin: 0;
       padding: 0;
-      background: #f1f5f9;
-      color: #0f172a;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Calibri, Aptos, Arial, Helvetica, sans-serif;
       font-size: 9pt;
       line-height: 1.25;
@@ -685,12 +968,115 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
       background: #334155;
     }
     .paper-container {
-      max-width: 8.5in;
-      margin: 18px auto;
+      ${paperWidthRule}
       background: #ffffff;
-      padding: 0.5in;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.1);
+      color: #0f172a;
+      box-shadow: 0 4px 24px rgba(15, 23, 42, 0.14);
       border-radius: 4px;
+      zoom: ${previewZoom};
+    }
+
+    /* Cover & Table of Contents */
+    .print-cover-toc {
+      margin: 0 0 12pt 0;
+      padding: 12pt 14pt;
+      border: 1pt solid #cbd5e1;
+      border-top: 3pt solid #0f172a;
+      border-radius: 4pt;
+      background: #ffffff;
+      color: #0f172a;
+    }
+    .print-cover-toc.has-page-break {
+      page-break-after: always;
+      break-after: page;
+    }
+    .ps-cover-kicker {
+      font-size: 7pt;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #0369a1;
+      margin-bottom: 4pt;
+    }
+    .ps-cover-title {
+      margin: 0 0 4pt 0;
+      font-size: 16pt;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.2;
+    }
+    .ps-cover-sub {
+      font-size: 9pt;
+      color: #475569;
+      margin-bottom: 6pt;
+    }
+    .ps-cover-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6pt;
+      font-size: 8pt;
+      color: #64748b;
+      padding-bottom: 8pt;
+      margin-bottom: 8pt;
+      border-bottom: 0.75pt solid #e2e8f0;
+    }
+    .ps-toc-heading {
+      font-size: 8pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #334155;
+      margin-bottom: 6pt;
+    }
+    .ps-toc-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4pt;
+    }
+    .ps-toc-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8pt;
+      padding: 3pt 0;
+      border-bottom: 0.5pt dotted #e2e8f0;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .ps-toc-num {
+      width: 20pt;
+      flex-shrink: 0;
+      font-size: 8.5pt;
+      font-weight: 700;
+      color: #475569;
+    }
+    .ps-toc-main {
+      flex: 1;
+      min-width: 0;
+    }
+    .ps-toc-label {
+      font-size: 9pt;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .ps-toc-sub {
+      font-size: 7.5pt;
+      color: #64748b;
+    }
+    .ps-toc-badge {
+      font-size: 7pt;
+      font-weight: 600;
+      color: #0369a1;
+      background: #f0f9ff;
+      border: 0.5pt solid #bae6fd;
+      border-radius: 3pt;
+      padding: 1pt 5pt;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .ps-toc-empty {
+      font-size: 8.5pt;
+      color: #64748b;
+      font-style: italic;
     }
 
     /* Compact Layout Styling */
@@ -786,7 +1172,8 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
       break-inside: avoid;
       page-break-inside: avoid;
     }
-    .two-column-layout .folder-header-wrap {
+    .two-column-layout .folder-header-wrap,
+    .two-column-layout .print-cover-toc {
       column-span: all;
     }
 
@@ -828,12 +1215,13 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
       .no-print {
         display: none !important;
       }
-      body {
+      html, body {
         ${firstPageStyle}
         background: #ffffff !important;
         color: #000000 !important;
         margin: 0 !important;
         padding: 0 !important;
+        zoom: 1 !important;
       }
       .paper-container,
       #document-body {
@@ -844,6 +1232,12 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
         border: none !important;
         max-width: none !important;
         width: 100% !important;
+        min-height: 0 !important;
+        zoom: 1 !important;
+      }
+      .print-cover-toc {
+        border: 0.75pt solid #cbd5e1 !important;
+        border-top: 2.5pt solid #0f172a !important;
       }
       .case-section {
         page-break-inside: auto !important;
@@ -884,69 +1278,28 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
   </style>
 </head>
 <body>
-  <div class="top-bar no-print">
-    <div class="top-bar-left">
-      <div class="top-bar-title">${safeTitleHtml}</div>
-      <div class="top-bar-sub">${subtitleHtml} &bull; <span style="color:#fcd34d;">Tip: In print settings, uncheck "Headers and footers" for a clean look without browser URLs.</span></div>
-    </div>
-    <div class="top-bar-actions">
-      <div class="btn-group">
-        <button id="btn-mode-compact" class="btn-toggle active" onclick="setLayoutMode('compact')" title="Save pages with compact margins and tight spacing">⚡ Compact (Save Pages)</button>
-        <button id="btn-mode-standard" class="btn-toggle" onclick="setLayoutMode('standard')" title="Standard spacious layout">📐 Standard</button>
-      </div>
-      <div class="btn-group">
-        <button id="btn-col-1" class="btn-toggle active" onclick="setColumns(1)" title="Single column width">📄 1 Col</button>
-        <button id="btn-col-2" class="btn-toggle" onclick="setColumns(2)" title="2-column newspaper style for text-heavy summaries">📰 2 Col</button>
-      </div>
-      <button class="btn-print" onclick="window.print()">
-        <span>Print / Save as PDF</span>
-      </button>
-      <button class="btn-close" onclick="window.close()">Close</button>
-    </div>
-  </div>
-
-  <div class="paper-container"><div id="document-body">${htmlContent}</div></div>
-
-  <script>
-    function setLayoutMode(mode) {
-      const container = document.getElementById('document-body');
-      const btnCompact = document.getElementById('btn-mode-compact');
-      const btnStandard = document.getElementById('btn-mode-standard');
-      if (mode === 'compact') {
-        container.classList.remove('standard-mode');
-        btnCompact.classList.add('active');
-        btnStandard.classList.remove('active');
-      } else {
-        container.classList.add('standard-mode');
-        btnStandard.classList.add('active');
-        btnCompact.classList.remove('active');
-      }
-    }
-
-    function setColumns(cols) {
-      const container = document.getElementById('document-body');
-      const btn1 = document.getElementById('btn-col-1');
-      const btn2 = document.getElementById('btn-col-2');
-      if (cols === 2) {
-        container.classList.add('two-column-layout');
-        btn2.classList.add('active');
-        btn1.classList.remove('active');
-      } else {
-        container.classList.remove('two-column-layout');
-        btn1.classList.add('active');
-        btn2.classList.remove('active');
-      }
-    }
-
-    window.addEventListener('DOMContentLoaded', () => {
-      setTimeout(() => {
-        window.focus();
-        window.print();
-      }, 400);
-    });
-  </script>
+  ${topBarHtml}
+  <div class="paper-container"><div id="document-body"${bodyClassList ? ` class="${bodyClassList}"` : ''}>${tocHtml}${sectionsHtml || ''}</div></div>
+  ${scriptHtml}
 </body>
 </html>`;
+}
+
+function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pageTitle, subtitleHtml, fallbackPath }) {
+  const fullDocumentHtml = buildPrintDocumentHTML(htmlContent, caseRegistry, {
+    title: pageTitle,
+    subtitleHtml,
+    fallbackPath,
+    orientation,
+    paperSize: 'letter',
+    layout: 'compact',
+    columns: 1,
+    includeToc: false,
+    marginPreset: 'normal',
+    runningHeaders: true,
+    embeddedPreview: false,
+    autoPrint: true,
+  });
 
   // 1. In Tauri Desktop (or when popups are blocked), open interactive full-screen Export Preview Studio modal
   const isTauriDesktop = !!window.__TAURI_INTERNALS__;

@@ -1,0 +1,1667 @@
+// ═════════════════════════════════════════════════════════════════════════════
+// LEGAL PRINT STUDIO — Modular Standalone Notes, Case Digests, Folder Docs &
+// Summary Tables Print Preview & Customization Studio
+// ═════════════════════════════════════════════════════════════════════════════
+import { S } from './state.js';
+import { safeStorageGet, safeStorageSet, safeStorageRemove } from './storage.js';
+import { toast } from './ui.js';
+import {
+  fetchPdfNotesAndDigest,
+  fetchFolderNotes,
+  fetchFirstAnnotationTable,
+  buildPdfCaseHTML,
+  buildFolderHTML,
+  flushPendingNotesForExport,
+  buildPrintDocumentHTML,
+  hasMeaningfulContent,
+  stripEmojis,
+  escapeHtml,
+  getCleanPdfTitle,
+  getFolderPathString,
+} from './export.js';
+
+const PREFS_STORAGE_KEY = 'la_print_studio_prefs';
+const JOB_STORAGE_PREFIX = 'la_print_job_';
+const PRINT_CHANNEL_NAME = 'la_print_studio';
+const REALTIME_CHANNEL_NAME = 'legal_annotator_realtime';
+
+const DEFAULT_PREFS = {
+  includeDigest: true,
+  includeNotes: true,
+  includeFolderDocs: true,
+  tablesOnly: false,
+  includeToc: false,
+  columns: 1,
+  layout: 'compact',
+  paperSize: 'letter',
+  orientation: 'portrait',
+  marginPreset: 'normal',
+  runningHeaders: true,
+  previewZoom: 1,
+};
+
+let _studioController = null;
+let _printChannel = null;
+
+function getPrintChannel() {
+  if (!_printChannel && typeof BroadcastChannel !== 'undefined') {
+    try {
+      _printChannel = new BroadcastChannel(PRINT_CHANNEL_NAME);
+    } catch {}
+  }
+  return _printChannel;
+}
+
+function loadSavedPrefs() {
+  try {
+    const raw = safeStorageGet(PREFS_STORAGE_KEY, null);
+    if (!raw) return { ...DEFAULT_PREFS };
+    const parsed = JSON.parse(raw);
+    return {
+      ...DEFAULT_PREFS,
+      ...(parsed && typeof parsed === 'object' ? parsed : {}),
+      columns: Number(parsed?.columns) === 2 ? 2 : 1,
+      layout: parsed?.layout === 'standard' ? 'standard' : 'compact',
+      paperSize: ['letter', 'a4', 'legal'].includes(parsed?.paperSize) ? parsed.paperSize : 'letter',
+      orientation: parsed?.orientation === 'landscape' ? 'landscape' : 'portrait',
+      marginPreset: ['normal', 'narrow', 'wide'].includes(parsed?.marginPreset) ? parsed.marginPreset : 'normal',
+      previewZoom: [0.75, 1, 1.25].includes(Number(parsed?.previewZoom)) ? Number(parsed.previewZoom) : 1,
+    };
+  } catch {
+    return { ...DEFAULT_PREFS };
+  }
+}
+
+function savePrefs(prefs) {
+  try {
+    safeStorageSet(PREFS_STORAGE_PREFIX, JSON.stringify(prefs));
+  } catch {}
+}
+
+function pruneOldLocalJobs(keepCount = 3) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const entries = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(JOB_STORAGE_PREFIX)) {
+        let createdAt = 0;
+        try {
+          const parsed = JSON.parse(localStorage.getItem(k) || '{}');
+          createdAt = Number(parsed?.createdAt || 0);
+        } catch {}
+        entries.push({ key: k, createdAt });
+      }
+    }
+    if (entries.length > keepCount) {
+      entries.sort((a, b) => b.createdAt - a.createdAt);
+      for (const old of entries.slice(keepCount)) {
+        safeStorageRemove(old.key);
+      }
+    }
+  } catch {}
+}
+
+function saveLocalJob(jobId, payload) {
+  if (!jobId) return;
+  pruneOldLocalJobs(3);
+  safeStorageSet(JOB_STORAGE_PREFIX + jobId, JSON.stringify(payload));
+}
+
+function loadLocalJob(jobId) {
+  if (!jobId) return null;
+  const keys = [JOB_STORAGE_PREFIX + jobId, 'print_job_' + jobId];
+  for (const key of keys) {
+    try {
+      const raw = safeStorageGet(key, null);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function loadPrintJobPayload(jobId) {
+  if (!jobId) return null;
+  if (typeof window !== 'undefined' && window.__DESKTOP_PRINT_STUDIO__?.loadJob) {
+    try {
+      const deskJob = await window.__DESKTOP_PRINT_STUDIO__.loadJob(jobId);
+      if (deskJob && typeof deskJob === 'object') return deskJob;
+    } catch (err) {
+      console.warn('[PrintStudio] desktop loadJob failed:', err);
+    }
+  }
+  return loadLocalJob(jobId);
+}
+
+function applyLibrarySnapshot(snap) {
+  if (!snap || typeof snap !== 'object') return false;
+  let applied = false;
+  if (Array.isArray(snap.subjects) && snap.subjects.length) {
+    S.subjects = snap.subjects;
+    applied = true;
+  }
+  if (Array.isArray(snap.folders) && snap.folders.length) {
+    S.folders = snap.folders;
+    applied = true;
+  }
+  if (Array.isArray(snap.pdfs) && snap.pdfs.length) {
+    S.pdfs = snap.pdfs;
+    applied = true;
+  }
+  return applied;
+}
+
+async function hydrateLibraryState(job, requestedIds = {}) {
+  let hydrated = applyLibrarySnapshot(job?.librarySnapshot);
+
+  if (!S.subjects?.length && !S.folders?.length && !S.pdfs?.length) {
+    try {
+      const snapStr = safeStorageGet('local_lib_snapshot', null);
+      if (snapStr) {
+        hydrated = applyLibrarySnapshot(JSON.parse(snapStr)) || hydrated;
+      }
+    } catch {}
+  }
+
+  if ((!S.folders?.length && !S.pdfs?.length) && typeof window !== 'undefined' && window.__DESKTOP_SQLITE__?.loadLibrary) {
+    try {
+      const sqLib = await window.__DESKTOP_SQLITE__.loadLibrary();
+      hydrated = applyLibrarySnapshot(sqLib) || hydrated;
+    } catch {}
+  }
+
+  const missingRequestedDoc = requestedIds.docId && !S.pdfs?.some(p => p.id === requestedIds.docId);
+  const missingRequestedFolder = requestedIds.folderId && !S.folders?.some(f => f.id === requestedIds.folderId);
+  const needsSyncDb = (!S.folders?.length && !S.pdfs?.length) || missingRequestedDoc || missingRequestedFolder;
+
+  const tryRemoteLoad = async () => {
+    try {
+      const dbMod = await import('./db.js');
+      if (typeof dbMod.initAuth === 'function') {
+        await dbMod.initAuth().catch(() => {});
+      }
+      if (typeof dbMod.dbLoadLibrary === 'function') {
+        await dbMod.dbLoadLibrary();
+      } else if (typeof dbMod.dbLoad === 'function') {
+        await dbMod.dbLoad(1);
+      }
+      return true;
+    } catch (err) {
+      console.warn('[PrintStudio] Cloud library load skipped/failed:', err);
+      return false;
+    }
+  };
+
+  if (needsSyncDb) {
+    await tryRemoteLoad();
+  } else if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+    // Non-blocking background refresh if online so standalone window stays up-to-date
+    tryRemoteLoad().then((ok) => {
+      if (ok && _studioController) {
+        _studioController.syncLiveFolderNotesFromLocal();
+        _studioController.renderTree();
+      }
+    }).catch(() => {});
+  }
+
+  return hydrated;
+}
+
+function getAllDescendantFolderIds(rootFolderId) {
+  const result = [];
+  const queue = [rootFolderId];
+  const seen = new Set();
+  while (queue.length) {
+    const id = queue.shift();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push(id);
+    for (const f of S.folders) {
+      if (f.parent_folder_id === id && !seen.has(f.id)) {
+        queue.push(f.id);
+      }
+    }
+  }
+  return result;
+}
+
+function getAncestorFolderIds(folderId) {
+  const result = [];
+  let cur = folderId;
+  const seen = new Set();
+  while (cur && !seen.has(cur)) {
+    seen.add(cur);
+    result.push(cur);
+    const f = S.folders.find(x => x.id === cur);
+    cur = f ? f.parent_folder_id : null;
+  }
+  return result;
+}
+
+function getFolderDisplayTitle(folder) {
+  return stripEmojis(folder?.name) || 'Untitled Folder';
+}
+
+function buildQueueFromJobOrMode(job, modeInfo = {}) {
+  const queueItems = [];
+  const seenFolders = new Set();
+  const seenPdfs = new Set();
+
+  const rawFolderIds = Array.isArray(job?.folderIds) && job.folderIds.length
+    ? job.folderIds
+    : (modeInfo.folderId ? [modeInfo.folderId] : []);
+
+  const rawPdfIds = Array.isArray(job?.pdfIds) && job.pdfIds.length
+    ? job.pdfIds
+    : (modeInfo.docId ? [modeInfo.docId] : []);
+
+  // Deduplicate folders where an ancestor is already included
+  const folderIdSet = new Set(rawFolderIds);
+  for (const fid of rawFolderIds) {
+    const folder = S.folders.find(f => f.id === fid);
+    if (!folder) continue;
+    const ancestors = getAncestorFolderIds(folder.parent_folder_id);
+    if (ancestors.some(aid => folderIdSet.has(aid))) continue;
+    if (!seenFolders.has(fid)) {
+      seenFolders.add(fid);
+      queueItems.push({ kind: 'folder', id: fid });
+    }
+  }
+
+  // Mark all PDFs covered by queued folders
+  const coveredPdfIds = new Set();
+  for (const item of queueItems) {
+    const branchIds = new Set(getAllDescendantFolderIds(item.id));
+    for (const p of S.pdfs) {
+      if (branchIds.has(p.folder_id)) coveredPdfIds.add(p.id);
+    }
+  }
+
+  for (const pid of rawPdfIds) {
+    if (!pid || coveredPdfIds.has(pid) || seenPdfs.has(pid)) continue;
+    if (S.pdfs.some(p => p.id === pid)) {
+      seenPdfs.add(pid);
+      queueItems.push({ kind: 'pdf', id: pid });
+    }
+  }
+
+  return queueItems;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 1. BOOTSTRAP & ENTRY POINT
+// ═════════════════════════════════════════════════════════════════════════════
+
+export async function checkAndBootPrintStudioApp() {
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search);
+  const isUrlStudio = params.get('print-studio') === '1';
+
+  let modeInfo = {
+    isPrintStudio: isUrlStudio,
+    jobId: params.get('job') || params.get('jobId') || null,
+    docId: params.get('docId') || params.get('doc') || null,
+    folderId: params.get('folderId') || params.get('folder') || null,
+  };
+
+  if (window.__DESKTOP_PRINT_STUDIO__?.getMode) {
+    try {
+      const deskMode = await window.__DESKTOP_PRINT_STUDIO__.getMode();
+      if (deskMode && (deskMode.isPrintStudio || isUrlStudio)) {
+        modeInfo = {
+          isPrintStudio: true,
+          jobId: deskMode.jobId || modeInfo.jobId || null,
+          docId: deskMode.docId || modeInfo.docId || null,
+          folderId: deskMode.folderId || modeInfo.folderId || null,
+        };
+      }
+    } catch (err) {
+      console.warn('[PrintStudio] getMode error:', err);
+    }
+  }
+
+  if (!modeInfo.isPrintStudio) return false;
+
+  document.title = 'Legal Print Studio — Notes & Case Digests';
+  document.body.className = 'ps-standalone-body';
+  document.body.innerHTML = '<div id="print-studio-app"></div>';
+
+  const job = await loadPrintJobPayload(modeInfo.jobId);
+  await hydrateLibraryState(job, { docId: modeInfo.docId, folderId: modeInfo.folderId });
+
+  const mountEl = document.getElementById('print-studio-app');
+  _studioController = mountPrintStudioUI(mountEl, { job, modeInfo, isOverlay: false });
+
+  // Live receiver for desktop window reuse and BroadcastChannel updates
+  window.__PRINT_STUDIO_RECEIVE_JOB = async (incoming) => {
+    const nextJobId = typeof incoming === 'string' ? incoming : incoming?.jobId;
+    if (!nextJobId || !_studioController) return;
+    await _studioController.receiveJob(nextJobId);
+  };
+
+  const ch = getPrintChannel();
+  if (ch) {
+    ch.onmessage = async (ev) => {
+      const msg = ev?.data;
+      if (msg?.type === 'PRINT_JOB' && msg.jobId && _studioController) {
+        await _studioController.receiveJob(msg.jobId);
+      }
+    };
+  }
+
+  if (typeof BroadcastChannel !== 'undefined') {
+    try {
+      const rt = new BroadcastChannel(REALTIME_CHANNEL_NAME);
+      rt.onmessage = (ev) => {
+        const msg = ev?.data;
+        if (!_studioController) return;
+        if (msg?.type === 'NOTEPAD_CHANGED') {
+          _studioController.invalidatePdfCache(msg.pdfId);
+          _studioController.schedulePreview();
+        } else if (msg?.type === 'LIBRARY_CHANGED') {
+          _studioController.refreshAll({ quiet: true });
+        }
+      };
+    } catch {}
+  }
+
+  return true;
+}
+
+export async function openPrintStudio(jobSpec = {}) {
+  const folderIds = Array.isArray(jobSpec.folderIds) ? jobSpec.folderIds.filter(Boolean) : [];
+  const pdfIds = Array.isArray(jobSpec.pdfIds) ? jobSpec.pdfIds.filter(Boolean) : [];
+  const targetType = jobSpec.targetType || (folderIds.length ? 'folder' : (pdfIds.length ? 'pdf' : 'library'));
+  const jobId = jobSpec.jobId || `ps_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const title = jobSpec.title || 'Legal Print Studio';
+  const defaultMode = jobSpec.defaultMode === 'tables-only' ? 'tables-only' : 'all';
+  const orientation = jobSpec.orientation === 'landscape'
+    ? 'landscape'
+    : (jobSpec.orientation === 'portrait' ? 'portrait' : null);
+
+  const buildPayload = () => ({
+    jobId,
+    createdAt: Date.now(),
+    title,
+    targetType,
+    folderIds,
+    pdfIds,
+    defaultMode,
+    orientation,
+    librarySnapshot: {
+      subjects: Array.isArray(S.subjects) ? S.subjects : [],
+      folders: Array.isArray(S.folders) ? S.folders : [],
+      pdfs: Array.isArray(S.pdfs) ? S.pdfs : [],
+    },
+  });
+
+  const desktopStudio = typeof window !== 'undefined' ? window.__DESKTOP_PRINT_STUDIO__ : null;
+
+  // In Web Browser mode, pre-open the window synchronously BEFORE awaiting flushes so popup blockers allow it
+  let preOpenedWin = null;
+  if (!desktopStudio) {
+    const initialPayload = buildPayload();
+    saveLocalJob(jobId, initialPayload);
+    const targetUrl = `?print-studio=1&job=${encodeURIComponent(jobId)}`;
+    try {
+      preOpenedWin = window.open(targetUrl, 'la_print_studio');
+    } catch {
+      preOpenedWin = null;
+    }
+  }
+
+  await flushPendingNotesForExport();
+  const payload = buildPayload();
+  saveLocalJob(jobId, payload);
+
+  const ch = getPrintChannel();
+  if (ch) {
+    try {
+      ch.postMessage({ type: 'PRINT_JOB', jobId, createdAt: payload.createdAt });
+    } catch {}
+  }
+
+  if (desktopStudio) {
+    try {
+      await desktopStudio.saveJob(jobId, payload);
+      await desktopStudio.openWindow(jobId, title);
+      return;
+    } catch (err) {
+      console.warn('[PrintStudio] Desktop window launch failed, falling back to overlay:', err);
+    }
+  }
+
+  if (preOpenedWin && !preOpenedWin.closed) {
+    try { preOpenedWin.focus(); } catch {}
+    toast('🖨️ Opened in Legal Print Studio.');
+    return;
+  }
+
+  // Fallback when popups are blocked (or desktop openWindow failed): mount inline #print-studio-overlay
+  openPrintStudioOverlay(payload);
+}
+
+function openPrintStudioOverlay(job) {
+  let overlay = document.getElementById('print-studio-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'print-studio-overlay';
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = '<div id="print-studio-app"></div>';
+  overlay.style.display = 'flex';
+
+  const closeOverlay = () => {
+    overlay.style.display = 'none';
+    overlay.innerHTML = '';
+    if (_studioController && _studioController.isOverlay) {
+      _studioController.destroy();
+      _studioController = null;
+    }
+  };
+
+  const mountEl = overlay.querySelector('#print-studio-app');
+  if (_studioController && _studioController.isOverlay) {
+    _studioController.destroy();
+  }
+  _studioController = mountPrintStudioUI(mountEl, {
+    job,
+    modeInfo: { isPrintStudio: true, jobId: job?.jobId || null, docId: null, folderId: null },
+    isOverlay: true,
+    onClose: closeOverlay,
+  });
+
+  window.__PRINT_STUDIO_RECEIVE_JOB = async (incoming) => {
+    const nextJobId = typeof incoming === 'string' ? incoming : incoming?.jobId;
+    if (!nextJobId || !_studioController) return;
+    await _studioController.receiveJob(nextJobId);
+  };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 2. THREE-PANE STUDIO UI CONTROLLER
+// ═════════════════════════════════════════════════════════════════════════════
+
+function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose = null }) {
+  const prefs = loadSavedPrefs();
+  if (job?.defaultMode === 'tables-only') {
+    prefs.tablesOnly = true;
+  } else if (job?.defaultMode === 'all') {
+    prefs.tablesOnly = false;
+  }
+  if (job?.orientation === 'landscape' || job?.orientation === 'portrait') {
+    prefs.orientation = job.orientation;
+  }
+
+  const state = {
+    jobTitle: job?.title || 'Legal Print Studio',
+    prefs,
+    queueItems: buildQueueFromJobOrMode(job, modeInfo),
+    excludedFolderIds: new Set(),
+    excludedPdfIds: new Set(),
+    collapsedSubjects: new Set(),
+    collapsedFolders: new Set(),
+    searchQuery: '',
+    notesCache: new Map(),
+    folderNotesCache: new Map(),
+    renderToken: 0,
+    previewTimer: null,
+    lastHtmlHasBody: false,
+    destroyed: false,
+  };
+
+  rootEl.innerHTML = `
+    <header id="ps-header">
+      <div class="ps-header-left">
+        <div class="ps-brand-badge">🖨️</div>
+        <div class="ps-header-titles">
+          <div class="ps-title-row">
+            <span class="ps-brand-name">Legal Print Studio</span>
+            <span class="ps-scope-pill">Notes, Case Digests, Folder Docs &amp; Tables</span>
+          </div>
+          <div id="ps-selection-summary" class="ps-selection-summary">Preparing selection…</div>
+        </div>
+      </div>
+      <div class="ps-header-actions">
+        <button id="ps-btn-refresh" class="ps-btn ps-btn-sec" title="Reload latest Notes, Case Digests &amp; Folder Docs">🔄 Refresh Notes</button>
+        <button id="ps-btn-print" class="ps-btn ps-btn-primary" title="Print or Save as PDF (Ctrl+P)">🖨️ Print / Save as PDF</button>
+        <button id="ps-btn-close" class="ps-btn ps-btn-ghost" title="Close Print Studio">✕ Close</button>
+      </div>
+    </header>
+
+    <div id="ps-workspace">
+      <!-- LEFT PANE: Library Picker + Print Queue -->
+      <aside id="ps-left-pane">
+        <div class="ps-pane-head">
+          <span class="ps-pane-title">Library &amp; Cases</span>
+          <div class="ps-mini-actions">
+            <button id="ps-btn-select-all" class="ps-link-btn" type="button">Select All</button>
+            <span class="ps-dot-sep">&bull;</span>
+            <button id="ps-btn-clear-all" class="ps-link-btn" type="button">Clear</button>
+          </div>
+        </div>
+
+        <div class="ps-search-wrap">
+          <input id="ps-search-input" type="search" placeholder="Search folders or cases…" autocomplete="off" spellcheck="false">
+        </div>
+
+        <div id="ps-tree" class="ps-tree"></div>
+
+        <div id="ps-queue-section">
+          <div class="ps-pane-head ps-queue-head">
+            <span class="ps-pane-title">Print Order</span>
+            <span id="ps-queue-count" class="ps-count-pill">0</span>
+          </div>
+          <div id="ps-queue-list" class="ps-queue-list"></div>
+        </div>
+      </aside>
+
+      <!-- CENTER PANE: Live Print Preview -->
+      <main id="ps-center-pane">
+        <div id="ps-preview-bar">
+          <div class="ps-preview-meta">
+            <span id="ps-preview-badge" class="ps-preview-badge">0 sections</span>
+            <span class="ps-print-tip">Tip: Uncheck &ldquo;Headers and footers&rdquo; in the print dialog for clean margins.</span>
+          </div>
+          <div class="ps-zoom-group" role="group" aria-label="Preview zoom">
+            <button id="ps-zoom-75" class="ps-zoom-btn" data-ps-zoom="0.75" type="button">75%</button>
+            <button id="ps-zoom-100" class="ps-zoom-btn" data-ps-zoom="1" type="button">100%</button>
+            <button id="ps-zoom-125" class="ps-zoom-btn" data-ps-zoom="1.25" type="button">125%</button>
+          </div>
+        </div>
+
+        <div id="ps-preview-stage">
+          <div id="ps-loading-bar" style="display:none;">Gathering notes &amp; building preview…</div>
+          <iframe id="ps-preview-frame" title="Legal Print Studio Preview"></iframe>
+          <div id="ps-empty-state" style="display:none;">
+            <div class="ps-empty-card">
+              <div class="ps-empty-icon">🖨️</div>
+              <h2 id="ps-empty-title">No items selected</h2>
+              <p id="ps-empty-desc">Check one or more folders or cases in the left panel to preview and print Notes, Case Digests, Folder Docs, or Summary Tables.</p>
+              <button id="ps-empty-reset-btn" class="ps-btn ps-btn-primary" type="button" style="display:none;">Show All Content Types</button>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- RIGHT PANE: Print Inspector -->
+      <aside id="ps-right-pane">
+        <div class="ps-pane-head">
+          <span class="ps-pane-title">Print Inspector</span>
+        </div>
+
+        <div class="ps-inspector-scroll">
+          <section class="ps-insp-group">
+            <div class="ps-insp-label">Content</div>
+            <label class="ps-toggle-row">
+              <input id="ps-opt-digest" type="checkbox">
+              <span>Case Digest</span>
+            </label>
+            <label class="ps-toggle-row">
+              <input id="ps-opt-notes" type="checkbox">
+              <span>Notes <small class="ps-muted-inline">(Appendix)</small></span>
+            </label>
+            <label class="ps-toggle-row">
+              <input id="ps-opt-folder-docs" type="checkbox">
+              <span>Folder Notes <small class="ps-muted-inline">(Folder Docs)</small></span>
+            </label>
+            <label class="ps-toggle-row ps-toggle-accent">
+              <input id="ps-opt-tables-only" type="checkbox">
+              <span>Summary Tables Only</span>
+            </label>
+            <div class="ps-insp-hint">Extracts the 1st summary table per case (or tables inside Folder Notes if no case tables exist).</div>
+            <label class="ps-toggle-row">
+              <input id="ps-opt-toc" type="checkbox">
+              <span>Cover &amp; Table of Contents</span>
+            </label>
+          </section>
+
+          <section class="ps-insp-group">
+            <div class="ps-insp-label">Layout</div>
+            <div class="ps-field-lbl">Columns</div>
+            <div class="ps-seg-group">
+              <button id="ps-col-1" class="ps-seg-btn" data-ps-col="1" type="button">📄 1 Col</button>
+              <button id="ps-col-2" class="ps-seg-btn" data-ps-col="2" type="button">📰 2 Col</button>
+            </div>
+            <div class="ps-field-lbl">Density</div>
+            <div class="ps-seg-group">
+              <button id="ps-layout-compact" class="ps-seg-btn" data-ps-layout="compact" type="button">⚡ Compact</button>
+              <button id="ps-layout-standard" class="ps-seg-btn" data-ps-layout="standard" type="button">📐 Standard</button>
+            </div>
+          </section>
+
+          <section class="ps-insp-group">
+            <div class="ps-insp-label">Page Setup</div>
+            <div class="ps-field-lbl">Paper Size</div>
+            <div class="ps-seg-group">
+              <button class="ps-seg-btn" data-ps-paper="letter" type="button">Letter</button>
+              <button class="ps-seg-btn" data-ps-paper="a4" type="button">A4</button>
+              <button class="ps-seg-btn" data-ps-paper="legal" type="button">Legal</button>
+            </div>
+
+            <div class="ps-field-lbl">Orientation</div>
+            <div class="ps-seg-group">
+              <button class="ps-seg-btn" data-ps-orient="portrait" type="button">📄 Portrait</button>
+              <button class="ps-seg-btn" data-ps-orient="landscape" type="button">🖼️ Landscape</button>
+            </div>
+
+            <div class="ps-field-lbl">Margins</div>
+            <div class="ps-seg-group">
+              <button class="ps-seg-btn" data-ps-margin="narrow" type="button">Narrow</button>
+              <button class="ps-seg-btn" data-ps-margin="normal" type="button">Normal</button>
+              <button class="ps-seg-btn" data-ps-margin="wide" type="button">Wide</button>
+            </div>
+
+            <label class="ps-toggle-row" style="margin-top:8px;">
+              <input id="ps-opt-running-headers" type="checkbox">
+              <span>Running Headers &amp; Page Numbers</span>
+            </label>
+          </section>
+        </div>
+      </aside>
+    </div>
+  `;
+
+  const elSummary = rootEl.querySelector('#ps-selection-summary');
+  const elTree = rootEl.querySelector('#ps-tree');
+  const elQueueList = rootEl.querySelector('#ps-queue-list');
+  const elQueueCount = rootEl.querySelector('#ps-queue-count');
+  const elSearch = rootEl.querySelector('#ps-search-input');
+  const elPreviewBarBadge = rootEl.querySelector('#ps-preview-badge');
+  const elPreviewFrame = rootEl.querySelector('#ps-preview-frame');
+  const elLoadingBar = rootEl.querySelector('#ps-loading-bar');
+  const elEmptyState = rootEl.querySelector('#ps-empty-state');
+  const elEmptyTitle = rootEl.querySelector('#ps-empty-title');
+  const elEmptyDesc = rootEl.querySelector('#ps-empty-desc');
+  const elEmptyResetBtn = rootEl.querySelector('#ps-empty-reset-btn');
+  const btnPrint = rootEl.querySelector('#ps-btn-print');
+
+  const chkDigest = rootEl.querySelector('#ps-opt-digest');
+  const chkNotes = rootEl.querySelector('#ps-opt-notes');
+  const chkFolderDocs = rootEl.querySelector('#ps-opt-folder-docs');
+  const chkTablesOnly = rootEl.querySelector('#ps-opt-tables-only');
+  const chkToc = rootEl.querySelector('#ps-opt-toc');
+  const chkRunningHeaders = rootEl.querySelector('#ps-opt-running-headers');
+
+  // ── Inclusion helpers ──
+  function isFolderQueuedDirectly(folderId) {
+    return state.queueItems.some(i => i.kind === 'folder' && i.id === folderId);
+  }
+
+  function isPdfQueuedDirectly(pdfId) {
+    return state.queueItems.some(i => i.kind === 'pdf' && i.id === pdfId);
+  }
+
+  function isFolderCoveredByQueuedAncestor(folderId) {
+    const folder = S.folders.find(f => f.id === folderId);
+    if (!folder) return false;
+    const ancestors = getAncestorFolderIds(folder.parent_folder_id);
+    for (const aid of ancestors) {
+      if (state.excludedFolderIds.has(aid)) return false;
+      if (isFolderQueuedDirectly(aid)) return true;
+    }
+    return false;
+  }
+
+  function isFolderEffectivelyIncluded(folderId) {
+    if (state.excludedFolderIds.has(folderId)) return false;
+    if (isFolderQueuedDirectly(folderId)) return true;
+    const ancestors = getAncestorFolderIds(folderId);
+    // Walk from closest ancestor upward: if an excluded folder appears before a queued folder, it's excluded
+    for (const aid of ancestors) {
+      if (state.excludedFolderIds.has(aid)) return false;
+      if (isFolderQueuedDirectly(aid)) return true;
+    }
+    return false;
+  }
+
+  function isPdfEffectivelyIncluded(pdf) {
+    if (!pdf) return false;
+    if (state.excludedPdfIds.has(pdf.id)) return false;
+    if (isPdfQueuedDirectly(pdf.id)) return true;
+    if (pdf.folder_id && isFolderEffectivelyIncluded(pdf.folder_id)) return true;
+    return false;
+  }
+
+  function getFolderCheckState(folderId) {
+    const selfIncluded = isFolderEffectivelyIncluded(folderId);
+    const branchIds = new Set(getAllDescendantFolderIds(folderId));
+    const branchPdfs = S.pdfs.filter(p => branchIds.has(p.folder_id));
+
+    if (!selfIncluded) {
+      const someChildIncluded = branchPdfs.some(p => isPdfEffectivelyIncluded(p)) ||
+        Array.from(branchIds).some(id => id !== folderId && isFolderEffectivelyIncluded(id));
+      return { checked: false, indeterminate: someChildIncluded };
+    }
+
+    const anyExcludedPdf = branchPdfs.some(p => !isPdfEffectivelyIncluded(p));
+    const anyExcludedSub = Array.from(branchIds).some(id => id !== folderId && state.excludedFolderIds.has(id));
+    return { checked: true, indeterminate: anyExcludedPdf || anyExcludedSub };
+  }
+
+  function toggleFolderSelection(folderId, wantChecked) {
+    const branchFolderIds = new Set(getAllDescendantFolderIds(folderId));
+    const branchPdfIds = new Set(S.pdfs.filter(p => branchFolderIds.has(p.folder_id)).map(p => p.id));
+
+    if (wantChecked) {
+      for (const fid of branchFolderIds) state.excludedFolderIds.delete(fid);
+      for (const pid of branchPdfIds) state.excludedPdfIds.delete(pid);
+
+      const coveredByAncestor = isFolderCoveredByQueuedAncestor(folderId);
+      if (!coveredByAncestor && !isFolderQueuedDirectly(folderId)) {
+        // Remove redundant nested entries before adding the parent folder
+        state.queueItems = state.queueItems.filter(item => {
+          if (item.kind === 'folder') return !branchFolderIds.has(item.id);
+          if (item.kind === 'pdf') return !branchPdfIds.has(item.id);
+          return true;
+        });
+        state.queueItems.push({ kind: 'folder', id: folderId });
+      }
+    } else {
+      state.queueItems = state.queueItems.filter(item => {
+        if (item.kind === 'folder' && branchFolderIds.has(item.id)) return false;
+        if (item.kind === 'pdf' && branchPdfIds.has(item.id)) return false;
+        return true;
+      });
+      if (isFolderCoveredByQueuedAncestor(folderId)) {
+        state.excludedFolderIds.add(folderId);
+      } else {
+        for (const fid of branchFolderIds) state.excludedFolderIds.delete(fid);
+      }
+    }
+  }
+
+  function togglePdfSelection(pdfId, wantChecked) {
+    const pdf = S.pdfs.find(p => p.id === pdfId);
+    if (!pdf) return;
+    const coveredByFolder = pdf.folder_id ? isFolderEffectivelyIncluded(pdf.folder_id) : false;
+
+    if (wantChecked) {
+      state.excludedPdfIds.delete(pdfId);
+      if (!coveredByFolder && !isPdfQueuedDirectly(pdfId)) {
+        state.queueItems.push({ kind: 'pdf', id: pdfId });
+      }
+    } else {
+      state.queueItems = state.queueItems.filter(i => !(i.kind === 'pdf' && i.id === pdfId));
+      if (coveredByFolder) {
+        state.excludedPdfIds.add(pdfId);
+      }
+    }
+  }
+
+  function countEffectiveSelections() {
+    let foldersCount = 0;
+    let pdfsCount = 0;
+    for (const f of S.folders) {
+      if (isFolderEffectivelyIncluded(f.id)) foldersCount++;
+    }
+    for (const p of S.pdfs) {
+      if (isPdfEffectivelyIncluded(p)) pdfsCount++;
+    }
+    return { foldersCount, pdfsCount };
+  }
+
+  function syncInspectorControls() {
+    if (chkDigest) chkDigest.checked = Boolean(state.prefs.includeDigest);
+    if (chkNotes) chkNotes.checked = Boolean(state.prefs.includeNotes);
+    if (chkFolderDocs) chkFolderDocs.checked = Boolean(state.prefs.includeFolderDocs);
+    if (chkTablesOnly) chkTablesOnly.checked = Boolean(state.prefs.tablesOnly);
+    if (chkToc) chkToc.checked = Boolean(state.prefs.includeToc);
+    if (chkRunningHeaders) chkRunningHeaders.checked = state.prefs.runningHeaders !== false;
+
+    rootEl.querySelectorAll('[data-ps-col]').forEach(btn => {
+      btn.classList.toggle('active', Number(btn.dataset.psCol) === Number(state.prefs.columns));
+    });
+    rootEl.querySelectorAll('[data-ps-layout]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.psLayout === state.prefs.layout);
+    });
+    rootEl.querySelectorAll('[data-ps-paper]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.psPaper === state.prefs.paperSize);
+    });
+    rootEl.querySelectorAll('[data-ps-orient]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.psOrient === state.prefs.orientation);
+    });
+    rootEl.querySelectorAll('[data-ps-margin]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.psMargin === state.prefs.marginPreset);
+    });
+    rootEl.querySelectorAll('[data-ps-zoom]').forEach(btn => {
+      btn.classList.toggle('active', Math.abs(Number(btn.dataset.psZoom) - Number(state.prefs.previewZoom)) < 0.01);
+    });
+  }
+
+  function renderQueueList() {
+    if (!elQueueList) return;
+    elQueueList.innerHTML = '';
+    if (elQueueCount) elQueueCount.textContent = String(state.queueItems.length);
+
+    if (!state.queueItems.length) {
+      elQueueList.innerHTML = '<div class="ps-queue-empty">Check folders or cases above to build your print packet.</div>';
+      return;
+    }
+
+    state.queueItems.forEach((item, idx) => {
+      const row = document.createElement('div');
+      row.className = 'ps-queue-item';
+      let icon = '📄';
+      let label = 'Case';
+      let meta = '';
+
+      if (item.kind === 'folder') {
+        const fold = S.folders.find(f => f.id === item.id);
+        icon = '📁';
+        label = fold ? getFolderDisplayTitle(fold) : 'Deleted Folder';
+        const branchIds = new Set(getAllDescendantFolderIds(item.id));
+        const totalCases = S.pdfs.filter(p => branchIds.has(p.folder_id)).length;
+        const includedCases = S.pdfs.filter(p => branchIds.has(p.folder_id) && isPdfEffectivelyIncluded(p)).length;
+        meta = totalCases === includedCases
+          ? `${includedCases} ${includedCases === 1 ? 'case' : 'cases'}`
+          : `${includedCases}/${totalCases} cases`;
+      } else {
+        const pdf = S.pdfs.find(p => p.id === item.id);
+        icon = '📄';
+        label = pdf ? getCleanPdfTitle(pdf) : 'Deleted Case';
+        const fold = pdf?.folder_id ? S.folders.find(f => f.id === pdf.folder_id) : null;
+        meta = fold ? getFolderDisplayTitle(fold) : 'Unfiled';
+      }
+
+      row.innerHTML = `
+        <span class="ps-q-icon">${icon}</span>
+        <div class="ps-q-info">
+          <div class="ps-q-name">${escapeHtml(label)}</div>
+          <div class="ps-q-meta">${escapeHtml(meta)}</div>
+        </div>
+        <div class="ps-q-btns">
+          <button class="ps-q-btn" data-act="up" title="Move Up" ${idx === 0 ? 'disabled' : ''}>▲</button>
+          <button class="ps-q-btn" data-act="down" title="Move Down" ${idx === state.queueItems.length - 1 ? 'disabled' : ''}>▼</button>
+          <button class="ps-q-btn ps-q-rm" data-act="rm" title="Remove">✕</button>
+        </div>
+      `;
+
+      row.querySelector('[data-act="up"]')?.addEventListener('click', () => {
+        if (idx <= 0) return;
+        const copy = [...state.queueItems];
+        [copy[idx - 1], copy[idx]] = [copy[idx], copy[idx - 1]];
+        state.queueItems = copy;
+        renderQueueList();
+        schedulePreview();
+      });
+      row.querySelector('[data-act="down"]')?.addEventListener('click', () => {
+        if (idx >= state.queueItems.length - 1) return;
+        const copy = [...state.queueItems];
+        [copy[idx], copy[idx + 1]] = [copy[idx + 1], copy[idx]];
+        state.queueItems = copy;
+        renderQueueList();
+        schedulePreview();
+      });
+      row.querySelector('[data-act="rm"]')?.addEventListener('click', () => {
+        const removed = state.queueItems[idx];
+        if (removed.kind === 'folder') {
+          toggleFolderSelection(removed.id, false);
+        } else {
+          togglePdfSelection(removed.id, false);
+        }
+        renderTree();
+        renderQueueList();
+        schedulePreview();
+      });
+
+      elQueueList.appendChild(row);
+    });
+  }
+
+  function renderTree() {
+    if (!elTree) return;
+    const q = (state.searchQuery || '').trim().toLowerCase();
+    const { foldersCount, pdfsCount } = countEffectiveSelections();
+    if (elSummary) {
+      elSummary.textContent = (foldersCount || pdfsCount)
+        ? `${pdfsCount} ${pdfsCount === 1 ? 'case' : 'cases'}${foldersCount ? ` • ${foldersCount} ${foldersCount === 1 ? 'folder' : 'folders'}` : ''}`
+        : 'Select folders or cases to preview';
+    }
+
+    const folderMatchesCache = new Map();
+    function folderOrDescMatches(folderId) {
+      if (!q) return true;
+      if (folderMatchesCache.has(folderId)) return folderMatchesCache.get(folderId);
+      const fold = S.folders.find(f => f.id === folderId);
+      if (!fold) {
+        folderMatchesCache.set(folderId, false);
+        return false;
+      }
+      if ((fold.name || '').toLowerCase().includes(q)) {
+        folderMatchesCache.set(folderId, true);
+        return true;
+      }
+      const childPdfs = S.pdfs.filter(p => p.folder_id === folderId);
+      if (childPdfs.some(p => (p.name || '').toLowerCase().includes(q))) {
+        folderMatchesCache.set(folderId, true);
+        return true;
+      }
+      const subFolds = S.folders.filter(f => f.parent_folder_id === folderId);
+      const anySub = subFolds.some(sf => folderOrDescMatches(sf.id));
+      folderMatchesCache.set(folderId, anySub);
+      return anySub;
+    }
+
+    elTree.innerHTML = '';
+
+    function renderFolderNode(folder, containerEl, depth = 0) {
+      if (!folderOrDescMatches(folder.id)) return;
+      const isCollapsed = !q && state.collapsedFolders.has(folder.id);
+      const subFolders = S.folders
+        .filter(f => f.parent_folder_id === folder.id)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      const pdfs = S.pdfs
+        .filter(p => p.folder_id === folder.id)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+
+      const hasChildren = subFolders.length > 0 || pdfs.length > 0;
+      const chkState = getFolderCheckState(folder.id);
+
+      const nodeWrap = document.createElement('div');
+      nodeWrap.className = 'ps-tree-branch';
+
+      const row = document.createElement('div');
+      row.className = 'ps-tree-row ps-tree-folder';
+      row.style.paddingLeft = `${8 + depth * 14}px`;
+
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'ps-twist';
+      toggleBtn.textContent = hasChildren ? (isCollapsed ? '▸' : '▾') : '•';
+      toggleBtn.disabled = !hasChildren;
+      toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!hasChildren) return;
+        if (state.collapsedFolders.has(folder.id)) state.collapsedFolders.delete(folder.id);
+        else state.collapsedFolders.add(folder.id);
+        renderTree();
+      });
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'ps-chk';
+      cb.checked = chkState.checked;
+      cb.indeterminate = chkState.indeterminate;
+      cb.addEventListener('change', () => {
+        toggleFolderSelection(folder.id, cb.checked);
+        renderTree();
+        renderQueueList();
+        schedulePreview();
+      });
+
+      const lbl = document.createElement('span');
+      lbl.className = 'ps-tree-label';
+      lbl.textContent = `📁 ${getFolderDisplayTitle(folder)}`;
+      lbl.title = getFolderPathString(folder);
+      lbl.addEventListener('click', () => {
+        cb.checked = !cb.checked;
+        toggleFolderSelection(folder.id, cb.checked);
+        renderTree();
+        renderQueueList();
+        schedulePreview();
+      });
+
+      const badge = document.createElement('span');
+      badge.className = 'ps-node-count';
+      const branchPdfCount = S.pdfs.filter(p => new Set(getAllDescendantFolderIds(folder.id)).has(p.folder_id)).length;
+      if (branchPdfCount > 0) badge.textContent = String(branchPdfCount);
+
+      row.appendChild(toggleBtn);
+      row.appendChild(cb);
+      row.appendChild(lbl);
+      if (branchPdfCount > 0) row.appendChild(badge);
+      nodeWrap.appendChild(row);
+
+      if (hasChildren && !isCollapsed) {
+        const childrenBox = document.createElement('div');
+        childrenBox.className = 'ps-tree-children';
+
+        for (const pdf of pdfs) {
+          if (q && !(pdf.name || '').toLowerCase().includes(q) && !(folder.name || '').toLowerCase().includes(q)) {
+            continue;
+          }
+          const pdfRow = document.createElement('div');
+          pdfRow.className = 'ps-tree-row ps-tree-pdf';
+          pdfRow.style.paddingLeft = `${26 + depth * 14}px`;
+
+          const pcb = document.createElement('input');
+          pcb.type = 'checkbox';
+          pcb.className = 'ps-chk';
+          pcb.checked = isPdfEffectivelyIncluded(pdf);
+          pcb.addEventListener('change', () => {
+            togglePdfSelection(pdf.id, pcb.checked);
+            renderTree();
+            renderQueueList();
+            schedulePreview();
+          });
+
+          const plbl = document.createElement('span');
+          plbl.className = 'ps-tree-label';
+          plbl.textContent = `📄 ${getCleanPdfTitle(pdf)}`;
+          plbl.title = pdf.name || '';
+          plbl.addEventListener('click', () => {
+            pcb.checked = !pcb.checked;
+            togglePdfSelection(pdf.id, pcb.checked);
+            renderTree();
+            renderQueueList();
+            schedulePreview();
+          });
+
+          pdfRow.appendChild(pcb);
+          pdfRow.appendChild(plbl);
+          childrenBox.appendChild(pdfRow);
+        }
+
+        for (const sf of subFolders) {
+          renderFolderNode(sf, childrenBox, depth + 1);
+        }
+
+        nodeWrap.appendChild(childrenBox);
+      }
+
+      containerEl.appendChild(nodeWrap);
+    }
+
+    const subjects = [...(S.subjects || [])];
+    let renderedAny = false;
+
+    for (const subj of subjects) {
+      const rootFolders = S.folders
+        .filter(f => f.subject_id === subj.id && !f.parent_folder_id)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+
+      const subjNameMatches = q && (subj.name || '').toLowerCase().includes(q);
+      const visibleFolders = subjNameMatches
+        ? rootFolders
+        : rootFolders.filter(f => folderOrDescMatches(f.id));
+      if (!visibleFolders.length) continue;
+
+      renderedAny = true;
+      const subjEl = document.createElement('div');
+      subjEl.className = 'ps-subj-group';
+
+      const subjHdr = document.createElement('div');
+      subjHdr.className = 'ps-subj-header';
+      const isSubjCollapsed = !q && state.collapsedSubjects.has(subj.id);
+      subjHdr.innerHTML = `
+        <span class="ps-subj-twist">${isSubjCollapsed ? '▸' : '▾'}</span>
+        <span class="ps-subj-dot" style="background:${escapeHtml(subj.hex_color || '#c9a84c')};"></span>
+        <span class="ps-subj-name">${escapeHtml(stripEmojis(subj.name) || 'Subject')}</span>
+      `;
+      subjHdr.addEventListener('click', () => {
+        if (state.collapsedSubjects.has(subj.id)) state.collapsedSubjects.delete(subj.id);
+        else state.collapsedSubjects.add(subj.id);
+        renderTree();
+      });
+      subjEl.appendChild(subjHdr);
+
+      if (!isSubjCollapsed) {
+        for (const rf of visibleFolders) {
+          renderFolderNode(rf, subjEl, 0);
+        }
+      }
+      elTree.appendChild(subjEl);
+    }
+
+    // Orphan folders (whose subject_id is missing)
+    const subjIds = new Set(subjects.map(s => s.id));
+    const orphanFolders = S.folders.filter(f => !f.parent_folder_id && (!f.subject_id || !subjIds.has(f.subject_id)));
+    const visibleOrphans = orphanFolders.filter(f => folderOrDescMatches(f.id));
+    if (visibleOrphans.length) {
+      renderedAny = true;
+      const groupEl = document.createElement('div');
+      groupEl.className = 'ps-subj-group';
+      groupEl.innerHTML = '<div class="ps-subj-header"><span class="ps-subj-name">Other Folders</span></div>';
+      for (const rf of visibleOrphans) renderFolderNode(rf, groupEl, 0);
+      elTree.appendChild(groupEl);
+    }
+
+    // Unfiled PDFs (folder_id missing or deleted)
+    const folderIdSet = new Set(S.folders.map(f => f.id));
+    const unfiledPdfs = S.pdfs.filter(p => !p.folder_id || !folderIdSet.has(p.folder_id))
+      .filter(p => !q || (p.name || '').toLowerCase().includes(q));
+    if (unfiledPdfs.length) {
+      renderedAny = true;
+      const groupEl = document.createElement('div');
+      groupEl.className = 'ps-subj-group';
+      groupEl.innerHTML = '<div class="ps-subj-header"><span class="ps-subj-name">Unfiled Cases</span></div>';
+      for (const pdf of unfiledPdfs) {
+        const pdfRow = document.createElement('div');
+        pdfRow.className = 'ps-tree-row ps-tree-pdf';
+        pdfRow.style.paddingLeft = '12px';
+        const pcb = document.createElement('input');
+        pcb.type = 'checkbox';
+        pcb.className = 'ps-chk';
+        pcb.checked = isPdfEffectivelyIncluded(pdf);
+        pcb.addEventListener('change', () => {
+          togglePdfSelection(pdf.id, pcb.checked);
+          renderTree();
+          renderQueueList();
+          schedulePreview();
+        });
+        const plbl = document.createElement('span');
+        plbl.className = 'ps-tree-label';
+        plbl.textContent = `📄 ${getCleanPdfTitle(pdf)}`;
+        plbl.addEventListener('click', () => {
+          pcb.checked = !pcb.checked;
+          togglePdfSelection(pdf.id, pcb.checked);
+          renderTree();
+          renderQueueList();
+          schedulePreview();
+        });
+        pdfRow.appendChild(pcb);
+        pdfRow.appendChild(plbl);
+        groupEl.appendChild(pdfRow);
+      }
+      elTree.appendChild(groupEl);
+    }
+
+    if (!renderedAny) {
+      elTree.innerHTML = q
+        ? '<div class="ps-tree-empty">No folders or cases match your search.</div>'
+        : '<div class="ps-tree-empty">No library folders or cases found yet.</div>';
+    }
+  }
+
+  async function ensurePrefetchedForItem(item) {
+    if (item.kind === 'pdf') {
+      const pdf = S.pdfs.find(p => p.id === item.id);
+      if (!pdf) return;
+      const trueId = pdf.linked_pdf_id || pdf.id;
+      if (!state.notesCache.has(trueId)) {
+        const [nd, annTable] = await Promise.all([
+          fetchPdfNotesAndDigest(pdf),
+          fetchFirstAnnotationTable(pdf),
+        ]);
+        state.notesCache.set(trueId, { ...nd, annotationTable: annTable });
+      }
+      return;
+    }
+
+    const branchIds = getAllDescendantFolderIds(item.id);
+    for (const fid of branchIds) {
+      if (state.excludedFolderIds.has(fid)) continue;
+      const fold = S.folders.find(f => f.id === fid);
+      if (fold && !state.folderNotesCache.has(fid)) {
+        const fn = await fetchFolderNotes(fold);
+        state.folderNotesCache.set(fid, fn);
+      }
+    }
+
+    const branchSet = new Set(branchIds);
+    const pdfs = S.pdfs.filter(p => branchSet.has(p.folder_id) && isPdfEffectivelyIncluded(p));
+    // Fetch in small parallel batches of 6 so large folders load smoothly without overwhelming Supabase
+    for (let i = 0; i < pdfs.length; i += 6) {
+      const batch = pdfs.slice(i, i + 6);
+      await Promise.all(batch.map(async (pdf) => {
+        const trueId = pdf.linked_pdf_id || pdf.id;
+        if (!state.notesCache.has(trueId)) {
+          const [nd, annTable] = await Promise.all([
+            fetchPdfNotesAndDigest(pdf),
+            fetchFirstAnnotationTable(pdf),
+          ]);
+          state.notesCache.set(trueId, { ...nd, annotationTable: annTable });
+        }
+      }));
+    }
+  }
+
+  function applyZoomInPlace() {
+    if (!elPreviewFrame?.contentWindow?.document) return;
+    try {
+      const paper = elPreviewFrame.contentWindow.document.querySelector('.paper-container');
+      if (paper) paper.style.zoom = String(state.prefs.previewZoom);
+    } catch {}
+  }
+
+  function showEmptyBanner({ title, desc, showReset }) {
+    state.lastHtmlHasBody = false;
+    if (btnPrint) btnPrint.disabled = true;
+    if (elPreviewFrame) elPreviewFrame.style.visibility = 'hidden';
+    if (elEmptyTitle) elEmptyTitle.textContent = title;
+    if (elEmptyDesc) elEmptyDesc.textContent = desc;
+    if (elEmptyResetBtn) elEmptyResetBtn.style.display = showReset ? 'inline-flex' : 'none';
+    if (elEmptyState) elEmptyState.style.display = 'flex';
+  }
+
+  function hideEmptyBanner() {
+    if (elEmptyState) elEmptyState.style.display = 'none';
+    if (elPreviewFrame) elPreviewFrame.style.visibility = 'visible';
+    if (btnPrint) btnPrint.disabled = false;
+  }
+
+  async function renderPreview() {
+    if (state.destroyed) return;
+    const myToken = ++state.renderToken;
+
+    const { foldersCount, pdfsCount } = countEffectiveSelections();
+    const paperLabel = { letter: 'Letter', a4: 'A4', legal: 'Legal' }[state.prefs.paperSize] || 'Letter';
+    const orientLabel = state.prefs.orientation === 'landscape' ? 'Landscape' : 'Portrait';
+
+    if (!state.queueItems.length) {
+      if (elPreviewBarBadge) elPreviewBarBadge.textContent = `0 sections • ${paperLabel} ${orientLabel}`;
+      showEmptyBanner({
+        title: 'No folders or cases selected',
+        desc: 'Check one or more folders or cases in the left panel to preview and print Notes, Case Digests, Folder Docs, or Summary Tables.',
+        showReset: false,
+      });
+      return;
+    }
+
+    if (elLoadingBar) elLoadingBar.style.display = 'block';
+    try {
+      for (const item of state.queueItems) {
+        await ensurePrefetchedForItem(item);
+        if (myToken !== state.renderToken || state.destroyed) return;
+      }
+
+      const caseRegistry = [];
+      const tocCollector = [];
+      const visitedFolders = new Set();
+      const seenPdfIds = new Set();
+      const htmlParts = [];
+
+      const commonOpts = {
+        tablesOnly: Boolean(state.prefs.tablesOnly),
+        includeDigest: Boolean(state.prefs.includeDigest),
+        includeNotes: Boolean(state.prefs.includeNotes),
+        includeFolderDocs: Boolean(state.prefs.includeFolderDocs),
+        visitedFolders,
+        seenPdfIds,
+        excludedFolderIds: state.excludedFolderIds,
+        excludedPdfIds: state.excludedPdfIds,
+        notesCache: state.notesCache,
+        folderNotesCache: state.folderNotesCache,
+        tocCollector,
+      };
+
+      const folderDepth = state.queueItems.length > 1 || state.prefs.runningHeaders === false ? 2 : 1;
+
+      for (const item of state.queueItems) {
+        if (item.kind === 'folder') {
+          const fHtml = await buildFolderHTML(item.id, folderDepth, caseRegistry, commonOpts);
+          if (fHtml && hasMeaningfulContent(fHtml)) htmlParts.push(fHtml);
+        } else if (item.kind === 'pdf') {
+          const pdf = S.pdfs.find(p => p.id === item.id);
+          if (!pdf) continue;
+          const trueId = pdf.linked_pdf_id || pdf.id;
+          const pHtml = await buildPdfCaseHTML(pdf, caseRegistry, {
+            ...commonOpts,
+            prefetched: state.notesCache.get(trueId),
+          });
+          if (pHtml && hasMeaningfulContent(pHtml)) htmlParts.push(pHtml);
+        }
+        if (myToken !== state.renderToken || state.destroyed) return;
+      }
+
+      const sectionsHtml = htmlParts.join('\n');
+      const sectionCount = tocCollector.length || caseRegistry.length;
+
+      if (elPreviewBarBadge) {
+        elPreviewBarBadge.textContent = `${sectionCount} ${sectionCount === 1 ? 'section' : 'sections'} • ${paperLabel} ${orientLabel}`;
+      }
+
+      if (!hasMeaningfulContent(sectionsHtml)) {
+        const filtersDisabled = !state.prefs.includeDigest && !state.prefs.includeNotes && !state.prefs.includeFolderDocs;
+        showEmptyBanner({
+          title: filtersDisabled
+            ? 'All content types are turned off'
+            : (state.prefs.tablesOnly ? 'No summary tables found' : 'No matching notes or digests found'),
+          desc: filtersDisabled
+            ? 'Enable Case Digest, Notes, or Folder Notes in the Print Inspector on the right.'
+            : (state.prefs.tablesOnly
+                ? `None of the ${pdfsCount || foldersCount} selected item(s) have a summary table in Case Digest, Notes, or Annotation Summaries.`
+                : `None of the ${pdfsCount || foldersCount} selected item(s) currently have saved Case Digest, Notes, or Folder Notes.`),
+          showReset: filtersDisabled || Boolean(state.prefs.tablesOnly),
+        });
+        return;
+      }
+
+      const titleSuffix = state.prefs.tablesOnly ? 'Summary Tables Only' : 'Notes & Case Digests';
+      let docTitle = state.jobTitle || `Legal Print Studio — ${titleSuffix}`;
+      let subtitle = `${sectionCount} ${sectionCount === 1 ? 'section' : 'sections'}`;
+      let fallbackPath = 'Library';
+
+      if (state.queueItems.length === 1) {
+        const only = state.queueItems[0];
+        if (only.kind === 'folder') {
+          const fold = S.folders.find(f => f.id === only.id);
+          if (fold) {
+            docTitle = `${getFolderDisplayTitle(fold)} — ${titleSuffix}`;
+            fallbackPath = getFolderPathString(fold);
+            subtitle = fallbackPath;
+          }
+        } else {
+          const pdf = S.pdfs.find(p => p.id === only.id);
+          if (pdf) {
+            docTitle = `${getCleanPdfTitle(pdf)} — ${titleSuffix}`;
+            const fold = pdf.folder_id ? S.folders.find(f => f.id === pdf.folder_id) : null;
+            fallbackPath = fold ? getFolderPathString(fold) : 'Library';
+            subtitle = fallbackPath;
+          }
+        }
+      } else {
+        const queuedFolders = state.queueItems
+          .filter(i => i.kind === 'folder')
+          .map(i => S.folders.find(f => f.id === i.id))
+          .filter(Boolean);
+        if (queuedFolders.length === state.queueItems.length && queuedFolders.length > 1) {
+          const names = queuedFolders.slice(0, 3).map(getFolderDisplayTitle);
+          docTitle = `${names.join(', ')}${queuedFolders.length > 3 ? ` +${queuedFolders.length - 3}` : ''} — ${titleSuffix}`;
+        } else {
+          docTitle = `Legal Print Packet (${pdfsCount || sectionCount} ${pdfsCount === 1 ? 'Case' : 'Cases'}) — ${titleSuffix}`;
+        }
+      }
+
+      const fullHtml = buildPrintDocumentHTML(sectionsHtml, caseRegistry, {
+        title: docTitle,
+        subtitle,
+        fallbackPath,
+        orientation: state.prefs.orientation,
+        paperSize: state.prefs.paperSize,
+        layout: state.prefs.layout,
+        columns: state.prefs.columns,
+        includeToc: Boolean(state.prefs.includeToc),
+        tocEntries: tocCollector,
+        includeFolderDocs: Boolean(state.prefs.includeFolderDocs),
+        includeDigest: Boolean(state.prefs.includeDigest),
+        includeNotes: Boolean(state.prefs.includeNotes),
+        tablesOnly: Boolean(state.prefs.tablesOnly),
+        marginPreset: state.prefs.marginPreset,
+        runningHeaders: state.prefs.runningHeaders !== false,
+        previewZoom: state.prefs.previewZoom,
+        embeddedPreview: true,
+        autoPrint: false,
+      });
+
+      hideEmptyBanner();
+      state.lastHtmlHasBody = true;
+
+      if (elPreviewFrame?.contentWindow) {
+        let prevScrollTop = 0;
+        try {
+          prevScrollTop = elPreviewFrame.contentWindow.scrollY || elPreviewFrame.contentWindow.document?.documentElement?.scrollTop || 0;
+        } catch {}
+
+        const doc = elPreviewFrame.contentWindow.document;
+        doc.open();
+        doc.write(fullHtml);
+        doc.close();
+
+        if (prevScrollTop > 0) {
+          requestAnimationFrame(() => {
+            try { elPreviewFrame.contentWindow.scrollTo(0, prevScrollTop); } catch {}
+          });
+        }
+      }
+    } finally {
+      if (myToken === state.renderToken && elLoadingBar) {
+        elLoadingBar.style.display = 'none';
+      }
+    }
+  }
+
+  function schedulePreview(delay = 120) {
+    clearTimeout(state.previewTimer);
+    state.previewTimer = setTimeout(() => {
+      renderPreview().catch(err => console.warn('[PrintStudio] renderPreview error:', err));
+    }, delay);
+  }
+
+  function syncLiveFolderNotesFromLocal() {
+    for (const f of S.folders) {
+      const localVal = safeStorageGet('local_folder_notes_' + f.id, null);
+      if (localVal !== null) {
+        f.notes = localVal;
+      }
+    }
+  }
+
+  async function refreshAll({ quiet = false } = {}) {
+    state.notesCache.clear();
+    state.folderNotesCache.clear();
+    try {
+      const snapStr = safeStorageGet('local_lib_snapshot', null);
+      if (snapStr) applyLibrarySnapshot(JSON.parse(snapStr));
+    } catch {}
+    syncLiveFolderNotesFromLocal();
+    if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+      try {
+        const dbMod = await import('./db.js');
+        if (typeof dbMod.dbLoadLibrary === 'function') await dbMod.dbLoadLibrary();
+        else if (typeof dbMod.dbLoad === 'function') await dbMod.dbLoad(1);
+        syncLiveFolderNotesFromLocal();
+      } catch {}
+    }
+    renderTree();
+    renderQueueList();
+    await renderPreview();
+    if (!quiet) toast('🔄 Notes & Case Digests refreshed.');
+  }
+
+  function printPreviewFrame() {
+    if (!state.lastHtmlHasBody || !elPreviewFrame?.contentWindow) {
+      toast('Nothing to print yet — select folders or cases with notes/digests.');
+      return;
+    }
+    try {
+      elPreviewFrame.contentWindow.focus();
+      elPreviewFrame.contentWindow.print();
+    } catch (err) {
+      console.warn('[PrintStudio] iframe print failed, trying window.print:', err);
+      window.print();
+    }
+  }
+
+  async function handleClose() {
+    if (isOverlay && typeof onClose === 'function') {
+      onClose();
+      return;
+    }
+    if (typeof window !== 'undefined' && window.__DESKTOP_PRINT_STUDIO__?.closeWindow) {
+      try {
+        await window.__DESKTOP_PRINT_STUDIO__.closeWindow();
+        return;
+      } catch (err) {
+        console.warn('[PrintStudio] closeWindow failed:', err);
+      }
+    }
+    window.close();
+    setTimeout(() => {
+      if (!window.closed) {
+        toast('You can now close this browser tab.');
+      }
+    }, 150);
+  }
+
+  // ── Event Bindings ──
+  elSearch?.addEventListener('input', () => {
+    state.searchQuery = elSearch.value || '';
+    renderTree();
+  });
+
+  rootEl.querySelector('#ps-btn-select-all')?.addEventListener('click', () => {
+    const q = (state.searchQuery || '').trim().toLowerCase();
+    if (!q) {
+      state.excludedFolderIds.clear();
+      state.excludedPdfIds.clear();
+      const rootFolders = S.folders
+        .filter(f => !f.parent_folder_id)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      const folderSet = new Set(S.folders.map(f => f.id));
+      const unfiled = S.pdfs.filter(p => !p.folder_id || !folderSet.has(p.folder_id));
+      state.queueItems = [
+        ...rootFolders.map(f => ({ kind: 'folder', id: f.id })),
+        ...unfiled.map(p => ({ kind: 'pdf', id: p.id })),
+      ];
+    } else {
+      const matchingPdfs = S.pdfs.filter(p => (p.name || '').toLowerCase().includes(q));
+      const matchingFolders = S.folders.filter(f => (f.name || '').toLowerCase().includes(q));
+      matchingFolders.forEach(f => toggleFolderSelection(f.id, true));
+      matchingPdfs.forEach(p => togglePdfSelection(p.id, true));
+    }
+    renderTree();
+    renderQueueList();
+    schedulePreview(40);
+  });
+
+  rootEl.querySelector('#ps-btn-clear-all')?.addEventListener('click', () => {
+    state.queueItems = [];
+    state.excludedFolderIds.clear();
+    state.excludedPdfIds.clear();
+    renderTree();
+    renderQueueList();
+    schedulePreview(40);
+  });
+
+  rootEl.querySelector('#ps-btn-refresh')?.addEventListener('click', () => {
+    refreshAll({ quiet: false });
+  });
+
+  btnPrint?.addEventListener('click', printPreviewFrame);
+  rootEl.querySelector('#ps-btn-close')?.addEventListener('click', handleClose);
+
+  elEmptyResetBtn?.addEventListener('click', () => {
+    state.prefs.includeDigest = true;
+    state.prefs.includeNotes = true;
+    state.prefs.includeFolderDocs = true;
+    state.prefs.tablesOnly = false;
+    savePrefs(state.prefs);
+    syncInspectorControls();
+    schedulePreview(20);
+  });
+
+  const bindToggle = (el, key) => {
+    el?.addEventListener('change', () => {
+      state.prefs[key] = Boolean(el.checked);
+      savePrefs(state.prefs);
+      schedulePreview(60);
+    });
+  };
+  bindToggle(chkDigest, 'includeDigest');
+  bindToggle(chkNotes, 'includeNotes');
+  bindToggle(chkFolderDocs, 'includeFolderDocs');
+  bindToggle(chkTablesOnly, 'tablesOnly');
+  bindToggle(chkToc, 'includeToc');
+  bindToggle(chkRunningHeaders, 'runningHeaders');
+
+  rootEl.querySelectorAll('[data-ps-col]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.prefs.columns = Number(btn.dataset.psCol) === 2 ? 2 : 1;
+      savePrefs(state.prefs);
+      syncInspectorControls();
+      schedulePreview(40);
+    });
+  });
+
+  rootEl.querySelectorAll('[data-ps-layout]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.prefs.layout = btn.dataset.psLayout === 'standard' ? 'standard' : 'compact';
+      savePrefs(state.prefs);
+      syncInspectorControls();
+      schedulePreview(40);
+    });
+  });
+
+  rootEl.querySelectorAll('[data-ps-paper]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.prefs.paperSize = btn.dataset.psPaper;
+      savePrefs(state.prefs);
+      syncInspectorControls();
+      schedulePreview(40);
+    });
+  });
+
+  rootEl.querySelectorAll('[data-ps-orient]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.prefs.orientation = btn.dataset.psOrient === 'landscape' ? 'landscape' : 'portrait';
+      savePrefs(state.prefs);
+      syncInspectorControls();
+      schedulePreview(40);
+    });
+  });
+
+  rootEl.querySelectorAll('[data-ps-margin]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.prefs.marginPreset = btn.dataset.psMargin;
+      savePrefs(state.prefs);
+      syncInspectorControls();
+      schedulePreview(40);
+    });
+  });
+
+  rootEl.querySelectorAll('[data-ps-zoom]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const z = Number(btn.dataset.psZoom);
+      state.prefs.previewZoom = [0.75, 1, 1.25].includes(z) ? z : 1;
+      savePrefs(state.prefs);
+      syncInspectorControls();
+      applyZoomInPlace();
+    });
+  });
+
+  const onKeyDown = (e) => {
+    if (state.destroyed) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
+      e.preventDefault();
+      e.stopPropagation();
+      printPreviewFrame();
+    } else if (e.key === 'Escape' && isOverlay) {
+      e.preventDefault();
+      handleClose();
+    }
+  };
+  document.addEventListener('keydown', onKeyDown, true);
+
+  // Initial render
+  syncLiveFolderNotesFromLocal();
+  syncInspectorControls();
+  renderTree();
+  renderQueueList();
+  renderPreview().catch(err => console.warn('[PrintStudio] initial preview error:', err));
+
+  return {
+    isOverlay,
+    renderTree,
+    syncLiveFolderNotesFromLocal,
+    refreshAll,
+    invalidatePdfCache(pdfId) {
+      if (pdfId) state.notesCache.delete(pdfId);
+      else state.notesCache.clear();
+    },
+    schedulePreview() {
+      schedulePreview(120);
+    },
+    async receiveJob(newJobId) {
+      const newJob = await loadPrintJobPayload(newJobId);
+      if (!newJob) return;
+      state.notesCache.clear();
+      state.folderNotesCache.clear();
+      applyLibrarySnapshot(newJob.librarySnapshot);
+      syncLiveFolderNotesFromLocal();
+      state.jobTitle = newJob.title || 'Legal Print Studio';
+      state.excludedFolderIds.clear();
+      state.excludedPdfIds.clear();
+      state.queueItems = buildQueueFromJobOrMode(newJob, {});
+      if (newJob.defaultMode === 'tables-only') state.prefs.tablesOnly = true;
+      else if (newJob.defaultMode === 'all') state.prefs.tablesOnly = false;
+      if (newJob.orientation === 'landscape' || newJob.orientation === 'portrait') {
+        state.prefs.orientation = newJob.orientation;
+      }
+      savePrefs(state.prefs);
+      syncInspectorControls();
+      renderTree();
+      renderQueueList();
+      await renderPreview();
+    },
+    destroy() {
+      state.destroyed = true;
+      clearTimeout(state.previewTimer);
+      document.removeEventListener('keydown', onKeyDown, true);
+    },
+  };
+}

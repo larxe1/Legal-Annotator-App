@@ -58,6 +58,15 @@ async function init() {
     console.warn('[Init] OCR Studio check warning:', e);
   }
 
+  // 0c. If launched as standalone "Legal Print Studio" (?print-studio=1 / --print-studio),
+  // boot directly into the dedicated Print Studio interface and skip loading the main reader UI.
+  try {
+    const { checkAndBootPrintStudioApp } = await import('./print-studio.js');
+    if (await checkAndBootPrintStudioApp()) return;
+  } catch (e) {
+    console.warn('[Init] Print Studio check warning:', e);
+  }
+
   // 1. Setup crash boundary and pre-flight reset
   setupGlobalErrorBoundary();
   document.querySelectorAll('#ann-panel, #notepad-panel, #search-panel')
@@ -136,6 +145,58 @@ async function init() {
   });
   document.getElementById('btn-tags')?.addEventListener('click', () => {
     import('./tags.js').then(m => m.toggleTagsPanel?.()).catch(e => console.warn('[Tags] toggleTagsPanel error:', e));
+  });
+  document.getElementById('btn-print-studio')?.addEventListener('click', async () => {
+    try {
+      const { openPrintStudio } = await import('./print-studio.js');
+      const selectedFolders = [...(S.selectedIds || [])]
+        .map(id => S.folders.find(f => f.id === id))
+        .filter(Boolean);
+      const selectedPdfs = [...(S.selectedIds || [])]
+        .map(id => S.pdfs.find(p => p.id === id))
+        .filter(Boolean);
+
+      if (selectedFolders.length > 0) {
+        await openPrintStudio({
+          targetType: 'folder',
+          folderIds: selectedFolders.map(f => f.id),
+          title: selectedFolders.length > 1
+            ? `${selectedFolders.length} Folders — Print Studio`
+            : `${selectedFolders[0].name} — Print Studio`,
+        });
+      } else if (selectedPdfs.length > 0) {
+        await openPrintStudio({
+          targetType: 'pdf',
+          pdfIds: selectedPdfs.map(p => p.id),
+          title: selectedPdfs.length > 1
+            ? `${selectedPdfs.length} Cases — Print Studio`
+            : `${(selectedPdfs[0].name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
+        });
+      } else if (S.curPDF) {
+        await openPrintStudio({
+          targetType: 'pdf',
+          pdfIds: [S.curPDF.id],
+          title: `${(S.curPDF.name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
+        });
+      } else {
+        const fdv = document.getElementById('folder-doc-viewer');
+        const fTitle = document.getElementById('folder-doc-title')?.textContent?.trim();
+        const activeFolder = (fdv && fdv.style.display !== 'none' && fTitle)
+          ? S.folders.find(f => f.name === fTitle)
+          : null;
+        if (activeFolder) {
+          await openPrintStudio({
+            targetType: 'folder',
+            folderIds: [activeFolder.id],
+            title: `${activeFolder.name} — Print Studio`,
+          });
+        } else {
+          await openPrintStudio({ targetType: 'library', title: 'Legal Print Studio' });
+        }
+      }
+    } catch (e) {
+      console.warn('[PrintStudio] openPrintStudio error:', e);
+    }
   });
 
   // ── Save reading position on tab hide / close & auto-sync when returning ──
