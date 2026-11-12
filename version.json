@@ -1,7 +1,7 @@
 {
-  "version": "1.15.4",
-  "build": 41,
-  "updatedAt": "2026-11-11",
-  "notes": "Fix top bar clipping and hidden panel close (X) button by restoring floating positioning for the desktop engine indicator and preventing unintended page-level scroll clipping.",
+  "version": "1.16.0",
+  "build": 42,
+  "updatedAt": "2026-11-12",
+  "notes": "Allow right-click Export Notes to PDF and Export Summary Tables Only (Print/Save as PDF) on individual and multi-selected PDFs as well as folders.",
   "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

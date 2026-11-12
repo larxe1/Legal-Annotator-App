@@ -19,6 +19,7 @@ import { isFolderOfflineReady, makeFolderAvailableOffline, removeFolderOfflineCa
 import { driveUploadPDF, driveDeleteFile, driveEnsureSubFolder, driveResolveFolderPath, scheduleDriveOrganize } from './drive.js';
 import { openPDFFromLibrary, updateActivePDF, openFolderDoc } from './viewer.js';
 import { closeSidebar } from './ui.js';
+import { exportFolderToPDF, exportPdfsToPDF } from './export.js';
 import {
   getSubjectBinderColor,
   hasCaseDigest,
@@ -185,8 +186,9 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   const exportTablesBtn = document.getElementById('lib-ctx-export-tables-pdf');
   const forceSyncBtn = document.getElementById('lib-ctx-force-sync');
   let isMultiFolder = false;
+  let isMultiPdf = false;
 
-  // Check if multiple folders are currently selected and the clicked item is among them
+  // Check if multiple folders or multiple PDFs are currently selected and the clicked item is among them
   if (isFolder && S.selectedIds && S.selectedIds.size > 1 && S.selectedIds.has(item.id)) {
     const selectedFolders = [...S.selectedIds]
       .map(id => S.folders.find(f => f.id === id))
@@ -201,6 +203,27 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
       if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
       if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
       if (forceSyncBtn) forceSyncBtn.textContent = '☁️ Force Sync Folder & PDFs';
+    }
+  } else if (!isFolder && S.selectedIds && S.selectedIds.size > 1 && S.selectedIds.has(item.id)) {
+    const flatPdfs = getFlatLibraryItems()
+      .filter(entry => entry.type === 'pdf' && S.selectedIds.has(entry.id))
+      .map(entry => entry.obj);
+    const flatPdfIds = new Set(flatPdfs.map(p => p.id));
+    const extraPdfs = [...S.selectedIds]
+      .filter(id => !flatPdfIds.has(id))
+      .map(id => S.pdfs.find(p => p.id === id))
+      .filter(Boolean);
+    const selectedPdfs = [...flatPdfs, ...extraPdfs];
+
+    if (selectedPdfs.length > 1) {
+      target = selectedPdfs; // Retains exact library order
+      isMultiPdf = true;
+      if (exportBtn) exportBtn.textContent = `📥 Export ${selectedPdfs.length} PDFs to PDF`;
+      if (exportTablesBtn) exportTablesBtn.textContent = `📊 Export ${selectedPdfs.length} PDFs (Tables Only)`;
+    } else {
+      if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
+      if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
+      if (forceSyncBtn) forceSyncBtn.textContent = '☁️ Force Sync PDF to Cloud';
     }
   } else {
     if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
@@ -217,20 +240,22 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   const menu = document.getElementById('lib-ctx-menu');
   if (!menu) return;
 
+  const hideSinglePdfItems = isFolder || isMultiFolder || isMultiPdf;
+
   // Toggle visibility of context items
-  document.getElementById('lib-ctx-open').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
-  document.getElementById('lib-ctx-reference').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
+  document.getElementById('lib-ctx-open').style.display = hideSinglePdfItems ? 'none' : 'block';
+  document.getElementById('lib-ctx-reference').style.display = hideSinglePdfItems ? 'none' : 'block';
   const setPageBtn = document.getElementById('lib-ctx-set-page');
-  if (setPageBtn) setPageBtn.style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
-  document.getElementById('lib-ctx-link').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
+  if (setPageBtn) setPageBtn.style.display = hideSinglePdfItems ? 'none' : 'block';
+  document.getElementById('lib-ctx-link').style.display = hideSinglePdfItems ? 'none' : 'block';
   const moveFolderBtn = document.getElementById('ctx-move-folder');
-  if (moveFolderBtn) moveFolderBtn.style.display = isMultiFolder ? 'none' : 'block';
+  if (moveFolderBtn) moveFolderBtn.style.display = (isMultiFolder || isMultiPdf) ? 'none' : 'block';
   const setSylBtn = document.getElementById('ctx-set-syllabus');
-  if (setSylBtn) setSylBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
+  if (setSylBtn) setSylBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'block' : 'none';
   const ocrStudioBtn = document.getElementById('ctx-ocr-studio');
-  if (ocrStudioBtn) ocrStudioBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
+  if (ocrStudioBtn) ocrStudioBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'block' : 'none';
   const pplxPdfBtn = document.getElementById('ctx-perplexity-digest');
-  if (pplxPdfBtn) pplxPdfBtn.style.display = (!isFolder && !isMultiFolder) ? 'block' : 'none';
+  if (pplxPdfBtn) pplxPdfBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'block' : 'none';
   const pplxFoldBtn = document.getElementById('ctx-folder-perplexity-digest');
   if (pplxFoldBtn) {
     pplxFoldBtn.style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
@@ -238,9 +263,9 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
       ? `⚡ Perplexity Digest All PDFs (${target.length} Folders)`
       : '⚡ Perplexity Digest All PDFs in Folder';
   }
-  document.getElementById('lib-ctx-offline').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
+  document.getElementById('lib-ctx-offline').style.display = hideSinglePdfItems ? 'none' : 'block';
   const pdfOfflineRemBtn = document.getElementById('ctx-pdf-offline-remove');
-  if (pdfOfflineRemBtn) pdfOfflineRemBtn.style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
+  if (pdfOfflineRemBtn) pdfOfflineRemBtn.style.display = hideSinglePdfItems ? 'none' : 'block';
   const foldOfflineSaveBtn = document.getElementById('ctx-folder-offline-save');
   const foldOfflineRemBtn = document.getElementById('ctx-folder-offline-remove');
   if (foldOfflineSaveBtn) {
@@ -259,13 +284,13 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
       ? `🗑 Remove Offline Copy (${target.length} Folders)`
       : '🗑 Remove Folder Offline Copy';
   }
-  document.getElementById('lib-ctx-download').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
-  document.getElementById('lib-ctx-gdrive').style.display = (isFolder || isMultiFolder) ? 'none' : 'block';
+  document.getElementById('lib-ctx-download').style.display = hideSinglePdfItems ? 'none' : 'block';
+  document.getElementById('lib-ctx-gdrive').style.display = hideSinglePdfItems ? 'none' : 'block';
   const sylBtn = document.getElementById('lib-ctx-syllabus');
   if (sylBtn) sylBtn.style.display = (isFolder && !isMultiFolder) ? 'block' : 'none';
-  document.getElementById('lib-ctx-export-pdf').style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
-  if (exportTablesBtn) exportTablesBtn.style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
-  if (forceSyncBtn) forceSyncBtn.style.display = 'block';
+  if (exportBtn) exportBtn.style.display = 'block';
+  if (exportTablesBtn) exportTablesBtn.style.display = 'block';
+  if (forceSyncBtn) forceSyncBtn.style.display = isMultiPdf ? 'none' : 'block';
 
   // Position off-screen first so we can measure actual rendered dimensions
   menu.style.left = '-9999px';
@@ -294,37 +319,72 @@ function hideLibCtxMenu() {
 }
 
 // ── Export options modal: lets user pick content mode & portrait / landscape before exporting ──
-function showExportOptsModal(foldersOrFolder, defaultMode = 'all') {
-  const folders = Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder];
+function showExportOptsModal(targetsOrTarget, defaultMode = 'all', isFolder = true) {
+  const targets = (Array.isArray(targetsOrTarget) ? targetsOrTarget : [targetsOrTarget]).filter(Boolean);
+  if (!targets.length) return;
+
   const modal = document.getElementById('export-opts-modal');
   if (!modal) {
     // Fallback: export directly without modal
-    import('./export.js').then(m => m.exportFolderToPDF(folders, { tablesOnly: defaultMode === 'tables-only' }));
+    const opts = { tablesOnly: defaultMode === 'tables-only' };
+    if (isFolder) exportFolderToPDF(targets, opts);
+    else exportPdfsToPDF(targets, opts);
     return;
   }
 
   const titleEl = document.getElementById('export-opts-title');
   const descEl  = document.getElementById('export-opts-desc');
 
+  function formatOrderDesc(list, fallbackLabel) {
+    const shown = list.slice(0, 5).map((item, i) => {
+      const label = (item.name || fallbackLabel).replace(/\.pdf$/i, '').trim() || fallbackLabel;
+      return `${i + 1}. ${label}`;
+    });
+    if (list.length > 5) shown.push(`… (+${list.length - 5} more)`);
+    return `Export order: ${shown.join(' → ')}`;
+  }
+
   function updateModalHeader(mode) {
     const isTables = mode === 'tables-only';
     if (titleEl) {
-      if (folders.length > 1) {
-        titleEl.textContent = isTables
-          ? `📊 Export ${folders.length} Folders (Tables Only)`
-          : `📄 Export ${folders.length} Folders to PDF`;
+      if (isFolder) {
+        if (targets.length > 1) {
+          titleEl.textContent = isTables
+            ? `📊 Export ${targets.length} Folders (Tables Only)`
+            : `📄 Export ${targets.length} Folders to PDF`;
+        } else {
+          titleEl.textContent = isTables
+            ? '📊 Export Summary Tables Only'
+            : '📄 Export Notes to PDF';
+        }
       } else {
-        titleEl.textContent = isTables
-          ? `📊 Export Summary Tables Only`
-          : `📄 Export Notes to PDF`;
+        if (targets.length > 1) {
+          titleEl.textContent = isTables
+            ? `📊 Export ${targets.length} PDFs (Tables Only)`
+            : `📄 Export ${targets.length} PDFs to PDF`;
+        } else {
+          titleEl.textContent = isTables
+            ? '📊 Export Summary Tables Only'
+            : '📄 Export Notes to PDF';
+        }
       }
     }
     if (descEl) {
-      descEl.textContent = folders.length > 1
-        ? `Export order: ${folders.map((f, i) => `${i + 1}. ${f.name || 'Folder'}`).join(' → ')}`
-        : (isTables
-            ? 'Exports only the 1st summary table of each case (skips facts & notes).'
-            : 'Choose what to include and page orientation before exporting.');
+      if (isFolder) {
+        const folderLabel = targets[0].name || 'Folder';
+        descEl.textContent = targets.length > 1
+          ? formatOrderDesc(targets, 'Folder')
+          : (isTables
+              ? `Exports only the 1st summary table of each case in "${folderLabel}" (skips facts & notes).`
+              : `Folder: "${folderLabel}" — Choose what to include and page orientation before exporting.`);
+      } else {
+        const pdfLabel = (targets[0].name || 'PDF').replace(/\.pdf$/i, '').trim() || 'PDF';
+        descEl.textContent = targets.length > 1
+          ? formatOrderDesc(targets, 'PDF')
+          : (isTables
+              ? `Exports the 1st summary table for "${pdfLabel}".`
+              : `PDF: "${pdfLabel}" — Exports Case Digest and Notes.`);
+      }
     }
   }
 
@@ -391,8 +451,11 @@ function showExportOptsModal(foldersOrFolder, defaultMode = 'all') {
       const orientation = landscapeRadio?.checked ? 'landscape' : 'portrait';
       const tablesOnly  = Boolean(modeTablesRadio?.checked);
       cleanup();
-      const { exportFolderToPDF } = await import('./export.js');
-      await exportFolderToPDF(folders, { orientation, tablesOnly });
+      if (isFolder) {
+        await exportFolderToPDF(targets, { orientation, tablesOnly });
+      } else {
+        await exportPdfsToPDF(targets, { orientation, tablesOnly });
+      }
     };
   }
 
@@ -604,18 +667,20 @@ export function initContextMenu() {
 
   // "Export Notes to PDF"
   document.getElementById('lib-ctx-export-pdf')?.addEventListener('click', () => {
-    if (!_ctxTarget || !_ctxIsFolder) return;
-    const folder = _ctxTarget;
+    if (!_ctxTarget) return;
+    const target = _ctxTarget;
+    const isFolder = _ctxIsFolder;
     hideLibCtxMenu();
-    showExportOptsModal(folder, 'all');
+    showExportOptsModal(target, 'all', isFolder);
   });
 
   // "Export Summary Tables Only"
   document.getElementById('lib-ctx-export-tables-pdf')?.addEventListener('click', () => {
-    if (!_ctxTarget || !_ctxIsFolder) return;
-    const folder = _ctxTarget;
+    if (!_ctxTarget) return;
+    const target = _ctxTarget;
+    const isFolder = _ctxIsFolder;
     hideLibCtxMenu();
-    showExportOptsModal(folder, 'tables-only');
+    showExportOptsModal(target, 'tables-only', isFolder);
   });
 
   // "Force Sync to Cloud" (Folder + all child PDFs/Notes/Digests, or Single PDF)
@@ -627,7 +692,7 @@ export function initContextMenu() {
     const { forceSyncFolders, forceSyncPdf } = await import('./notepad.js');
     if (isFolder) {
       await forceSyncFolders(target);
-    } else {
+    } else if (!Array.isArray(target)) {
       await forceSyncPdf(target);
     }
   });
@@ -669,6 +734,7 @@ function getFlatLibraryItems() {
 }
 
 export function handleSelection(id, e) {
+  if (e.button === 2 && S.selectedIds.has(id)) return;
   if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
     S.selectedIds.clear();
     S.selectedIds.add(id);

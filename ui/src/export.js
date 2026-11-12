@@ -155,6 +155,103 @@ function getFolderPathString(folder) {
   return parts.join(' > ');
 }
 
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function getCleanPdfTitle(pdf) {
+  return (stripEmojis(pdf?.name) || 'Case Document').replace(/\.pdf$/i, '').trim() || 'Case Document';
+}
+
+function resolvePdfFolderPath(pdf) {
+  const folderId = pdf?.folder_id ?? pdf?.folderId ?? null;
+  const folder = folderId ? S.folders.find(f => f.id === folderId) : null;
+  return folder ? getFolderPathString(folder) : 'Library';
+}
+
+// Build HTML section for a single PDF and register its named @page entry in caseRegistry
+async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
+  if (!pdf) return '';
+  const tablesOnly = Boolean(opts.tablesOnly);
+  const folderPath = opts.folder
+    ? getFolderPathString(opts.folder)
+    : resolvePdfFolderPath(pdf);
+
+  const { content, digest } = await fetchPdfNotesAndDigest(pdf);
+
+  if (tablesOnly) {
+    // Extract ONLY the 1st summary table (check Case Digest first, then Notes, then Annotation Case Summaries)
+    const firstTable =
+      extractFirstTableFromHtml(digest) ||
+      extractFirstTableFromHtml(content) ||
+      (await fetchFirstAnnotationTable(pdf));
+
+    if (firstTable && hasMeaningfulContent(firstTable)) {
+      const pdfName = getCleanPdfTitle(pdf);
+      const pageId = `cp${caseRegistry.length}`;
+      caseRegistry.push({ pageId, pdfName, folderPath });
+
+      return `
+        <div class="case-section" style="page: ${pageId}; margin: 8pt 0; padding: 8pt 10pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
+          <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 5pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
+            ${escapeHtml(pdfName)}
+          </div>
+          <div class="case-digest-body" style="color: #1e293b; line-height: 1.25;">
+            ${cleanAndSanitizeHtml(firstTable)}
+          </div>
+        </div>
+      `;
+    }
+    return '';
+  }
+
+  const hasDigest = hasMeaningfulContent(digest);
+  const hasContent = hasMeaningfulContent(content);
+  if (!hasDigest && !hasContent) return '';
+
+  const pdfName = getCleanPdfTitle(pdf);
+  const pageId = `cp${caseRegistry.length}`;
+  caseRegistry.push({ pageId, pdfName, folderPath });
+
+  let html = `
+    <div class="case-section" style="page: ${pageId}; margin: 8pt 0; padding: 8pt 10pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
+      <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 5pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
+        ${escapeHtml(pdfName)}
+      </div>
+  `;
+
+  // 1a. Case Digest
+  if (hasDigest) {
+    html += `
+      <div style="margin-bottom: 6pt;">
+        <div class="section-badge" style="font-size: 7pt; font-weight: 700; color: #0369a1; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2pt;">Case Digest</div>
+        <div class="case-digest-body" style="padding-left: 8pt; border-left: 2pt solid #0284c7; color: #1e293b; line-height: 1.25;">
+          ${cleanAndSanitizeHtml(digest)}
+        </div>
+      </div>
+    `;
+  }
+
+  // 1b. Appendix / Notes
+  if (hasContent) {
+    html += `
+      <div style="margin-top: 5pt;">
+        <div class="section-badge" style="font-size: 7pt; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2pt;">Appendix / Notes</div>
+        <div class="case-notes-body" style="padding-left: 8pt; border-left: 2pt solid #64748b; color: #1e293b; line-height: 1.25;">
+          ${cleanAndSanitizeHtml(content)}
+        </div>
+      </div>
+    `;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
 // Build HTML tree for folder export. Only registers cases that actually have notes/digest (or a summary table in tablesOnly mode).
 async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}) {
   const visitedFolders = opts.visitedFolders || (opts.visitedFolders = new Set());
@@ -176,76 +273,10 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
   for (const pdf of pdfs) {
-    const { content, digest } = await fetchPdfNotesAndDigest(pdf);
-
-    if (tablesOnly) {
-      // Extract ONLY the 1st summary table (check Case Digest first, then Notes, then Annotation Case Summaries)
-      const firstTable =
-        extractFirstTableFromHtml(digest) ||
-        extractFirstTableFromHtml(content) ||
-        (await fetchFirstAnnotationTable(pdf));
-
-      if (firstTable && hasMeaningfulContent(firstTable)) {
-        hasAnyContent = true;
-        const pdfName = (stripEmojis(pdf.name) || 'Case Document').replace(/\.pdf$/i, '').trim() || 'Case Document';
-        const pageId = `cp${caseRegistry.length}`;
-        caseRegistry.push({ pageId, pdfName, folderPath: getFolderPathString(folder) });
-
-        casesHtml += `
-          <div class="case-section" style="page: ${pageId}; margin: 8pt 0; padding: 8pt 10pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
-            <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 5pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
-              ${pdfName}
-            </div>
-            <div class="case-digest-body" style="color: #1e293b; line-height: 1.25;">
-              ${cleanAndSanitizeHtml(firstTable)}
-            </div>
-          </div>
-        `;
-      }
-      continue;
-    }
-
-    const hasDigest = hasMeaningfulContent(digest);
-    const hasContent = hasMeaningfulContent(content);
-
-    if (hasDigest || hasContent) {
+    const pdfHtml = await buildPdfCaseHTML(pdf, caseRegistry, { tablesOnly, folder });
+    if (pdfHtml) {
       hasAnyContent = true;
-      const pdfName = (stripEmojis(pdf.name) || 'Case Document').replace(/\.pdf$/i, '').trim() || 'Case Document';
-      const pageId = `cp${caseRegistry.length}`;
-      caseRegistry.push({ pageId, pdfName, folderPath: getFolderPathString(folder) });
-
-      casesHtml += `
-        <div class="case-section" style="page: ${pageId}; margin: 8pt 0; padding: 8pt 10pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
-          <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 5pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
-            ${pdfName}
-          </div>
-      `;
-
-      // 1a. Case Digest
-      if (hasDigest) {
-        casesHtml += `
-          <div style="margin-bottom: 6pt;">
-            <div class="section-badge" style="font-size: 7pt; font-weight: 700; color: #0369a1; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2pt;">Case Digest</div>
-            <div class="case-digest-body" style="padding-left: 8pt; border-left: 2pt solid #0284c7; color: #1e293b; line-height: 1.25;">
-              ${cleanAndSanitizeHtml(digest)}
-            </div>
-          </div>
-        `;
-      }
-
-      // 1b. Appendix / Notes
-      if (hasContent) {
-        casesHtml += `
-          <div style="margin-top: 5pt;">
-            <div class="section-badge" style="font-size: 7pt; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2pt;">Appendix / Notes</div>
-            <div class="case-notes-body" style="padding-left: 8pt; border-left: 2pt solid #64748b; color: #1e293b; line-height: 1.25;">
-              ${cleanAndSanitizeHtml(content)}
-            </div>
-          </div>
-        `;
-      }
-
-      casesHtml += `</div>`;
+      casesHtml += pdfHtml;
     }
   }
 
@@ -320,6 +351,18 @@ async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], opts = {}
   return headerHtml + folderNotesHtml + casesHtml + subfoldersHtml;
 }
 
+async function flushPendingNotesForExport() {
+  // Flush any pending active editor notes from memory to state
+  try {
+    const { flushFolderDoc } = await import('./viewer.js');
+    await flushFolderDoc();
+  } catch {}
+  try {
+    const { flushNotepadSave } = await import('./notepad.js');
+    await flushNotepadSave();
+  } catch {}
+}
+
 export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
   const rawFolders = (Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder]).filter(Boolean);
   // If a folder AND one of its subfolders are both selected, the subfolder is
@@ -343,15 +386,8 @@ export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
   if (!folders.length) return;
   const orientation = opts.orientation === 'landscape' ? 'landscape' : 'portrait';
   const tablesOnly = Boolean(opts.tablesOnly);
-  // 1. Flush any pending active editor notes from memory to state
-  try {
-    const { flushFolderDoc } = await import('./viewer.js');
-    await flushFolderDoc();
-  } catch {}
-  try {
-    const { flushNotepadSave } = await import('./notepad.js');
-    await flushNotepadSave();
-  } catch {}
+
+  await flushPendingNotesForExport();
 
   toast(tablesOnly ? 'Gathering summary tables for export...' : 'Gathering notes for export...');
 
@@ -381,15 +417,108 @@ export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
   const pageTitle = folders.length > 1
     ? `${titleParts.join(', ')} — ${titleSuffix}`
     : `${titleParts[0]} — ${titleSuffix}`;
-  const folderPath = folders.length > 1
-    ? `${folders.length} Folders: ${titleParts.join(' &bull; ')}`
+  const subtitleHtml = folders.length > 1
+    ? `${folders.length} Folders: ${titleParts.map(escapeHtml).join(' &bull; ')}`
+    : escapeHtml(getFolderPathString(folders[0]));
+  const fallbackPath = folders.length > 1
+    ? `${folders.length} Folders: ${titleParts.join(' / ')}`
     : getFolderPathString(folders[0]);
+
+  renderExportPrintDocument({
+    htmlContent,
+    caseRegistry,
+    orientation,
+    pageTitle,
+    subtitleHtml,
+    fallbackPath,
+  });
+}
+
+export async function exportPdfsToPDF(pdfsOrPdf, opts = {}) {
+  const rawPdfs = (Array.isArray(pdfsOrPdf) ? pdfsOrPdf : [pdfsOrPdf]).filter(Boolean);
+  const seenIds = new Set();
+  const pdfs = rawPdfs.filter(p => {
+    if (p.id) {
+      if (seenIds.has(p.id)) return false;
+      seenIds.add(p.id);
+    }
+    return true;
+  });
+  if (!pdfs.length) return;
+
+  const orientation = opts.orientation === 'landscape' ? 'landscape' : 'portrait';
+  const tablesOnly = Boolean(opts.tablesOnly);
+
+  await flushPendingNotesForExport();
+
+  toast(tablesOnly ? 'Gathering summary tables for export...' : 'Gathering notes for export...');
+
+  const caseRegistry = [];
+  const htmlParts = [];
+  for (const pdf of pdfs) {
+    const pdfHtml = await buildPdfCaseHTML(pdf, caseRegistry, { tablesOnly });
+    if (pdfHtml && hasMeaningfulContent(pdfHtml)) {
+      htmlParts.push(pdfHtml);
+    }
+  }
+  const htmlContent = htmlParts.join('\n');
+
+  if (!htmlContent || !hasMeaningfulContent(htmlContent)) {
+    const singleLabel = getCleanPdfTitle(pdfs[0]);
+    toast(tablesOnly
+      ? (pdfs.length > 1
+          ? 'No summary tables found in the selected PDFs.'
+          : `No summary table found for "${singleLabel}".`)
+      : (pdfs.length > 1
+          ? 'No notes or digests found in the selected PDFs.'
+          : `No notes or case digest found for "${singleLabel}".`));
+    return;
+  }
+
+  toast(tablesOnly ? 'Preparing Summary Tables PDF...' : 'Preparing PDF export document...');
+
+  const titleSuffix = tablesOnly ? 'Summary Tables Only' : 'Notes & Case Digests';
+  let pageTitle;
+  let subtitleHtml;
+  let fallbackPath;
+
+  if (pdfs.length === 1) {
+    const pdfTitle = getCleanPdfTitle(pdfs[0]);
+    const folderPath = resolvePdfFolderPath(pdfs[0]);
+    pageTitle = `${pdfTitle} — ${titleSuffix}`;
+    subtitleHtml = escapeHtml(folderPath);
+    fallbackPath = folderPath;
+  } else {
+    pageTitle = `Selected PDFs (${pdfs.length}) — ${titleSuffix}`;
+    const exportedNames = caseRegistry.map(c => c.pdfName);
+    const previewNames = exportedNames.slice(0, 4).map(escapeHtml).join(' &bull; ');
+    const moreSuffix = exportedNames.length > 4 ? ` &bull; +${exportedNames.length - 4} more` : '';
+    const countLabel = exportedNames.length === pdfs.length
+      ? `${pdfs.length} PDFs`
+      : `${exportedNames.length} of ${pdfs.length} PDFs`;
+    subtitleHtml = previewNames
+      ? `${countLabel}: ${previewNames}${moreSuffix}`
+      : countLabel;
+    fallbackPath = 'Library';
+  }
+
+  renderExportPrintDocument({
+    htmlContent,
+    caseRegistry,
+    orientation,
+    pageTitle,
+    subtitleHtml,
+    fallbackPath,
+  });
+}
+
+function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pageTitle, subtitleHtml, fallbackPath }) {
   const firstPageStyle = caseRegistry.length > 0 ? `page: ${caseRegistry[0].pageId};` : '';
 
   // Build one @page rule per case with the case name and its own folder path hardcoded as CSS string literals
   const casePageCss = caseRegistry.map(({ pageId, pdfName, folderPath: casePath }) => {
     const safeName = (pdfName || 'Case Document').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const safePath = (casePath || folderPath).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const safePath = (casePath || fallbackPath || 'Library').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     return `
     @page ${pageId} {
       @top-left {
@@ -426,11 +555,13 @@ export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
     }`;
   }).join('\n');
 
+  const safeTitleHtml = escapeHtml(pageTitle);
+
   const fullDocumentHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>${pageTitle}</title>
+  <title>${safeTitleHtml}</title>
   <style>
     @page {
       size: letter ${orientation};
@@ -755,8 +886,8 @@ export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
 <body>
   <div class="top-bar no-print">
     <div class="top-bar-left">
-      <div class="top-bar-title">${pageTitle}</div>
-      <div class="top-bar-sub">${folderPath} &bull; <span style="color:#fcd34d;">Tip: In print settings, uncheck "Headers and footers" for a clean look without browser URLs.</span></div>
+      <div class="top-bar-title">${safeTitleHtml}</div>
+      <div class="top-bar-sub">${subtitleHtml} &bull; <span style="color:#fcd34d;">Tip: In print settings, uncheck "Headers and footers" for a clean look without browser URLs.</span></div>
     </div>
     <div class="top-bar-actions">
       <div class="btn-group">
