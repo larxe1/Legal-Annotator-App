@@ -669,7 +669,6 @@ export function renderEditableSchedule(options = {}) {
   if (!actBar) {
     actBar = document.createElement('div');
     actBar.className = 'cal-header-acts';
-    actBar.style.cssText = 'display:flex; justify-content:flex-end; gap:8px; margin-bottom:10px;';
     actBar.innerHTML = `
       <button type="button" id="btn-edit-schedule" class="btn-sec" style="font-size:12px; padding:5px 12px; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Customize your class schedule"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-pen"/></svg><span>Edit Schedule</span></button>
       <button type="button" id="btn-add-class" class="btn-gold" style="font-size:12px; padding:5px 12px; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Add a new class"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg><span>Add Class</span></button>
@@ -700,9 +699,8 @@ export function renderEditableSchedule(options = {}) {
     cal.appendChild(grid);
   }
 
-  grid.style.display = 'grid';
-  grid.style.gridTemplateColumns = `repeat(${activeDays.length}, 1fr)`;
-  grid.style.gap = '14px';
+  grid.style.removeProperty('grid-template-columns');
+  grid.style.setProperty('--cal-cols', String(activeDays.length));
   grid.innerHTML = '';
 
   activeDays.forEach(day => {
@@ -718,7 +716,7 @@ export function renderEditableSchedule(options = {}) {
 
     if (dayEntries.length === 0) {
       const empty = document.createElement('div');
-      empty.style.cssText = 'text-align:center; font-size:11px; color:var(--muted); padding:16px 0; font-style:italic;';
+      empty.style.cssText = 'text-align:center; font-size:11px; color:var(--ink-muted, var(--muted)); padding:16px 0; font-style:italic;';
       empty.textContent = 'No classes';
       col.appendChild(empty);
     } else {
@@ -733,17 +731,19 @@ export function renderEditableSchedule(options = {}) {
         card.className = 'cal-item';
         card.dataset.id = entry.id;
         card.dataset.subject = entry.subject;
-        card.style.cssText = `position:relative; cursor:pointer; border-left:4px solid ${color};`;
+        card.style.borderLeft = `4px solid ${color}`;
         card.style.setProperty('--spine', color);
 
         card.innerHTML = `
-          <button type="button" class="cal-edit-btn" data-id="${entry.id}" title="Edit this class" aria-label="Edit this class" style="position:absolute; top:6px; right:6px; background:rgba(0,0,0,0.2); border:none; color:var(--muted); font-size:11px; cursor:pointer; padding:3px 5px; border-radius:4px; opacity:0.8; transition:opacity .15s, color .15s; display:inline-flex; align-items:center;"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-pen"/></svg></button>
-          <strong>${escapeHtml(entry.subject)}</strong>
+          <div class="cal-item-head">
+            <strong>${escapeHtml(entry.subject)}</strong>
+            <button type="button" class="cal-edit-btn" data-id="${entry.id}" title="Edit this class" aria-label="Edit this class"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-pen"/></svg></button>
+          </div>
           <div class="cal-time">${escapeHtml(entry.time || '')}</div>
-          ${entry.prof ? `<div class="cal-prof" style="font-size:11px; color:var(--muted); margin-bottom:4px; line-height:1.3;">${escapeHtml(entry.prof)}</div>` : ''}
+          ${entry.prof ? `<div class="cal-prof">${escapeHtml(entry.prof)}</div>` : ''}
           <div class="gn-cal-actions">
-            <span class="gn-cal-open-binder gn-cal-open-syllabus" title="${escapeHtml(sylTooltip)}" style="cursor:pointer; display:inline-flex; align-items:center; gap:4px;"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-book"/></svg><span>Open Syllabus</span><svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-right"/></svg></span>
-            <button class="gn-cal-note-btn" type="button" style="display:inline-flex; align-items:center; gap:4px;" title="Open quick class notes for ${escapeHtml(entry.subject)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-note"/></svg><span>Note</span></button>
+            <span class="gn-cal-open-binder gn-cal-open-syllabus" title="${escapeHtml(sylTooltip)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-book"/></svg><span>Open Syllabus</span><svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-right"/></svg></span>
+            <button class="gn-cal-note-btn" type="button" title="Open quick class notes for ${escapeHtml(entry.subject)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-note"/></svg><span>Note</span></button>
           </div>
         `;
 
