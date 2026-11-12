@@ -36,6 +36,23 @@ let _folderNotesId = null;
 let _ctxTarget = null;
 let _ctxIsFolder = false;
 
+function escLibHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function svgIcon(id, cls = 'icon icon-sm') {
+  return `<svg class="${cls}" aria-hidden="true"><use href="#${id}"/></svg>`;
+}
+
+function setCtxItemLabel(el, iconId, text) {
+  if (!el) return;
+  el.innerHTML = `${svgIcon(iconId)}<span>${escLibHtml(text)}</span>`;
+}
+
 function ensureLibCtxMenuItems() {
   const menu = document.getElementById('lib-ctx-menu');
   if (!menu) return;
@@ -44,7 +61,7 @@ function ensureLibCtxMenuItems() {
     const moveItem = document.createElement('div');
     moveItem.className = 'ctx-item';
     moveItem.id = 'ctx-move-folder';
-    moveItem.textContent = '📂 Move to Folder…';
+    setCtxItemLabel(moveItem, 'i-folder', 'Move to Folder…');
     if (linkBtn && linkBtn.nextSibling) {
       menu.insertBefore(moveItem, linkBtn.nextSibling);
     } else {
@@ -55,7 +72,7 @@ function ensureLibCtxMenuItems() {
     const sylItem = document.createElement('div');
     sylItem.className = 'ctx-item';
     sylItem.id = 'ctx-set-syllabus';
-    sylItem.textContent = '📌 Set as Subject Syllabus';
+    setCtxItemLabel(sylItem, 'i-bookmark', 'Set as Subject Syllabus');
     const moveItem = document.getElementById('ctx-move-folder');
     if (moveItem && moveItem.nextSibling) {
       menu.insertBefore(sylItem, moveItem.nextSibling);
@@ -67,7 +84,7 @@ function ensureLibCtxMenuItems() {
     const ocrItem = document.createElement('div');
     ocrItem.className = 'ctx-item';
     ocrItem.id = 'ctx-ocr-studio';
-    ocrItem.textContent = '🗜️ OCR & Compress PDF (Studio)…';
+    setCtxItemLabel(ocrItem, 'i-scan', 'OCR & Compress PDF (Studio)…');
     const sylItem = document.getElementById('ctx-set-syllabus');
     if (sylItem && sylItem.nextSibling) {
       menu.insertBefore(ocrItem, sylItem.nextSibling);
@@ -81,7 +98,7 @@ function ensureLibCtxMenuItems() {
     pplxPdfItem.id = 'ctx-perplexity-digest';
     pplxPdfItem.style.color = 'var(--gold)';
     pplxPdfItem.style.fontWeight = '600';
-    pplxPdfItem.textContent = '⚡ Perplexity Digest (Auto Case Digest)';
+    setCtxItemLabel(pplxPdfItem, 'i-spark', 'Perplexity Digest (Auto Case Digest)');
     const ocrItem = document.getElementById('ctx-ocr-studio');
     if (ocrItem && ocrItem.nextSibling) {
       menu.insertBefore(pplxPdfItem, ocrItem.nextSibling);
@@ -102,7 +119,7 @@ function ensureLibCtxMenuItems() {
     pplxFoldItem.id = 'ctx-folder-perplexity-digest';
     pplxFoldItem.style.color = 'var(--gold)';
     pplxFoldItem.style.fontWeight = '600';
-    pplxFoldItem.textContent = '⚡ Perplexity Digest All PDFs in Folder';
+    setCtxItemLabel(pplxFoldItem, 'i-spark', 'Perplexity Digest All PDFs in Folder');
     const exportBtn = document.getElementById('lib-ctx-export-pdf');
     if (exportBtn) {
       menu.insertBefore(pplxFoldItem, exportBtn);
@@ -122,7 +139,7 @@ function ensureLibCtxMenuItems() {
     const remPdfItem = document.createElement('div');
     remPdfItem.className = 'ctx-item';
     remPdfItem.id = 'ctx-pdf-offline-remove';
-    remPdfItem.textContent = '🗑 Remove Offline Copy';
+    setCtxItemLabel(remPdfItem, 'i-trash', 'Remove Offline Copy');
     if (offlinePdfBtn && offlinePdfBtn.nextSibling) {
       menu.insertBefore(remPdfItem, offlinePdfBtn.nextSibling);
     } else {
@@ -137,14 +154,14 @@ function ensureLibCtxMenuItems() {
       if (S.pdfCache) delete S.pdfCache[driveId];
       const { deleteCachedPDF } = await import('./pdfcache.js');
       await deleteCachedPDF(driveId);
-      toast(`🗑 Removed offline copy of "${pdf.name}".`);
+      toast(`Removed offline copy of "${pdf.name}".`);
     });
   }
   if (!document.getElementById('ctx-folder-offline-save')) {
     const saveFoldItem = document.createElement('div');
     saveFoldItem.className = 'ctx-item';
     saveFoldItem.id = 'ctx-folder-offline-save';
-    saveFoldItem.textContent = '📥 Make Folder Available Offline';
+    setCtxItemLabel(saveFoldItem, 'i-download', 'Make Folder Available Offline');
     const forceSyncBtn = document.getElementById('lib-ctx-force-sync');
     if (forceSyncBtn) {
       menu.insertBefore(saveFoldItem, forceSyncBtn);
@@ -162,7 +179,7 @@ function ensureLibCtxMenuItems() {
     const remFoldItem = document.createElement('div');
     remFoldItem.className = 'ctx-item';
     remFoldItem.id = 'ctx-folder-offline-remove';
-    remFoldItem.textContent = '🗑 Remove Folder Offline Copy';
+    setCtxItemLabel(remFoldItem, 'i-trash', 'Remove Folder Offline Copy');
     const forceSyncBtn = document.getElementById('lib-ctx-force-sync');
     if (forceSyncBtn) {
       menu.insertBefore(remFoldItem, forceSyncBtn);
@@ -197,15 +214,15 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
     if (selectedFolders.length > 1) {
       target = selectedFolders; // Retains exact insertion/selection order
       isMultiFolder = true;
-      if (exportBtn) exportBtn.textContent = `📥 Export ${selectedFolders.length} Folders to PDF`;
-      if (exportTablesBtn) exportTablesBtn.textContent = `📊 Export ${selectedFolders.length} Folders (Tables Only)`;
-      if (printStudioBtn) printStudioBtn.textContent = `🖨️ Open ${selectedFolders.length} Folders in Print Studio…`;
-      if (forceSyncBtn) forceSyncBtn.textContent = `☁️ Force Sync ${selectedFolders.length} Folders & PDFs`;
+      setCtxItemLabel(exportBtn, 'i-download', `Export ${selectedFolders.length} Folders to PDF`);
+      setCtxItemLabel(exportTablesBtn, 'i-table', `Export ${selectedFolders.length} Folders (Tables Only)`);
+      setCtxItemLabel(printStudioBtn, 'i-printer', `Open ${selectedFolders.length} Folders in Print Studio…`);
+      setCtxItemLabel(forceSyncBtn, 'i-cloud', `Force Sync ${selectedFolders.length} Folders & PDFs`);
     } else {
-      if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
-      if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
-      if (printStudioBtn) printStudioBtn.textContent = '🖨️ Open in Print Studio…';
-      if (forceSyncBtn) forceSyncBtn.textContent = '☁️ Force Sync Folder & PDFs';
+      setCtxItemLabel(exportBtn, 'i-download', 'Export Notes to PDF');
+      setCtxItemLabel(exportTablesBtn, 'i-table', 'Export Summary Tables Only');
+      setCtxItemLabel(printStudioBtn, 'i-printer', 'Open in Print Studio…');
+      setCtxItemLabel(forceSyncBtn, 'i-cloud', 'Force Sync Folder & PDFs');
     }
   } else if (!isFolder && S.selectedIds && S.selectedIds.size > 1 && S.selectedIds.has(item.id)) {
     const flatPdfs = getFlatLibraryItems()
@@ -221,24 +238,20 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
     if (selectedPdfs.length > 1) {
       target = selectedPdfs; // Retains exact library order
       isMultiPdf = true;
-      if (exportBtn) exportBtn.textContent = `📥 Export ${selectedPdfs.length} PDFs to PDF`;
-      if (exportTablesBtn) exportTablesBtn.textContent = `📊 Export ${selectedPdfs.length} PDFs (Tables Only)`;
-      if (printStudioBtn) printStudioBtn.textContent = `🖨️ Open ${selectedPdfs.length} PDFs in Print Studio…`;
+      setCtxItemLabel(exportBtn, 'i-download', `Export ${selectedPdfs.length} PDFs to PDF`);
+      setCtxItemLabel(exportTablesBtn, 'i-table', `Export ${selectedPdfs.length} PDFs (Tables Only)`);
+      setCtxItemLabel(printStudioBtn, 'i-printer', `Open ${selectedPdfs.length} PDFs in Print Studio…`);
     } else {
-      if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
-      if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
-      if (printStudioBtn) printStudioBtn.textContent = '🖨️ Open in Print Studio…';
-      if (forceSyncBtn) forceSyncBtn.textContent = '☁️ Force Sync PDF to Cloud';
+      setCtxItemLabel(exportBtn, 'i-download', 'Export Notes to PDF');
+      setCtxItemLabel(exportTablesBtn, 'i-table', 'Export Summary Tables Only');
+      setCtxItemLabel(printStudioBtn, 'i-printer', 'Open in Print Studio…');
+      setCtxItemLabel(forceSyncBtn, 'i-cloud', 'Force Sync PDF to Cloud');
     }
   } else {
-    if (exportBtn) exportBtn.textContent = '📥 Export Notes to PDF';
-    if (exportTablesBtn) exportTablesBtn.textContent = '📊 Export Summary Tables Only';
-    if (printStudioBtn) printStudioBtn.textContent = '🖨️ Open in Print Studio…';
-    if (forceSyncBtn) {
-      forceSyncBtn.textContent = isFolder
-        ? '☁️ Force Sync Folder & PDFs'
-        : '☁️ Force Sync PDF to Cloud';
-    }
+    setCtxItemLabel(exportBtn, 'i-download', 'Export Notes to PDF');
+    setCtxItemLabel(exportTablesBtn, 'i-table', 'Export Summary Tables Only');
+    setCtxItemLabel(printStudioBtn, 'i-printer', 'Open in Print Studio…');
+    setCtxItemLabel(forceSyncBtn, 'i-cloud', isFolder ? 'Force Sync Folder & PDFs' : 'Force Sync PDF to Cloud');
   }
 
   _ctxTarget = target;
@@ -249,57 +262,66 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   const hideSinglePdfItems = isFolder || isMultiFolder || isMultiPdf;
 
   // Toggle visibility of context items
-  document.getElementById('lib-ctx-open').style.display = hideSinglePdfItems ? 'none' : 'block';
-  document.getElementById('lib-ctx-reference').style.display = hideSinglePdfItems ? 'none' : 'block';
+  document.getElementById('lib-ctx-open').style.display = hideSinglePdfItems ? 'none' : 'flex';
+  document.getElementById('lib-ctx-reference').style.display = hideSinglePdfItems ? 'none' : 'flex';
   const setPageBtn = document.getElementById('lib-ctx-set-page');
-  if (setPageBtn) setPageBtn.style.display = hideSinglePdfItems ? 'none' : 'block';
-  document.getElementById('lib-ctx-link').style.display = hideSinglePdfItems ? 'none' : 'block';
+  if (setPageBtn) setPageBtn.style.display = hideSinglePdfItems ? 'none' : 'flex';
+  document.getElementById('lib-ctx-link').style.display = hideSinglePdfItems ? 'none' : 'flex';
   const moveFolderBtn = document.getElementById('ctx-move-folder');
-  if (moveFolderBtn) moveFolderBtn.style.display = (isMultiFolder || isMultiPdf) ? 'none' : 'block';
+  if (moveFolderBtn) moveFolderBtn.style.display = (isMultiFolder || isMultiPdf) ? 'none' : 'flex';
   const setSylBtn = document.getElementById('ctx-set-syllabus');
-  if (setSylBtn) setSylBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'block' : 'none';
+  if (setSylBtn) setSylBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'flex' : 'none';
   const ocrStudioBtn = document.getElementById('ctx-ocr-studio');
-  if (ocrStudioBtn) ocrStudioBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'block' : 'none';
+  if (ocrStudioBtn) ocrStudioBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'flex' : 'none';
   const pplxPdfBtn = document.getElementById('ctx-perplexity-digest');
-  if (pplxPdfBtn) pplxPdfBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'block' : 'none';
+  if (pplxPdfBtn) pplxPdfBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'flex' : 'none';
   const pplxFoldBtn = document.getElementById('ctx-folder-perplexity-digest');
   if (pplxFoldBtn) {
-    pplxFoldBtn.style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
-    pplxFoldBtn.textContent = (isMultiFolder && Array.isArray(target))
-      ? `⚡ Perplexity Digest All PDFs (${target.length} Folders)`
-      : '⚡ Perplexity Digest All PDFs in Folder';
+    pplxFoldBtn.style.display = (isFolder || isMultiFolder) ? 'flex' : 'none';
+    setCtxItemLabel(
+      pplxFoldBtn,
+      'i-spark',
+      (isMultiFolder && Array.isArray(target))
+        ? `Perplexity Digest All PDFs (${target.length} Folders)`
+        : 'Perplexity Digest All PDFs in Folder'
+    );
   }
-  document.getElementById('lib-ctx-offline').style.display = hideSinglePdfItems ? 'none' : 'block';
+  document.getElementById('lib-ctx-offline').style.display = hideSinglePdfItems ? 'none' : 'flex';
   const pdfOfflineRemBtn = document.getElementById('ctx-pdf-offline-remove');
-  if (pdfOfflineRemBtn) pdfOfflineRemBtn.style.display = hideSinglePdfItems ? 'none' : 'block';
+  if (pdfOfflineRemBtn) pdfOfflineRemBtn.style.display = hideSinglePdfItems ? 'none' : 'flex';
   const foldOfflineSaveBtn = document.getElementById('ctx-folder-offline-save');
   const foldOfflineRemBtn = document.getElementById('ctx-folder-offline-remove');
   if (foldOfflineSaveBtn) {
-    foldOfflineSaveBtn.style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
+    foldOfflineSaveBtn.style.display = (isFolder || isMultiFolder) ? 'flex' : 'none';
     if (isMultiFolder && Array.isArray(target)) {
-      foldOfflineSaveBtn.textContent = `📥 Make ${target.length} Folders Available Offline`;
+      setCtxItemLabel(foldOfflineSaveBtn, 'i-download', `Make ${target.length} Folders Available Offline`);
     } else if (isFolder && item && isFolderOfflineReady(item.id)) {
-      foldOfflineSaveBtn.textContent = '🔄 Refresh Folder Offline Copy';
+      setCtxItemLabel(foldOfflineSaveBtn, 'i-sync', 'Refresh Folder Offline Copy');
     } else {
-      foldOfflineSaveBtn.textContent = '📥 Make Folder Available Offline';
+      setCtxItemLabel(foldOfflineSaveBtn, 'i-download', 'Make Folder Available Offline');
     }
   }
   if (foldOfflineRemBtn) {
-    foldOfflineRemBtn.style.display = (isFolder || isMultiFolder) ? 'block' : 'none';
-    foldOfflineRemBtn.textContent = (isMultiFolder && Array.isArray(target))
-      ? `🗑 Remove Offline Copy (${target.length} Folders)`
-      : '🗑 Remove Folder Offline Copy';
+    foldOfflineRemBtn.style.display = (isFolder || isMultiFolder) ? 'flex' : 'none';
+    setCtxItemLabel(
+      foldOfflineRemBtn,
+      'i-trash',
+      (isMultiFolder && Array.isArray(target))
+        ? `Remove Offline Copy (${target.length} Folders)`
+        : 'Remove Folder Offline Copy'
+    );
   }
-  document.getElementById('lib-ctx-download').style.display = hideSinglePdfItems ? 'none' : 'block';
-  document.getElementById('lib-ctx-gdrive').style.display = hideSinglePdfItems ? 'none' : 'block';
+  document.getElementById('lib-ctx-download').style.display = hideSinglePdfItems ? 'none' : 'flex';
+  document.getElementById('lib-ctx-gdrive').style.display = hideSinglePdfItems ? 'none' : 'flex';
   const sylBtn = document.getElementById('lib-ctx-syllabus');
-  if (sylBtn) sylBtn.style.display = (isFolder && !isMultiFolder) ? 'block' : 'none';
-  if (exportBtn) exportBtn.style.display = 'block';
-  if (exportTablesBtn) exportTablesBtn.style.display = 'block';
-  if (printStudioBtn) printStudioBtn.style.display = 'block';
-  if (forceSyncBtn) forceSyncBtn.style.display = isMultiPdf ? 'none' : 'block';
+  if (sylBtn) sylBtn.style.display = (isFolder && !isMultiFolder) ? 'flex' : 'none';
+  if (exportBtn) exportBtn.style.display = 'flex';
+  if (exportTablesBtn) exportTablesBtn.style.display = 'flex';
+  if (printStudioBtn) printStudioBtn.style.display = 'flex';
+  if (forceSyncBtn) forceSyncBtn.style.display = isMultiPdf ? 'none' : 'flex';
 
   // Position off-screen first so we can measure actual rendered dimensions
+  menu.hidden = false;
   menu.style.left = '-9999px';
   menu.style.top  = '-9999px';
   menu.classList.add('open');
@@ -354,27 +376,29 @@ function showExportOptsModal(targetsOrTarget, defaultMode = 'all', isFolder = tr
   function updateModalHeader(mode) {
     const isTables = mode === 'tables-only';
     if (titleEl) {
+      let titleText = '';
       if (isFolder) {
         if (targets.length > 1) {
-          titleEl.textContent = isTables
-            ? `📊 Export ${targets.length} Folders (Tables Only)`
-            : `📄 Export ${targets.length} Folders to PDF`;
+          titleText = isTables
+            ? `Export ${targets.length} Folders (Tables Only)`
+            : `Export ${targets.length} Folders to PDF`;
         } else {
-          titleEl.textContent = isTables
-            ? '📊 Export Summary Tables Only'
-            : '📄 Export Notes to PDF';
+          titleText = isTables
+            ? 'Export Summary Tables Only'
+            : 'Export Notes to PDF';
         }
       } else {
         if (targets.length > 1) {
-          titleEl.textContent = isTables
-            ? `📊 Export ${targets.length} PDFs (Tables Only)`
-            : `📄 Export ${targets.length} PDFs to PDF`;
+          titleText = isTables
+            ? `Export ${targets.length} PDFs (Tables Only)`
+            : `Export ${targets.length} PDFs to PDF`;
         } else {
-          titleEl.textContent = isTables
-            ? '📊 Export Summary Tables Only'
-            : '📄 Export Notes to PDF';
+          titleText = isTables
+            ? 'Export Summary Tables Only'
+            : 'Export Notes to PDF';
         }
       }
+      titleEl.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;">${svgIcon(isTables ? 'i-table' : 'i-note')}<span>${escLibHtml(titleText)}</span></span>`;
     }
     if (descEl) {
       if (isFolder) {
@@ -561,7 +585,9 @@ export function initContextMenu() {
   });
 
   // "Set as Subject Syllabus"
-  document.getElementById('ctx-set-syllabus')?.addEventListener('click', async () => {
+  const ctxSetSylEl = document.getElementById('ctx-set-syllabus');
+  if (ctxSetSylEl) ctxSetSylEl.dataset.libCtxHandled = '1';
+  ctxSetSylEl?.addEventListener('click', async () => {
     if (!_ctxTarget || _ctxIsFolder) return;
     const pdf = Array.isArray(_ctxTarget) ? _ctxTarget[0] : _ctxTarget;
     hideLibCtxMenu();
@@ -580,9 +606,9 @@ export function initContextMenu() {
       if (subjectId) {
         safeStorageSet(`subject_syllabus_pdf_${subjectId}`, pdf.id);
         const subj = S.subjects.find(s => s.id === subjectId);
-        toast(`📌 "${pdf.name}" set as syllabus for ${subj ? subj.name : 'subject'}`);
+        toast(`"${pdf.name}" set as syllabus for ${subj ? subj.name : 'subject'}`);
       } else {
-        toast(`📌 Set "${pdf.name}" as subject syllabus`);
+        toast(`Set "${pdf.name}" as subject syllabus`);
       }
     }
   });
@@ -1046,6 +1072,7 @@ function buildSubjectEl(subj, idx = 0) {
   const exp = !S.collapsedSubj[subj.id];
   const binderColor = getSubjectBinderColor(subj, idx);
   w.style.setProperty('--subj-color', binderColor);
+  w.style.setProperty('--spine', binderColor);
 
   // Count total cases under this subject
   const subjFolderIds = new Set(S.folders.filter(f => f.subject_id === subj.id).map(f => f.id));
@@ -1056,11 +1083,11 @@ function buildSubjectEl(subj, idx = 0) {
       <span class="li-chev ${exp ? '' : 'closed'}">▼</span>
       <span class="li-dot" style="background:${binderColor}"></span>
       <span class="li-subj-name" title="${subj.name.replace(/"/g, '&quot;')}">${subj.name}</span>
-      ${subjPdfCount > 0 ? `<span class="subj-count-pill" title="${subjPdfCount} cases in binder">${subjPdfCount}</span>` : ''}
+      ${subjPdfCount > 0 ? `<span class="subj-count-pill" style="font-variant-numeric:tabular-nums;" title="${subjPdfCount} cases in binder">${subjPdfCount}</span>` : ''}
       <div class="li-acts">
-        <button class="li-act-btn" title="Add folder" data-act="add-fold">📁+</button>
-        <button class="li-act-btn" title="Rename" data-act="rename">✏</button>
-        <button class="li-act-btn del" title="Delete" data-act="del">✕</button>
+        <button class="li-act-btn" title="Add folder" aria-label="Add folder" data-act="add-fold">${svgIcon('i-folder')}</button>
+        <button class="li-act-btn" title="Rename" aria-label="Rename" data-act="rename">${svgIcon('i-pen')}</button>
+        <button class="li-act-btn del" title="Delete" aria-label="Delete" data-act="del">${svgIcon('i-trash')}</button>
       </div>
     </div>
     <div class="li-subj-ch" style="display:${exp ? 'flex' : 'none'}"></div>`;
@@ -1100,7 +1127,7 @@ function buildSubjectEl(subj, idx = 0) {
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
     hd.classList.remove('drop-above', 'drop-below');
     hd.classList.add('drop-inside');
-    showDropHint(`📚 Move to root of "${subj.name}"`, e.clientX, e.clientY);
+    showDropHint(`Move to root of "${subj.name}"`, e.clientX, e.clientY);
   });
   hd.addEventListener('dragleave', e => {
     if (!hd.contains(e.relatedTarget)) {
@@ -1150,29 +1177,30 @@ function buildFolderEl(fold) {
   w.dataset.id = fold.id;
   w.draggable  = true;
   const exp  = !!S.expandedFold[fold.id];
-  const icons = { codal: '📜', cases: '⚖', laws: '📋', others: '📁', custom: '📂' };
+  const foldIcons = { codal: 'i-book', cases: 'i-scale', laws: 'i-list', others: 'i-folder', custom: 'i-folder' };
+  const foldIconId = foldIcons[fold.folder_type] || 'i-folder';
   const prog = getFolderDigestProgress(fold.id);
   const allDigested = prog.total > 0 && prog.digested === prog.total;
   const progBadgeHtml = prog.total > 0
-    ? `<span class="fold-prog-badge ${allDigested ? 'done' : ''}" title="${prog.digested} of ${prog.total} cases have a Case Digest">${allDigested ? '✅ ' : '⚖️ '}${prog.digested}/${prog.total}</span>`
+    ? `<span class="fold-prog-badge ${allDigested ? 'done' : ''}" style="display:inline-flex;align-items:center;gap:3px;font-variant-numeric:tabular-nums;" title="${prog.digested} of ${prog.total} cases have a Case Digest">${svgIcon(allDigested ? 'i-check' : 'i-scale')}<span>${prog.digested}/${prog.total}</span></span>`
     : '';
   const offlineBadgeHtml = isFolderOfflineReady(fold.id)
-    ? `<span class="fold-offline-badge" title="Folder cases & notes are saved on this device for offline study" style="font-size:9px;padding:1px 5px;border-radius:4px;background:rgba(16,185,129,0.16);color:#34d399;border:1px solid rgba(16,185,129,0.35);font-weight:600;margin-left:3px;flex-shrink:0">📴 Offline</span>`
+    ? `<span class="fold-offline-badge" title="Folder cases & notes are saved on this device for offline study" style="font-size:9px;padding:1px 5px;border-radius:4px;background:rgba(16,185,129,0.16);color:#34d399;border:1px solid rgba(16,185,129,0.35);font-weight:600;margin-left:3px;flex-shrink:0;display:inline-flex;align-items:center;gap:3px;">${svgIcon('i-save')}<span>Offline</span></span>`
     : '';
 
   w.innerHTML = `
     <div class="li-fold-hd">
       <span class="li-chev ${exp ? '' : 'closed'}" title="Expand / collapse folder">▼</span>
-      <span>${icons[fold.folder_type] || '📁'}</span>
+      <span class="li-fold-icon" style="display:inline-flex;align-items:center;">${svgIcon(foldIconId)}</span>
       <span class="li-fold-name" title="${fold.name.replace(/"/g, '&quot;')}">${fold.name}</span>
       ${progBadgeHtml}${offlineBadgeHtml}
       <div class="li-acts">
-        <button class="li-act-btn" title="Import / Auto-Order from Syllabus" data-act="syllabus">📋</button>
-        <button class="li-act-btn" title="Add subfolder" data-act="subfolder">📁+</button>
-        <button class="li-act-btn" title="Add PDF" data-act="upload">📄+</button>
-        <button class="li-act-btn" title="Move folder" data-act="move">📂</button>
-        <button class="li-act-btn" title="Rename" data-act="rename">✏</button>
-        <button class="li-act-btn del" title="Delete" data-act="del">✕</button>
+        <button class="li-act-btn" title="Import / Auto-Order from Syllabus" aria-label="Import / Auto-Order from Syllabus" data-act="syllabus">${svgIcon('i-list')}</button>
+        <button class="li-act-btn" title="Add subfolder" aria-label="Add subfolder" data-act="subfolder">${svgIcon('i-folder')}</button>
+        <button class="li-act-btn" title="Add PDF" aria-label="Add PDF" data-act="upload">${svgIcon('i-plus')}</button>
+        <button class="li-act-btn" title="Move folder" aria-label="Move folder" data-act="move">${svgIcon('i-arrow-right')}</button>
+        <button class="li-act-btn" title="Rename" aria-label="Rename" data-act="rename">${svgIcon('i-pen')}</button>
+        <button class="li-act-btn del" title="Delete" aria-label="Delete" data-act="del">${svgIcon('i-trash')}</button>
       </div>
     </div>
     <div class="li-fold-ch" style="display:${exp ? 'flex' : 'none'}"></div>`;
@@ -1334,7 +1362,7 @@ function buildFolderEl(fold) {
       hd.classList.remove('drop-above', 'drop-below');
       hd.classList.add('drop-inside');
       w.classList.add('drag-over');
-      showDropHint(`📂 Move inside "${fold.name}"`, e.clientX, e.clientY);
+      showDropHint(`Move inside "${fold.name}"`, e.clientX, e.clientY);
 
       // Auto-open if hovering in drop-inside on a collapsed folder for 650ms
       if (!S.expandedFold[fold.id]) {
@@ -1402,7 +1430,7 @@ function buildFolderEl(fold) {
     if (e.target === ch && !S.selectedIds.has(fold.id)) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      showDropHint(`📂 Move inside "${fold.name}"`, e.clientX, e.clientY);
+      showDropHint(`Move inside "${fold.name}"`, e.clientX, e.clientY);
     }
   });
   ch.addEventListener('dragleave', e => {
@@ -1440,24 +1468,24 @@ function buildPdfEl(pdf) {
     || (pdf.folder_id ? safeStorageGet('default_page_f_' + pdf.folder_id + '_' + trueId) : null);
   const defBadgeHtml = defPage ? `<span class="def-page-badge" title="Opens at page ${defPage} by default (Click to change)">p.${defPage}</span>` : '';
 
-  const statusIcon = digested ? '⚖️' : '📄';
+  const statusIconId = digested ? 'i-scale' : 'i-note';
   const statusTitle = digested
     ? 'Has Case Digest (Click to open Case Digest)'
     : 'No Case Digest yet (Click to write Case Digest)';
 
   el.innerHTML = `
-    <button type="button" class="case-status-btn ${digested ? 'digested' : ''}" title="${statusTitle}">${statusIcon}</button>
+    <button type="button" class="case-status-btn ${digested ? 'digested' : ''}" title="${statusTitle}" aria-label="${statusTitle}">${svgIcon(statusIconId)}</button>
     <span class="li-pdf-name" title="${pdf.name.replace(/"/g, '&quot;')}">
-      ${pdf.linked_pdf_id ? '<span style="color:var(--gold);margin-right:4px" title="Shortcut">🔗</span>' : ''}
+      ${pdf.linked_pdf_id ? `<span style="color:var(--gold);margin-right:4px;display:inline-flex;vertical-align:middle;" title="Shortcut">${svgIcon('i-link')}</span>` : ''}
       ${pdf.name}
     </span>
     ${defBadgeHtml}
     <span class="ann-badge" style="${count ? '' : 'display:none'}">${count}</span>
     <div class="li-acts">
-      <button class="li-act-btn" title="Move to folder" data-act="move">📂</button>
-      <button class="li-act-btn" title="Create Shortcut in another folder" data-act="link">🔗</button>
-      <button class="li-act-btn" title="Rename" data-act="rename">✏</button>
-      <button class="li-act-btn del" title="Delete" data-act="del">✕</button>
+      <button class="li-act-btn" title="Move to folder" aria-label="Move to folder" data-act="move">${svgIcon('i-folder')}</button>
+      <button class="li-act-btn" title="Create Shortcut in another folder" aria-label="Create Shortcut in another folder" data-act="link">${svgIcon('i-link')}</button>
+      <button class="li-act-btn" title="Rename" aria-label="Rename" data-act="rename">${svgIcon('i-pen')}</button>
+      <button class="li-act-btn del" title="Delete" aria-label="Delete" data-act="del">${svgIcon('i-trash')}</button>
     </div>`;
 
   const stBtn = el.querySelector('.case-status-btn');
@@ -2153,7 +2181,7 @@ export function openDefaultPageModal(pdf) {
   const clearBtn = document.getElementById('btn-clear-default-page');
 
   if (nameEl) nameEl.textContent = pdf.name;
-  if (folderEl) folderEl.textContent = `📁 Folder: ${folderName}`;
+  if (folderEl) folderEl.innerHTML = `<span style="display:inline-flex;align-items:center;gap:5px;">${svgIcon('i-folder')}<span>Folder: ${escLibHtml(folderName)}</span></span>`;
 
   const currentVal = safeStorageGet('default_page_' + pdf.id)
     || (pdf.folder_id ? safeStorageGet('default_page_f_' + pdf.folder_id + '_' + trueId) : null);
@@ -2215,7 +2243,7 @@ export function openLinkPdfModal(pdf) {
     confirmBtn.style.cursor = 'not-allowed';
   }
 
-  const icons = { codal: '📜', cases: '⚖', laws: '📋', others: '📁', custom: '📂' };
+  const foldIcons = { codal: 'i-book', cases: 'i-scale', laws: 'i-list', others: 'i-folder', custom: 'i-folder' };
 
   if (!S.folders.length) {
     treeContainer.innerHTML = '<div class="lft-empty">No folders found in your library.<br>Create a folder first before creating shortcuts.</div>';
@@ -2322,7 +2350,7 @@ export function openLinkPdfModal(pdf) {
 
       row.innerHTML = `
         <span class="lft-chev" style="${hasChildren ? '' : 'visibility:hidden; width:12px'}">▼</span>
-        <span class="lft-fold-icon">${icons[folder.folder_type] || '📁'}</span>
+        <span class="lft-fold-icon" style="display:inline-flex;align-items:center;">${svgIcon(foldIcons[folder.folder_type] || 'i-folder')}</span>
         <span class="lft-fold-name">${folder.name}</span>
         ${isCurrent ? '<span class="lft-badge-current">Current</span>' : ''}
       `;
@@ -2474,14 +2502,14 @@ function ensureMoveToFolderModal() {
   modal.innerHTML = `
     <div class="modal" style="max-width: 460px; width: 92vw; max-height: 85vh; display: flex; flex-direction: column;">
       <div class="modal-hd">
-        <h3 id="move-folder-modal-title">📂 Move to Folder…</h3>
-        <button class="modal-close" id="close-move-folder-modal" aria-label="Close">✕</button>
+        <h3 id="move-folder-modal-title" style="display:inline-flex;align-items:center;gap:6px;">${svgIcon('i-folder')}<span>Move to Folder…</span></h3>
+        <button class="modal-close" id="close-move-folder-modal" aria-label="Close">${svgIcon('i-close')}</button>
       </div>
       <div class="modal-body" style="display: flex; flex-direction: column; gap: 10px; overflow: hidden; flex: 1; padding: 12px 16px;">
         <div style="font-size: 12px; color: var(--muted);" id="move-folder-target-desc">
-          Item: <strong id="move-folder-item-name" style="color: #e8e4db;"></strong>
+          Item: <strong id="move-folder-item-name" style="color: #e8e4db; display: inline-flex; align-items: center; gap: 5px;"></strong>
         </div>
-        <input type="text" id="move-folder-search" class="mo-input" placeholder="🔍 Filter folders in this subject…" style="width: 100%; box-sizing: border-box;" />
+        <input type="text" id="move-folder-search" class="mo-input" placeholder="Filter folders in this subject…" style="width: 100%; box-sizing: border-box;" />
         <div id="move-folder-tree" class="lft-container" style="flex: 1; min-height: 220px; max-height: 380px;"></div>
       </div>
       <div class="modal-ft" style="display: flex; justify-content: flex-end; gap: 8px;">
@@ -2507,8 +2535,8 @@ export function openMoveToFolderModal(item, isFolder) {
   const searchInput = document.getElementById('move-folder-search');
   const treeContainer = document.getElementById('move-folder-tree');
 
-  if (titleEl) titleEl.textContent = isFolder ? '📂 Move Folder…' : '📂 Move PDF to Folder…';
-  if (nameEl) nameEl.textContent = (isFolder ? '📁 ' : '📄 ') + (item.name || 'Item');
+  if (titleEl) titleEl.innerHTML = `${svgIcon('i-folder')}<span>${isFolder ? 'Move Folder…' : 'Move PDF to Folder…'}</span>`;
+  if (nameEl) nameEl.innerHTML = `${svgIcon(isFolder ? 'i-folder' : 'i-note')}<span>${escLibHtml(item.name || 'Item')}</span>`;
   if (searchInput) searchInput.value = '';
 
   // 1. Resolve Subject by walking up folder_id / parent_folder_id -> subject_id
@@ -2568,7 +2596,7 @@ export function openMoveToFolderModal(item, isFolder) {
 
   treeContainer.innerHTML = '';
 
-  const icons = { codal: '📜', cases: '⚖', laws: '📋', others: '📁', custom: '📂' };
+  const foldIcons = { codal: 'i-book', cases: 'i-scale', laws: 'i-list', others: 'i-folder', custom: 'i-folder' };
 
   // If moving a folder, include top level option (Make Root Folder)
   if (isFolder) {
@@ -2579,7 +2607,7 @@ export function openMoveToFolderModal(item, isFolder) {
     rootRow.style.border = '1px dashed rgba(201,168,76,0.4)';
     rootRow.title = isRootCurrent ? 'Already at top level' : `Move to Top Level of ${subjectName}`;
     rootRow.innerHTML = `
-      <span class="lft-fold-icon">📚</span>
+      <span class="lft-fold-icon" style="display:inline-flex;align-items:center;">${svgIcon('i-book')}</span>
       <span class="lft-fold-name" style="font-weight:600;">Top Level of "${subjectName}" (Make Root Folder)</span>
       ${isRootCurrent ? '<span class="lft-badge-current">Current</span>' : ''}
     `;
@@ -2592,7 +2620,7 @@ export function openMoveToFolderModal(item, isFolder) {
         item.parent_folder_id = null;
         item.subject_id = subjectId;
         renderLibrary();
-        toast(`✅ Moved "${item.name}" to top level of ${subjectName}`);
+        toast(`Moved "${item.name}" to top level of ${subjectName}`);
       });
     }
     treeContainer.appendChild(rootRow);
@@ -2626,7 +2654,7 @@ export function openMoveToFolderModal(item, isFolder) {
     row.title = isCurrent ? 'Current location' : `Move to: ${folder.name}`;
     row.innerHTML = `
       <span class="lft-chev" style="${hasChildren ? '' : 'visibility:hidden; width:12px'}">▼</span>
-      <span class="lft-fold-icon">${icons[folder.folder_type] || '📁'}</span>
+      <span class="lft-fold-icon" style="display:inline-flex;align-items:center;">${svgIcon(foldIcons[folder.folder_type] || 'i-folder')}</span>
       <span class="lft-fold-name">${folder.name}</span>
       ${isCurrent ? '<span class="lft-badge-current">Current</span>' : ''}
     `;
@@ -2636,7 +2664,7 @@ export function openMoveToFolderModal(item, isFolder) {
         if (e.target.closest('.lft-chev')) return;
         closeModal('mo-move-to-folder');
         await handleMoveInto(folder.id, [item.id]);
-        toast(`✅ Moved "${item.name}" to "${folder.name}"`);
+        toast(`Moved "${item.name}" to "${folder.name}"`);
       });
     }
 

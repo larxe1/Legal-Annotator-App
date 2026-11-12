@@ -303,7 +303,7 @@ export function unrenderFarPages(centerPage = S.curPage || 1) {
         pg.srchOv = null;
         pg.rendered = false;
         if (pg.wrap) {
-          pg.wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:'Inter',sans-serif;letter-spacing:.05em">Page ${pNum}</div>`;
+          pg.wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);letter-spacing:.05em">Page ${pNum}</div>`;
         }
         _renderedPages.delete(pNum);
       }
@@ -644,7 +644,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       wrap.dataset.page = p;
       wrap.style.width = vp1.width + 'px';
       wrap.style.height = vp1.height + 'px';
-      wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:'Inter',sans-serif;letter-spacing:.05em">Page ${p}</div>`;
+      wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);letter-spacing:.05em">Page ${p}</div>`;
       scroll.appendChild(wrap);
       S.pages[p] = { wrap, rendered: false, rendering: false, viewport: vp1, textItems: [] };
     }
@@ -875,7 +875,7 @@ export async function reRenderAll() {
         pg.txtLayer = null;
         pg.annOv = null;
         pg.srchOv = null;
-        pg.wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:'Inter',sans-serif">Page ${p}</div>`;
+        pg.wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif)">Page ${p}</div>`;
       }
     }
   }

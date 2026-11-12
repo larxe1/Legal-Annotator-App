@@ -233,7 +233,7 @@ export function showDriveWarning(msg) {
     banner.style.cssText = [
       'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:9999',
       'background:#7f1d1d', 'color:#fecaca',
-      'font-size:13px', 'font-family:Inter,sans-serif',
+      'font-size:13px', 'font-family:var(--font-ui, "Public Sans", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif)',
       'padding:10px 16px', 'display:flex', 'align-items:center', 'gap:12px',
       'box-shadow:0 4px 12px rgba(0,0,0,.5)',
       'border-bottom:1px solid #991b1b',
@@ -247,7 +247,7 @@ export function showDriveWarning(msg) {
     <span style="font-size:18px">⚠️</span>
     <span style="flex:1">${msg}</span>
     <button id="drive-warn-signin" style="background:#991b1b;border:1px solid #ef4444;color:#fecaca;
-      border-radius:5px;padding:4px 12px;cursor:pointer;font-size:12px;font-family:Inter,sans-serif;
+      border-radius:5px;padding:4px 12px;cursor:pointer;font-size:12px;font-family:var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);
       white-space:nowrap;transition:background .15s">Sign in again</button>
     <button id="drive-warn-close" style="background:none;border:none;color:#fca5a5;font-size:18px;
       cursor:pointer;padding:0 2px;line-height:1" title="Dismiss">×</button>

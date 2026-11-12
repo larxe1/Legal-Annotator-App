@@ -292,7 +292,7 @@ function ensureSyllabusModal() {
       padding: 4px 7px;
       color: #e8e4db;
       font-size: 12px;
-      font-family: 'Inter', sans-serif;
+      font-family: var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);
       min-width: 130px;
     }
     #mo-syllabus .syl-name-in:focus {
@@ -377,7 +377,7 @@ function ensureSyllabusModal() {
   modal.innerHTML = `
     <div class="modal-box" style="width:740px; max-width:95vw; max-height:92vh; display:flex; flex-direction:column; padding:18px 22px; gap:9px;">
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;">
+        <h3 style="margin:0; font-family:var(--font-display, 'Literata', Georgia, 'Palatino Linotype', 'Book Antiqua', serif); font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;">
           <span>📋</span> <span>Import & Auto-Order from Syllabus</span>
         </h3>
         <button class="btn-sec" id="syl-close-top" style="padding:3px 8px; border:none; font-size:16px; line-height:1; cursor:pointer; background:transparent;">✕</button>

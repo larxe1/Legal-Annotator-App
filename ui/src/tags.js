@@ -1021,7 +1021,7 @@ function injectTagsCSS() {
       color: #fbbf24;
       font-size: 10px;
       font-weight: 600;
-      font-family: 'Inter', -apple-system, sans-serif;
+      font-family: var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);
       padding: 2px 7px;
       border-radius: 12px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.5);
@@ -1504,7 +1504,7 @@ function injectTagsCSS() {
       color: #ef4444;
     }
     .tp-ann-quote {
-      font-family: 'Libre Baskerville', serif;
+      font-family: var(--font-display, 'Literata', Georgia, 'Palatino Linotype', 'Book Antiqua', serif);
       font-style: italic;
       font-size: 12px;
       line-height: 1.45;
@@ -1783,7 +1783,7 @@ function injectTagsCSS() {
       color: var(--gold);
     }
     .tnm-prov-quote {
-      font-family: 'Libre Baskerville', serif;
+      font-family: var(--font-display, 'Literata', Georgia, 'Palatino Linotype', 'Book Antiqua', serif);
       font-style: italic;
       font-size: 11.5px;
       line-height: 1.45;

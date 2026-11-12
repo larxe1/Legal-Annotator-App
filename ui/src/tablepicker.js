@@ -1,5 +1,6 @@
 import { openModal, toast } from './ui.js';
 import { S } from './state.js';
+import { normalizeHexColor, getColorCategoryForHex } from './colors.js';
 
 export function showTablePicker(btn, editorElement) {
   let picker = document.getElementById('table-picker');
@@ -460,12 +461,13 @@ export function initTableContextMenu() {
       // If table is in a read-only note card, hide cell modification tools
       const editItems = ctxMenu.querySelectorAll('#ctx-row-above, #ctx-row-below, #ctx-col-left, #ctx-col-right, #ctx-del-row, #ctx-del-col, #ctx-del-table');
       editItems.forEach(item => {
-        item.style.display = isEditable ? 'block' : 'none';
+        item.style.display = isEditable ? 'flex' : 'none';
       });
       ctxMenu.querySelectorAll('div[style*="height:1px"]').forEach(sep => {
         sep.style.display = isEditable ? 'block' : 'none';
       });
       
+      ctxMenu.hidden = false;
       ctxMenu.style.display = 'flex';
       
       // Keep menu on screen
@@ -491,11 +493,18 @@ export function initTableContextMenu() {
     ctxMenu.style.display = 'none';
   });
 
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && ctxMenu.style.display !== 'none') {
+      ctxMenu.style.display = 'none';
+      activeTableCell = null;
+    }
+  });
+
   // Bind actions
   document.getElementById('ctx-copy-table')?.addEventListener('click', () => {
     if (activeTableCell) {
       const table = activeTableCell.closest('table');
-      if (table) copyFormattedTable(table, '📋 Table copied with formatting!');
+      if (table) copyFormattedTable(table, 'Table copied with formatting!');
     }
   });
   document.getElementById('ctx-expand-table')?.addEventListener('click', () => {
@@ -543,14 +552,16 @@ function initTableHoverCopyBtn() {
     'padding:3px 9px',
     'font-size:11px',
     'font-weight:600',
-    'font-family:Inter,sans-serif',
+    'font-family:var(--font-ui)',
     'cursor:pointer',
     'box-shadow:0 4px 14px rgba(0,0,0,0.55)',
-    'backdrop-filter:blur(4px)',
     'transition:background 0.15s, transform 0.12s',
     'white-space:nowrap',
   ].join(';');
-  btn.textContent = '📋 Copy Summary Table';
+  const setHoverBtnContent = (iconId, label) => {
+    btn.innerHTML = `<svg class="icon icon-sm" aria-hidden="true"><use href="#${iconId}"/></svg><span>${label}</span>`;
+  };
+  setHoverBtnContent('i-copy', 'Copy Summary Table');
   btn.title = 'Instantly copy this table preserving its formatting';
 
   btn.addEventListener('mousedown', e => {
@@ -581,13 +592,17 @@ function initTableHoverCopyBtn() {
     const isFirst = isFirstTableInContainer(_hoveredTableEl);
     const ok = await copyFormattedTable(
       _hoveredTableEl,
-      isFirst ? '📋 Summary table copied with formatting!' : '📋 Table copied with formatting!'
+      isFirst ? 'Summary table copied with formatting!' : 'Table copied with formatting!'
     );
     if (ok) {
-      const origText = btn.textContent;
-      btn.textContent = '✓ Copied!';
+      const idleLabel = isFirst ? 'Copy Summary Table' : 'Copy Table';
+      btn.dataset.copied = '1';
+      setHoverBtnContent('i-check', 'Copied!');
       setTimeout(() => {
-        if (btn.textContent === '✓ Copied!') btn.textContent = origText;
+        if (btn.dataset.copied === '1') {
+          delete btn.dataset.copied;
+          setHoverBtnContent('i-copy', idleLabel);
+        }
       }, 1200);
     }
   });
@@ -617,8 +632,8 @@ function initTableHoverCopyBtn() {
       }
     }
     const isFirst = isFirstTableInContainer(table);
-    if (btn.textContent !== '✓ Copied!') {
-      btn.textContent = isFirst ? '📋 Copy Summary Table' : '📋 Copy Table';
+    if (btn.dataset.copied !== '1') {
+      setHoverBtnContent('i-copy', isFirst ? 'Copy Summary Table' : 'Copy Table');
     }
     btn.style.display = 'inline-flex';
     const bw = btn.offsetWidth || 138;
@@ -799,7 +814,7 @@ export function exportTableCSV(tableEl) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  toast('✅ Table exported as CSV!');
+  toast('Table exported as CSV');
 }
 
 export function copyTableMarkdown(tableEl) {
@@ -825,16 +840,16 @@ export function copyTableMarkdown(tableEl) {
   });
 
   navigator.clipboard.writeText(md).then(() => {
-    toast('📋 Table copied as Markdown!');
+    toast('Table copied as Markdown');
   }).catch(() => {
-    toast('❌ Failed to copy to clipboard');
+    toast('Failed to copy to clipboard');
   });
 }
 
 export async function copyFormattedTable(tableEl, customToastMsg) {
   const target = tableEl || _currentLightboxTable;
   if (!target) {
-    toast('⚠️ No summary table found to copy');
+    toast('No summary table found to copy');
     return false;
   }
 
@@ -941,10 +956,10 @@ export async function copyFormattedTable(tableEl, customToastMsg) {
       target.style.boxShadow = prevShadow;
     }, 650);
 
-    toast(customToastMsg || '📋 Summary table copied with formatting!');
+    toast(customToastMsg || 'Summary table copied with formatting');
     return true;
   } else {
-    toast('❌ Failed to copy table to clipboard');
+    toast('Failed to copy table to clipboard');
     return false;
   }
 }
@@ -952,14 +967,14 @@ export async function copyFormattedTable(tableEl, customToastMsg) {
 export async function copyFirstSummaryTable(containerEl, fallbackContainerEl = null) {
   const firstTable = containerEl?.querySelector?.('table') || fallbackContainerEl?.querySelector?.('table');
   if (!firstTable) {
-    toast('⚠️ No summary table found in this section');
+    toast('No summary table found in this section');
     return false;
   }
-  return copyFormattedTable(firstTable, '📋 Summary table copied with formatting!');
+  return copyFormattedTable(firstTable, 'Summary table copied with formatting');
 }
 
 export function copyTableHTML(tableEl) {
-  return copyFormattedTable(tableEl, '📋 Table copied with formatting!');
+  return copyFormattedTable(tableEl, 'Table copied with formatting');
 }
 
 function filterTableLightbox(query) {
@@ -1277,7 +1292,11 @@ export function applyEditorHighlight(editorEl, range, color) {
     document.execCommand('styleWithCSS', false, true);
   } catch {}
 
-  const c = color || S.activeColor || '#c9a84c';
+  const isTransparent = color === 'transparent' || color === 'rgba(0,0,0,0)';
+  const normInput = isTransparent ? null : normalizeHexColor(color);
+  const normActive = normalizeHexColor(S.activeColor);
+  const c = isTransparent ? 'transparent' : (normInput || normActive || color || '#c9a84c');
+
   if (c === 'transparent' || c === 'rgba(0,0,0,0)') {
     const ok = document.execCommand('hiliteColor', false, 'rgba(0, 0, 0, 0)');
     if (!ok) document.execCommand('backColor', false, 'transparent');
@@ -1286,12 +1305,16 @@ export function applyEditorHighlight(editorEl, range, color) {
     if (!ok) document.execCommand('backColor', false, c);
   }
 
-  // Also update activeColor so next highlight uses this color
+  // Also update activeColor so next highlight uses this normalized color
   if (c !== 'transparent' && c !== 'rgba(0,0,0,0)') {
-    S.activeColor = c;
-    // Reflect in color dots if visible
-    document.querySelectorAll('.cdot').forEach(x => {
-      x.classList.toggle('sel', x.style.background === c || x.getAttribute('data-color') === c);
+    const targetNorm = normalizeHexColor(c) || c;
+    S.activeColor = targetNorm;
+    // Reflect in color dots & selection menu swatches if visible
+    document.querySelectorAll('.cdot, #selmenuSwatches [data-color], #selmenuSwatches button, #selmenuSwatches .sel-swatch').forEach(x => {
+      const xRaw = x.getAttribute('data-color') || x.style.backgroundColor || x.style.background;
+      const xNorm = normalizeHexColor(xRaw);
+      if (xNorm) x.setAttribute('data-color', xNorm);
+      x.classList.toggle('sel', Boolean(targetNorm && xNorm === targetNorm));
     });
   }
 
@@ -1335,7 +1358,7 @@ export function buildHighlightDropdown(anchorBtn, editorEl) {
   dropdown.addEventListener('mousedown', e => e.preventDefault());
 
   const lbl = document.createElement('div');
-  lbl.style.cssText = 'font-size:11px;color:var(--muted);font-family:Inter,sans-serif;font-weight:500;letter-spacing:.04em;text-transform:uppercase';
+  lbl.style.cssText = 'font-size:11px;color:var(--muted);font-family:var(--font-ui, sans-serif);font-weight:500;letter-spacing:.04em;text-transform:uppercase';
   lbl.textContent = 'Highlight colour';
   dropdown.appendChild(lbl);
 
@@ -1350,14 +1373,21 @@ export function buildHighlightDropdown(anchorBtn, editorEl) {
     { name: 'Pink', hex_color: '#f472b6' },
     { name: 'Orange', hex_color: '#fb923c' },
   ];
-  const cats = (S.colorCats && S.colorCats.length) ? S.colorCats : DEFAULT_COLORS;
+  const hasCats = Array.isArray(S.colorCats) && S.colorCats.length > 0;
+  const cats = hasCats ? S.colorCats : DEFAULT_COLORS;
+  const activeNorm = normalizeHexColor(S.activeColor);
 
   for (const cat of cats) {
+    const norm = normalizeHexColor(cat.hex_color) || cat.hex_color;
+    const catInfo = hasCats ? getColorCategoryForHex(norm) : { name: cat.name };
     const dot = document.createElement('button');
-    dot.title = cat.name;
-    const isCur = S.activeColor === cat.hex_color;
+    dot.type = 'button';
+    dot.dataset.color = norm;
+    dot.title = catInfo.name || cat.name;
+    dot.setAttribute('aria-label', dot.title);
+    const isCur = Boolean(activeNorm && normalizeHexColor(norm) === activeNorm);
     dot.style.cssText = [
-      `background:${cat.hex_color}`,
+      `background:${norm}`,
       'width:22px',
       'height:22px',
       'border-radius:50%',
@@ -1369,7 +1399,7 @@ export function buildHighlightDropdown(anchorBtn, editorEl) {
     dot.addEventListener('mouseenter', () => { dot.style.transform = 'scale(1.2)'; });
     dot.addEventListener('mouseleave', () => { dot.style.transform = ''; });
     dot.addEventListener('click', () => {
-      applyEditorHighlight(editorEl, savedRange, cat.hex_color);
+      applyEditorHighlight(editorEl, savedRange, norm);
       dropdown.remove();
     });
     row.appendChild(dot);
@@ -1377,7 +1407,8 @@ export function buildHighlightDropdown(anchorBtn, editorEl) {
 
   // Remove-highlight pill
   const remove = document.createElement('button');
-  remove.textContent = '✕ Remove';
+  remove.type = 'button';
+  remove.innerHTML = '<svg class="icon" style="width:11px;height:11px;vertical-align:-1px;margin-right:4px" aria-hidden="true"><use href="#i-close"/></svg><span>Remove</span>';
   remove.title = 'Remove highlight from selection';
   remove.style.cssText = [
     'background:transparent',
@@ -1387,7 +1418,9 @@ export function buildHighlightDropdown(anchorBtn, editorEl) {
     'padding:2px 8px',
     'font-size:11px',
     'cursor:pointer',
-    'font-family:Inter,sans-serif',
+    'font-family:var(--font-ui, sans-serif)',
+    'display:inline-flex',
+    'align-items:center',
     'transition:all .12s',
   ].join(';');
   remove.addEventListener('mouseenter', () => { remove.style.borderColor = 'var(--red)'; remove.style.color = 'var(--red)'; });

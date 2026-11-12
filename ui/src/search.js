@@ -3,13 +3,94 @@
 // ═══════════════════════════════════════════════
 import { S } from './state.js';
 import { closeOtherPanels } from './ui.js';
+import { normalizeHexColor, getColorCategoryForHex } from './colors.js';
 
 let searchMode = 'pdf'; // 'pdf' | 'ann'
+let selectedColorFilter = ''; // '' | '#rrggbb'
+
+function _escHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+function renderSearchColorFilter() {
+  const panel = document.getElementById('search-panel');
+  const annResults = document.getElementById('search-ann-results');
+  if (!panel || !annResults) return;
+
+  let bar = document.getElementById('search-color-filter');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'search-color-filter';
+    bar.style.cssText = 'display:none;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--navy-b,rgba(255,255,255,0.08));font-size:11px;';
+    panel.insertBefore(bar, annResults);
+  }
+
+  bar.style.display = searchMode === 'ann' ? 'flex' : 'none';
+  bar.innerHTML = '';
+
+  const seen = new Set();
+  const options = [];
+  for (const cat of S.colorCats || []) {
+    const norm = normalizeHexColor(cat.hex_color);
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    options.push(getColorCategoryForHex(norm));
+  }
+  for (const ann of S.annotations || []) {
+    const norm = normalizeHexColor(ann.hex_color);
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    options.push(getColorCategoryForHex(norm));
+  }
+
+  if (selectedColorFilter && !seen.has(selectedColorFilter)) {
+    selectedColorFilter = '';
+  }
+
+  const makeChip = (hex, label) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sar-filter-chip' + (selectedColorFilter === hex ? ' active' : '');
+    if (hex) btn.dataset.color = hex;
+    btn.style.cssText = [
+      'display:inline-flex',
+      'align-items:center',
+      'gap:5px',
+      'padding:3px 8px',
+      'border-radius:999px',
+      `border:1px solid ${selectedColorFilter === hex ? 'var(--gold, #c9a84c)' : 'var(--navy-b, rgba(255,255,255,0.16))'}`,
+      `background:${selectedColorFilter === hex ? 'rgba(201,168,76,0.16)' : 'transparent'}`,
+      'color:inherit',
+      'font-size:11px',
+      'cursor:pointer',
+    ].join(';');
+    if (hex) {
+      const dot = document.createElement('span');
+      dot.style.cssText = `width:8px;height:8px;border-radius:50%;background:${hex};display:inline-block;flex-shrink:0;`;
+      btn.appendChild(dot);
+    }
+    const txt = document.createElement('span');
+    txt.textContent = label;
+    btn.appendChild(txt);
+    btn.addEventListener('click', () => {
+      selectedColorFilter = (selectedColorFilter === hex) ? '' : hex;
+      renderSearchColorFilter();
+      runSearch();
+    });
+    return btn;
+  };
+
+  bar.appendChild(makeChip('', 'All colors'));
+  for (const opt of options) {
+    bar.appendChild(makeChip(opt.hex_color, opt.name));
+  }
+}
 
 export function openSearch() {
   closeOtherPanels('search-panel');
   document.getElementById('search-panel').classList.add('open');
   document.getElementById('search-input').focus();
+  renderSearchColorFilter();
   document.getElementById('search-ann-results').style.display = searchMode === 'ann' ? 'block' : 'none';
 }
 
@@ -33,10 +114,20 @@ export function initSearch() {
       searchMode = btn.dataset.stab;
       document.querySelectorAll('.stab').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      renderSearchColorFilter();
       document.getElementById('search-ann-results').style.display = searchMode === 'ann' ? 'block' : 'none';
       runSearch();
     });
   });
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('la:color-cats-changed', () => {
+      renderSearchColorFilter();
+      if (searchMode === 'ann' && document.getElementById('search-panel')?.classList.contains('open')) {
+        runSearch();
+      }
+    });
+  }
 
   document.getElementById('btn-search').addEventListener('click', openSearch);
   document.getElementById('search-close-btn').addEventListener('click', closeSearch);
@@ -66,7 +157,7 @@ export function initSearch() {
 function runSearch() {
   clearSearchHighlights();
   const q = document.getElementById('search-input').value.trim().toLowerCase();
-  if (!q) {
+  if (!q && !(searchMode === 'ann' && selectedColorFilter)) {
     document.getElementById('search-count').textContent = '';
     document.getElementById('search-ann-results').innerHTML = '';
     return;
@@ -313,11 +404,16 @@ function nextSearchResult(dir) {
 function runAnnSearch(q) {
   const results = document.getElementById('search-ann-results');
   results.style.display = 'block';
+  renderSearchColorFilter();
   const stripHTML = html => html.replace(/<[^>]*>/g, '');
-  const matches = S.annotations.filter(a =>
-    a.highlighted_text?.toLowerCase().includes(q) ||
-    a.notes.some(n => stripHTML(n.note_html).toLowerCase().includes(q))
-  );
+  const matches = S.annotations.filter(a => {
+    if (selectedColorFilter && normalizeHexColor(a.hex_color) !== selectedColorFilter) return false;
+    if (!q) return true;
+    return (
+      a.highlighted_text?.toLowerCase().includes(q) ||
+      a.notes.some(n => stripHTML(n.note_html).toLowerCase().includes(q))
+    );
+  });
   document.getElementById('search-count').textContent =
     matches.length ? `${matches.length} match${matches.length === 1 ? '' : 'es'}` : 'No matches';
   if (!matches.length) {
@@ -327,15 +423,22 @@ function runAnnSearch(q) {
   results.innerHTML = '';
   const sorted = [...matches].sort((a, b) => a.page - b.page);
   for (const ann of sorted) {
-    const noteMatch = ann.notes.find(n => stripHTML(n.note_html).toLowerCase().includes(q));
+    const noteMatch = q ? ann.notes.find(n => stripHTML(n.note_html).toLowerCase().includes(q)) : ann.notes[0];
     const isCase = noteMatch?.note_html?.includes('data-note-type="case"');
+    const catInfo = getColorCategoryForHex(ann.hex_color);
+    const catDotColor = catInfo.hex_color || ann.hex_color || '#c9a84c';
     const item = document.createElement('div');
     item.className = 'sar-item';
-    const tag = noteMatch ? (isCase ? '<span style="color:var(--gold);font-size:10px;font-weight:600">⚖️ Case: </span>' : '<span style="color:var(--muted);font-size:10px">📝 Note: </span>') : '';
+    const tag = noteMatch
+      ? (isCase
+        ? '<span style="color:var(--gold);font-size:10px;font-weight:600"><svg class="icon" style="width:11px;height:11px;vertical-align:-1px;margin-right:3px" aria-hidden="true"><use href="#i-scale"/></svg>Case: </span>'
+        : '<span style="color:var(--muted);font-size:10px"><svg class="icon" style="width:11px;height:11px;vertical-align:-1px;margin-right:3px" aria-hidden="true"><use href="#i-note"/></svg>Note: </span>')
+      : '';
+    const catBadge = `<span class="sar-cat" style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);margin-left:8px;"><span style="width:7px;height:7px;border-radius:50%;background:${_escHtml(catDotColor)};display:inline-block;"></span>${_escHtml(catInfo.name)}</span>`;
     item.innerHTML =
-      `<div class="sar-ex">"${ann.highlighted_text.slice(0, 60)}${ann.highlighted_text.length > 60 ? '…' : ''}"</div>` +
-      (noteMatch ? `<div class="sar-note">${tag}${stripHTML(noteMatch.note_html).slice(0, 70)}</div>` : '') +
-      `<div class="sar-page">Page ${ann.page}</div>`;
+      `<div class="sar-ex">"${_escHtml(ann.highlighted_text.slice(0, 60))}${ann.highlighted_text.length > 60 ? '…' : ''}"</div>` +
+      (noteMatch ? `<div class="sar-note">${tag}${_escHtml(stripHTML(noteMatch.note_html).slice(0, 70))}</div>` : '') +
+      `<div class="sar-page">Page ${ann.page}${catBadge}</div>`;
     item.addEventListener('click', async () => {
       const { jumpToPage } = await import('./ui.js');
       await jumpToPage(ann.page);

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-skin="folio">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
@@ -9,23 +9,44 @@
 <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#0c1322">
+<meta name="theme-color" content="#E7E9E5">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="apple-touch-icon" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" sizes="512x512" href="icon-512.png">
 
-<!-- Google Fonts -->
-<link rel="stylesheet" href="fonts/fonts.css">
+<!-- Pre-paint Skin Boot (prevents flash of wrong skin; migrates paper->folio, slate->casebook, keeps classic fallback) -->
+<script>
+  (function () {
+    try {
+      var raw = localStorage.getItem('app_ui_theme');
+      var skin = 'folio';
+      if (raw === 'slate' || raw === 'casebook') skin = 'casebook';
+      else if (raw === 'classic') skin = 'classic';
+      else if (raw === 'paper' || raw === 'folio') skin = 'folio';
+      document.documentElement.setAttribute('data-skin', skin);
+      if (raw === 'paper' || raw === 'slate') {
+        localStorage.setItem('app_ui_theme', skin);
+      }
+    } catch (e) {
+      document.documentElement.setAttribute('data-skin', 'folio');
+    }
+  })();
+</script>
+
+<!-- Google Fonts (Chancery & Folio: Literata + Public Sans; Darkroom Casebook: Source Serif 4 + Manrope + JetBrains Mono) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Literata:ital,opsz,wght@0,7..72,400..700;1,7..72,400..600&family=Manrope:wght@400;500;600;700&family=Public+Sans:ital,wght@0,400..700;1,400..600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet">
 
 <!-- PDF.js -->
-<script src="./vendor/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <!-- Supabase -->
-<script src="./vendor/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <!-- Mermaid (Diagrams & Flowcharts) -->
-<script src="./vendor/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <!-- html2pdf.js for exporting notes -->
-<script src="./vendor/html2pdf.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <!-- Google Identity Services (for Drive OAuth) -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 
@@ -42,6 +63,223 @@
 <link rel="stylesheet" href="src/style.css">
 </head>
 <body class="theme-paper">
+<script>
+  (function () {
+    var skin = document.documentElement.getAttribute('data-skin') || 'folio';
+    document.body.classList.remove('theme-paper', 'theme-slate', 'theme-classic');
+    document.body.classList.add(skin === 'casebook' ? 'theme-slate' : skin === 'classic' ? 'theme-classic' : 'theme-paper');
+  })();
+</script>
+
+<!-- Shared SVG Icon Sprite -->
+<svg class="svg-sprite" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden">
+  <symbol id="i-scale" viewBox="0 0 24 24">
+    <path d="M12 3v18M5 7h14M7 7l-3 7h6l-3-7ZM17 7l-3 7h6l-3-7ZM8 21h8" />
+  </symbol>
+  <symbol id="i-desk" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="8" height="7" rx="1" />
+    <rect x="13" y="4" width="8" height="7" rx="1" />
+    <rect x="3" y="13" width="8" height="7" rx="1" />
+    <rect x="13" y="13" width="8" height="7" rx="1" />
+  </symbol>
+  <symbol id="i-book" viewBox="0 0 24 24">
+    <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 0 4 22V5.5Z" />
+    <path d="M4 17.5A2.5 2.5 0 0 1 6.5 15H20" />
+  </symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24">
+    <path d="m9 6 6 6-6 6" />
+  </symbol>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24">
+    <path d="m15 6-6 6 6 6" />
+  </symbol>
+  <symbol id="i-close" viewBox="0 0 24 24">
+    <path d="M18 6 6 18M6 6l12 12" />
+  </symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+  </symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" />
+  </symbol>
+  <symbol id="i-cursor" viewBox="0 0 24 24">
+    <path d="m5 3 14 9-6 2-3 6-5-17Z" />
+  </symbol>
+  <symbol id="i-highlight" viewBox="0 0 24 24">
+    <path d="m9 11-6 6v3h9l3-3" />
+    <path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" />
+  </symbol>
+  <symbol id="i-box" viewBox="0 0 24 24">
+    <rect x="4" y="5" width="16" height="14" rx="1" />
+    <path d="M4 9h16" />
+  </symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24">
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+  </symbol>
+  <symbol id="i-eraser" viewBox="0 0 24 24">
+    <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
+    <path d="M22 21H7M5 11l9 9" />
+  </symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24">
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </symbol>
+  <symbol id="i-search" viewBox="0 0 24 24">
+    <circle cx="11" cy="11" r="7" />
+    <path d="m20 20-3.5-3.5" />
+  </symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24">
+    <path d="M12 5v14M5 12h14" />
+  </symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24">
+    <path d="M5 12h14" />
+  </symbol>
+  <symbol id="i-note" viewBox="0 0 24 24">
+    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+    <path d="M14 3v6h6M8 13h8M8 17h5" />
+  </symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24">
+    <rect x="9" y="9" width="11" height="11" rx="1" />
+    <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
+  </symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24">
+    <path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z" />
+    <path d="M5 3v4M3 5h4M19 17v4M17 19h4" />
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 24 24">
+    <path d="M20 6 9 17l-5-5" />
+  </symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24">
+    <path d="M5 12h14M13 6l6 6-6 6" />
+  </symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24">
+    <path d="M19 12H5M11 18l-6-6 6-6" />
+  </symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24">
+    <path d="M21 12a9 9 0 0 0-15.5-6.3L3 8" />
+    <path d="M3 3v5h5" />
+    <path d="M3 12a9 9 0 0 0 15.5 6.3L21 16" />
+    <path d="M21 21v-5h-5" />
+  </symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 8v5M12 16.5h.01" />
+  </symbol>
+  <symbol id="i-external" viewBox="0 0 24 24">
+    <path d="M14 4h6v6M10 14 20 4" />
+    <path d="M19 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" />
+  </symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24">
+    <rect x="6" y="6" width="12" height="12" rx="1" />
+  </symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24">
+    <path d="M12 17v5M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5Z" />
+  </symbol>
+  <symbol id="i-sidebar" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M9 4v16" />
+  </symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="9.5" cy="9.5" r="1.2" />
+    <circle cx="14.5" cy="9.5" r="1.2" />
+    <circle cx="8.5" cy="14" r="1.2" />
+    <circle cx="15" cy="14.5" r="1.5" />
+  </symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v5l3 2" />
+  </symbol>
+  <symbol id="i-table" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="16" rx="1" />
+    <path d="M3 10h18M3 15h18M9 4v16" />
+  </symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24">
+    <path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z" />
+  </symbol>
+  <symbol id="i-download" viewBox="0 0 24 24">
+    <path d="M12 4v11M8 11l4 4 4-4M4 19h16" />
+  </symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24">
+    <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />
+  </symbol>
+  <symbol id="i-dual" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M12 4v16" />
+  </symbol>
+  <symbol id="i-list" viewBox="0 0 24 24">
+    <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+  </symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+  </symbol>
+  <symbol id="i-printer" viewBox="0 0 24 24">
+    <path d="M6 9V3h12v6" />
+    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+    <rect x="6" y="14" width="12" height="7" rx="1" />
+  </symbol>
+  <symbol id="i-link" viewBox="0 0 24 24">
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24">
+    <path d="M12 2H2v10l9.29 9.29a2.41 2.41 0 0 0 3.42 0l6.58-6.58a2.41 2.41 0 0 0 0-3.42L12 2Z" />
+    <path d="M7 7h.01" />
+  </symbol>
+  <symbol id="i-diagram" viewBox="0 0 24 24">
+    <rect x="3" y="3" width="7" height="5" rx="1" />
+    <rect x="14" y="3" width="7" height="5" rx="1" />
+    <rect x="8.5" y="16" width="7" height="5" rx="1" />
+    <path d="M6.5 8v3h11V8M12 11v5" />
+  </symbol>
+  <symbol id="i-scan" viewBox="0 0 24 24">
+    <path d="M4 7V4h3M20 7V4h-3M4 17v3h3M20 17v3h-3M7 12h10" />
+  </symbol>
+  <symbol id="i-save" viewBox="0 0 24 24">
+    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+    <path d="M17 21v-8H7v8M7 3v5h8" />
+  </symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24">
+    <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
+  </symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24">
+    <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+  </symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24">
+    <path d="M4 6h16M4 12h16M4 18h16" />
+  </symbol>
+  <symbol id="i-bookmark" viewBox="0 0 24 24">
+    <path d="M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16Z" />
+  </symbol>
+  <symbol id="i-keyboard" viewBox="0 0 24 24">
+    <rect x="2" y="5" width="20" height="14" rx="2" />
+    <path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M8 16h8" />
+  </symbol>
+  <symbol id="i-wrench" viewBox="0 0 24 24">
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z" />
+  </symbol>
+  <symbol id="i-portrait" viewBox="0 0 24 24">
+    <rect x="6" y="3" width="12" height="18" rx="1.5" />
+    <path d="M9 8h6M9 12h6M9 16h4" />
+  </symbol>
+  <symbol id="i-landscape" viewBox="0 0 24 24">
+    <rect x="3" y="6" width="18" height="12" rx="1.5" />
+    <path d="M7 10h10M7 14h6" />
+  </symbol>
+  <symbol id="i-hand" viewBox="0 0 24 24">
+    <path d="M18 11V6a2 2 0 0 0-4 0v4M14 10V4a2 2 0 0 0-4 0v6M10 10V5a2 2 0 0 0-4 0v9l-1.3-1.3a2 2 0 0 0-2.8 2.8l4.7 4.7A4 4 0 0 0 9.4 21H16a4 4 0 0 0 4-4v-6a2 2 0 0 0-2-2Z" />
+  </symbol>
+  <symbol id="i-scissors" viewBox="0 0 24 24">
+    <circle cx="6" cy="6" r="3" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12" />
+  </symbol>
+  <symbol id="i-command" viewBox="0 0 24 24">
+    <path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3Z" />
+  </symbol>
+</svg>
 
 <div id="app">
   <!-- ══════════════════════════════
@@ -57,16 +295,16 @@
           <span id="app-title" style="user-select:none;font-weight:600;">Legal Annotator</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
-          <button id="btn-pin-sidebar" title="Toggle Auto-Hide (Hover) or Pin Sidebar" style="background:none;border:1px solid var(--navy-b);color:var(--muted);border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;transition:all .15s;" onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'" onmouseout="this.style.borderColor='var(--navy-b)';this.style.color='var(--muted)'">📌</button>
-          <button id="btn-install-sidebar" title="Install App to Desktop" style="display:none;background:none;border:1px solid var(--gold);color:var(--gold);border-radius:6px;width:28px;height:28px;align-items:center;justify-content:center;cursor:pointer;font-size:13px;">📲</button>
-          <button id="btn-settings" title="Settings & Tools" style="background:none;border:1px solid var(--navy-b);color:var(--muted);border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;transition:all .15s;" onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'" onmouseout="this.style.borderColor='var(--navy-b)';this.style.color='var(--muted)'">⚙️</button>
-          <button id="lib-close" style="display:none;background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer">✕</button>
+          <button id="btn-pin-sidebar" class="lib-hd-btn" aria-pressed="true" title="Toggle Auto-Hide (Hover) or Pin Sidebar"><svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg></button>
+          <button id="btn-install-sidebar" class="lib-hd-btn" title="Install App to Desktop" style="display:none;"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></button>
+          <button id="btn-settings" class="lib-hd-btn" title="Settings &amp; Tools"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></button>
+          <button id="lib-close" class="lib-hd-btn" aria-label="Close Library" style="display:none;"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
         </div>
       </div>
     </div>
 
     <!-- Sync + auto-save bar -->
-    <div id="sync-bar" onclick="window.openSyncDiagnostics && window.openSyncDiagnostics()" title="Click to view System & Sync Diagnostics">
+    <div id="sync-bar" onclick="window.openSyncDiagnostics && window.openSyncDiagnostics()" title="Click to view System &amp; Sync Diagnostics">
       <div class="sdot spin" id="sdot"></div>
       <span id="stxt">DB Connecting…</span>
       <span id="autosave-lbl"></span>
@@ -74,7 +312,7 @@
 
     <!-- Google Drive auth bar -->
     <div id="drive-bar">
-      <span class="drive-icon">🔗</span>
+      <span class="drive-icon"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg></span>
       <span id="drive-user">Not connected</span>
       <button id="drive-sign-btn">Sign in</button>
     </div>
@@ -85,11 +323,12 @@
       <div id="recent-list"></div>
     </div>
 
-    <div style="display:flex; margin: 8px 12px; gap: 6px;">
+    <div class="lib-actions-row">
       <button id="new-subj-btn" style="flex:1; margin:0; width:auto;">+ New Subject</button>
-      <button id="undo-btn" title="Undo Last Move (Ctrl+Z)" style="padding:0 10px; background:var(--navy-l); border:1px solid var(--navy-b); border-radius:6px; color:var(--text); cursor:pointer; font-size:14px; transition:background .15s" onmouseover="this.style.background='var(--navy)'" onmouseout="this.style.background='var(--navy-l)'" onclick="window.undoLastMove()">↩</button>
-      <button id="refresh-btn" title="Sync Library (Shift+Click or Long-Press to Hard Reload)" aria-label="Refresh and sync library"><span class="refresh-icon">⟳</span></button>
+      <button id="undo-btn" class="lib-hd-btn" title="Undo Last Move (Ctrl+Z)" onclick="window.undoLastMove()"><svg class="icon" aria-hidden="true"><use href="#i-undo"/></svg></button>
+      <button id="refresh-btn" title="Sync Library (Shift+Click or Long-Press to Hard Reload)" aria-label="Refresh and sync library"><span class="refresh-icon"><svg class="icon" aria-hidden="true"><use href="#i-sync"/></svg></span></button>
     </div>
+    <div class="tree__hint">Right-click any folder or case</div>
     <div id="lib-tree"><div class="lib-empty">Loading…</div></div>
     <div id="lib-resize-handle" class="panel-resizer-right" title="Drag to resize Library sidebar"></div>
   </div>
@@ -102,122 +341,80 @@
     <!-- GoodNotes Multi-Case Document Tabs -->
     <div id="gn-doc-tabs"></div>
 
-    <!-- Toolbar -->
-    <div id="toolbar">
-      <button id="mob-menu-btn">☰</button>
+    <!-- Case Reader Toolbar (.casebar) -->
+    <div id="toolbar" class="casebar" role="toolbar" aria-label="Case reader actions and navigation">
+      <button id="mob-menu-btn" aria-label="Toggle Library"><svg class="icon" aria-hidden="true"><use href="#i-menu"/></svg></button>
 
-      <!-- Mode toggle (GoodNotes Stationery Capsule) -->
-      <div id="mode-tog">
-        <button class="mode-btn active" data-mode="text" title="Highlight Text (H)">
-          <span class="gn-tool-emoji">🖍️</span>
-          <span>Highlight</span>
-        </button>
-        <button class="mode-btn" data-mode="box" title="Box Highlight / Excerpt (B)">
-          <span class="gn-tool-emoji">📐</span>
-          <span>Box</span>
-        </button>
-        <button class="mode-btn" data-mode="draw" title="Freehand Pen & Ink (D)">
-          <span class="gn-tool-emoji">🖋️</span>
-          <span>Pen</span>
-        </button>
+      <div class="casebar__info" id="casebar-info" hidden>
+        <span class="casebar__title" id="casebar-title"></span>
+        <span class="casebar__meta" id="casebar-meta"></span>
       </div>
 
-      <div class="tb-sep"></div>
+      <div class="casebar__actions">
+        <button class="tb-btn casebar__btn" id="btn-toc" title="Table of Contents (PDF Bookmarks)">
+          <svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>
+          <span>Contents</span>
+        </button>
+        <button class="tb-btn casebar__btn" id="btn-search" title="Search (Ctrl+F)">
+          <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+          <span>Search</span>
+        </button>
+        <button class="tb-btn casebar__btn" id="btn-links" title="Important Links">
+          <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
+          <span>Links</span>
+        </button>
+        <button class="tb-btn casebar__btn" id="btn-tags" title="Highlight Tags &amp; Topic Coverage">
+          <svg class="icon" aria-hidden="true"><use href="#i-tag"/></svg>
+          <span>Tags</span>
+        </button>
+        <button class="tb-btn casebar__btn" id="btn-diagram" title="Legal Diagrammer &amp; Flowcharts">
+          <svg class="icon" aria-hidden="true"><use href="#i-diagram"/></svg>
+          <span>Diagram</span>
+        </button>
 
-      <!-- Color dots -->
-      <div id="color-dots"></div>
-      <button id="add-color-btn" title="Add color">＋</button>
-
-      <div class="tb-sep"></div>
-
-      <!-- Draw controls (shown only in draw mode) -->
-      <div id="draw-ctrls">
-        <!-- Pen sizes -->
-        <div id="pen-sizes" style="display:flex;align-items:center;gap:4px">
-          <div class="dw-btn sel" data-w="2"><div class="dw-inner" style="width:5px;height:5px"></div></div>
-          <div class="dw-btn"    data-w="4"><div class="dw-inner" style="width:9px;height:9px"></div></div>
-          <div class="dw-btn"    data-w="8"><div class="dw-inner" style="width:13px;height:13px"></div></div>
-        </div>
-        <!-- Eraser sizes (hidden by default) -->
-        <div id="erase-sizes" style="display:none;align-items:center;gap:4px">
-          <div class="er-btn sel" data-ew="12"><div class="dw-inner" style="width:8px;height:8px;background:#e44"></div></div>
-          <div class="er-btn"     data-ew="24"><div class="dw-inner" style="width:14px;height:14px;background:#e44"></div></div>
-          <div class="er-btn"     data-ew="48"><div class="dw-inner" style="width:20px;height:20px;background:#e44"></div></div>
-        </div>
-        <button class="tb-btn" id="btn-erase">⊘ Erase</button>
-        <button class="tb-btn" id="btn-undo">↩ Undo</button>
-        <button class="tb-btn" id="btn-clear">🗑 Clear</button>
         <div class="tb-sep"></div>
+
+        <button class="tb-btn casebar__btn" id="btn-ocr-pdf" title="Scan to OCR (Make Scanned PDF Searchable &amp; Selectable)">
+          <svg class="icon" aria-hidden="true"><use href="#i-scan"/></svg>
+          <span>Scan OCR</span>
+        </button>
+        <button class="tb-btn casebar__btn" id="btn-copy-pdf-text" title="Copy Entire PDF Text to Clipboard">
+          <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+          <span>Copy Text</span>
+        </button>
+        <button class="tb-btn casebar__btn" id="btn-copy-pdf-instr" title="Add or edit instructions included when copying PDF text in this subfolder">
+          <span>+ Add Instruction</span>
+        </button>
+        <button class="tb-btn casebar__btn casebar__btn--primary" id="btn-perplexity-digest" title="Extract PDF text + Subfolder Instruction and auto-digest in your Perplexity 'Law' Project">
+          <svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>Case Digest (Perplexity)</span>
+        </button>
+        <button class="tb-btn casebar__btn" id="btn-print-studio" title="Open Legal Print Studio — Customize &amp; Print Notes, Case Digests, Folder Docs &amp; Summary Tables">
+          <svg class="icon" aria-hidden="true"><use href="#i-printer"/></svg><span>Print Studio</span>
+        </button>
       </div>
 
-      <button class="tb-btn" id="btn-toc" title="Table of Contents (PDF Bookmarks)">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h7"/></svg>
-        Contents
-      </button>
-      <button class="tb-btn" id="btn-search" title="Search (Ctrl+F)">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="M21 21l-4.35-4.35"/></svg>
-        Search
-      </button>
-      <button class="tb-btn" id="btn-links" title="Important Links">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
-        Links
-      </button>
-      <button class="tb-btn" id="btn-tags" title="Highlight Tags & Topic Coverage">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
-        <span>Tags</span>
-      </button>
-      <button class="tb-btn" id="btn-diagram" title="Legal Diagrammer & Flowcharts">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
-        Diagram
-      </button>
-
-      <div class="tb-sep"></div>
-
-      <button class="tb-btn" id="btn-ocr-pdf" title="Scan to OCR (Make Scanned PDF Searchable & Selectable)">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7V4h3M20 7V4h-3M4 17v3h3M20 17v3h-3M7 12h10"/></svg>
-        <span>Scan OCR</span>
-      </button>
-      <button class="tb-btn" id="btn-copy-pdf-text" title="Copy Entire PDF Text to Clipboard">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path stroke-linecap="round" stroke-linejoin="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-        <span>Copy Text</span>
-      </button>
-      <button class="tb-btn" id="btn-copy-pdf-instr" title="Add or edit instructions included when copying PDF text in this subfolder">
-        <span>+ Add Instruction</span>
-      </button>
-      <button class="tb-btn" id="btn-perplexity-digest" title="Extract PDF text + Subfolder Instruction and auto-digest in your Perplexity 'Law' Project">
-        <span>⚡ Perplexity Digest</span>
-      </button>
-      <button class="tb-btn" id="btn-print-studio" title="Open Legal Print Studio — Customize &amp; Print Notes, Case Digests, Folder Docs &amp; Summary Tables">
-        <span>🖨️ Print Studio</span>
-      </button>
-
-      <div class="tb-sep"></div>
-
-      <!-- Page nav -->
+      <!-- Page nav & right panel controls -->
       <div id="pg-info">
-        <button class="tb-btn" id="btn-prev">◀</button>
-        <input type="number" id="pg-input" value="1" min="1">
+        <button class="tb-btn" id="btn-prev" aria-label="Previous Page"><svg class="icon" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
+        <input type="number" id="pg-input" value="1" min="1" aria-label="Current page">
         / <span id="pg-total">—</span>
-        <button class="tb-btn" id="btn-next">▶</button>
+        <button class="tb-btn" id="btn-next" aria-label="Next Page"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
       </div>
 
-      <div class="tb-sep"></div>
-
-      <!-- Notepad button -->
-      <button class="tb-btn" id="btn-notepad" title="PDF Notepad">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-        Notepad
+      <button class="tb-btn casebar__btn" id="btn-notepad" title="PDF Notepad">
+        <svg class="icon" aria-hidden="true"><use href="#i-note"/></svg>
+        <span>Notepad</span>
       </button>
 
-      <!-- GoodNotes Theme Toggle (Warm Paper / Cozy Dark / Classic Navy) -->
-      <button class="tb-btn" id="btn-theme-toggle" title="Switch Theme (Paper / Dark / Classic)">
-        <span>☀️</span><span>Paper</span>
+      <!-- Skin Toggle (Chancery & Folio Day / Darkroom Casebook Night) -->
+      <button class="tb-btn casebar__btn" id="btn-theme-toggle" title="Switch Theme (Chancery &amp; Folio / Darkroom Casebook)">
+        <svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg><span>Folio</span>
       </button>
 
       <!-- Swap panes button (only visible in dual view) -->
-      <button class="tb-btn" id="btn-swap-panes" title="Swap Primary / Reference" style="display:none; color:var(--gold)">
-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
-        Swap
+      <button class="tb-btn casebar__btn" id="btn-swap-panes" title="Swap Primary / Reference" style="display:none;">
+        <svg class="icon" aria-hidden="true"><use href="#i-dual"/></svg>
+        <span>Swap</span>
       </button>
     </div>
 
@@ -225,16 +422,16 @@
     <div id="search-panel">
       <div id="search-top">
         <div id="search-tabs">
-          <button class="stab active" data-stab="pdf">📄 PDF Text</button>
-          <button class="stab"        data-stab="ann">🖊 Annotations</button>
+          <button class="stab active" data-stab="pdf"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>PDF Text</span></button>
+          <button class="stab"        data-stab="ann"><svg class="icon" aria-hidden="true"><use href="#i-highlight"/></svg><span>Annotations</span></button>
         </div>
         <div id="search-input-wrap">
           <input id="search-input" placeholder="Type to search…" autocomplete="off" spellcheck="false">
           <span id="search-count"></span>
-          <button class="snav-btn" id="sprev" title="Previous">◀</button>
-          <button class="snav-btn" id="snext" title="Next">▶</button>
+          <button class="snav-btn" id="sprev" title="Previous"><svg class="icon" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
+          <button class="snav-btn" id="snext" title="Next"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
         </div>
-        <button id="search-close-btn">✕</button>
+        <button id="search-close-btn" aria-label="Close Search"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
       <div id="search-ann-results"></div>
     </div>
@@ -253,12 +450,12 @@
           <button class="folder-fmt-btn" data-cmd="italic" title="Italic"><i>I</i></button>
           <button class="folder-fmt-btn" data-cmd="underline" title="Underline"><u>U</u></button>
           <button class="folder-fmt-btn" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
-          <button class="folder-fmt-btn" data-cmd="grayOut" title="Subtly Gray Out / Dim Text (Low Relevance)" style="color:var(--muted); font-size:12px; font-weight:600">🌫️ Dim</button>
-          <button class="folder-fmt-btn" id="folder-doc-highlight" title="Highlight selected text with your annotation colours" style="font-size:12px; font-weight:600">🖊 Highlight</button>
+          <button class="folder-fmt-btn" data-cmd="grayOut" title="Subtly Gray Out / Dim Text (Low Relevance)" style="color:var(--muted); font-size:12px; font-weight:600">Dim</button>
+          <button class="folder-fmt-btn" id="folder-doc-highlight" title="Highlight selected text with your annotation colours" style="font-size:12px; font-weight:600"><svg class="icon" aria-hidden="true"><use href="#i-highlight"/></svg><span>Highlight</span></button>
           <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
           <button class="folder-fmt-btn" data-cmd="formatBlock" data-val="H1" title="Heading 1"><b>H1</b></button>
           <button class="folder-fmt-btn" data-cmd="formatBlock" data-val="H2" title="Heading 2"><b>H2</b></button>
-          <button class="folder-fmt-btn" data-cmd="insertBanner" title="Section Header Banner (Box with line)" style="font-weight:600">🏷️ Banner</button>
+          <button class="folder-fmt-btn" data-cmd="insertBanner" title="Section Header Banner (Box with line)" style="font-weight:600"><svg class="icon" aria-hidden="true"><use href="#i-tag"/></svg><span>Banner</span></button>
           <button class="folder-fmt-btn" data-cmd="formatBlock" data-val="P" title="Normal Text">P</button>
           <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
           <button class="folder-fmt-btn" data-cmd="fontSize" data-val="2" title="Small Font">Aa</button>
@@ -267,16 +464,16 @@
           <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
           <button class="folder-fmt-btn" data-cmd="insertUnorderedList" title="Bulleted List">• List</button>
           <button class="folder-fmt-btn" data-cmd="insertOrderedList" title="Numbered List">1. List</button>
-          <button class="folder-fmt-btn" data-cmd="outdent" title="Outdent / Decrease Indent (Shift+Tab or Backspace)" style="font-size:12px; font-weight:600">⇤ Outdent</button>
-          <button class="folder-fmt-btn" data-cmd="indent" title="Indent / Increase Indent (Tab)" style="font-size:12px; font-weight:600">⇥ Indent</button>
+          <button class="folder-fmt-btn" data-cmd="outdent" title="Outdent / Decrease Indent (Shift+Tab or Backspace)" style="font-size:12px; font-weight:600"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg><span>Outdent</span></button>
+          <button class="folder-fmt-btn" data-cmd="indent" title="Indent / Increase Indent (Tab)" style="font-size:12px; font-weight:600"><svg class="icon" aria-hidden="true"><use href="#i-arrow-right"/></svg><span>Indent</span></button>
           <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
           <button class="folder-fmt-btn" data-cmd="insertTable" title="Insert Table">Table</button>
-          <button class="folder-fmt-btn" id="folder-copy-summary-table" title="Copy the 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.45); font-weight:600; font-size:12px;">📋 Copy Summary Table</button>
+          <button class="folder-fmt-btn" id="folder-copy-summary-table" title="Copy the 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.45); font-weight:600; font-size:12px;"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Summary Table</span></button>
           <div style="width:1px; background:var(--navy-b); margin:0 4px"></div>
-          <button class="folder-fmt-btn" id="folder-doc-link-pdf" title="Link a PDF from your library">📄 Link PDF</button>
-          <button class="folder-fmt-btn" id="folder-doc-link-url" title="Insert Web Link">🌐 Web Link</button>
+          <button class="folder-fmt-btn" id="folder-doc-link-pdf" title="Link a PDF from your library"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>Link PDF</span></button>
+          <button class="folder-fmt-btn" id="folder-doc-link-url" title="Insert Web Link"><svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span>Web Link</span></button>
         </div>
-        <div id="folder-doc-editor" contenteditable="true" data-ph="Write general notes, provisions, or syllabus info for this folder..." spellcheck="true" style="flex:1; width:100%; min-height:800px; background:var(--navy); color:#e8e4db; border:1px solid var(--navy-b); padding:40px; font-size:16px; font-family:'Inter', sans-serif; line-height:1.6; outline:none; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.2)"></div>
+        <div id="folder-doc-editor" contenteditable="true" data-ph="Write general notes, provisions, or syllabus info for this folder..." spellcheck="true" style="flex:1; width:100%; min-height:800px; background:var(--navy); color:#e8e4db; border:1px solid var(--navy-b); padding:40px; font-size:16px; font-family:var(--font-ui); line-height:1.6; outline:none; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.2)"></div>
       </div>
     </div>
 
@@ -286,8 +483,56 @@
       <!-- Pane A (Primary — full features) -->
       <div id="pane-a" class="pdf-pane">
         <div class="pane-header" id="pane-a-header" style="display:none">
-          <span class="pane-badge primary">🅐 Primary</span>
+          <span class="pane-badge primary">Primary</span>
           <span class="pane-pdf-name" id="pane-a-name"></span>
+        </div>
+        <div class="reader-progress-line" aria-hidden="true"></div>
+        <!-- Floating Bottom Annotation Capsule -->
+        <div class="capsule" id="reader-capsule" role="toolbar" aria-label="Annotation tools">
+          <div class="capsule__tools" id="mode-tog">
+            <button class="mode-btn capsule__tool active" data-mode="text" title="Highlight Text (T)">
+              <svg class="icon" aria-hidden="true"><use href="#i-highlight"/></svg>
+              <span>Highlight</span>
+            </button>
+            <button class="mode-btn capsule__tool" data-mode="box" title="Box Highlight / Excerpt (B)">
+              <svg class="icon" aria-hidden="true"><use href="#i-box"/></svg>
+              <span>Box</span>
+            </button>
+            <button class="mode-btn capsule__tool" data-mode="draw" title="Freehand Pen &amp; Ink (D)">
+              <svg class="icon" aria-hidden="true"><use href="#i-pen"/></svg>
+              <span>Pen</span>
+            </button>
+          </div>
+          <span class="capsule__divider" aria-hidden="true"></span>
+          <div class="capsule__inks" id="color-dots" role="group" aria-label="Highlight color category"></div>
+          <button id="add-color-btn" class="capsule__btn" title="Add color" aria-label="Add color"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+          <button id="btn-manage-colors" type="button" class="manage-colors-btn" title="Manage highlight colors" aria-label="Manage highlight colors">
+            <svg class="icon" aria-hidden="true"><use href="#i-palette"/></svg>
+            <span class="manage-colors-btn__label">Manage colors</span>
+          </button>
+          <div id="draw-ctrls">
+            <span class="capsule__divider" aria-hidden="true"></span>
+            <div id="pen-sizes" style="display:flex;align-items:center;gap:4px">
+              <div class="dw-btn sel" data-w="2"><div class="dw-inner" style="width:5px;height:5px"></div></div>
+              <div class="dw-btn"    data-w="4"><div class="dw-inner" style="width:9px;height:9px"></div></div>
+              <div class="dw-btn"    data-w="8"><div class="dw-inner" style="width:13px;height:13px"></div></div>
+            </div>
+            <div id="erase-sizes" style="display:none;align-items:center;gap:4px">
+              <div class="er-btn sel" data-ew="12"><div class="dw-inner" style="width:8px;height:8px;background:#e44"></div></div>
+              <div class="er-btn"     data-ew="24"><div class="dw-inner" style="width:14px;height:14px;background:#e44"></div></div>
+              <div class="er-btn"     data-ew="48"><div class="dw-inner" style="width:20px;height:20px;background:#e44"></div></div>
+            </div>
+            <button class="tb-btn capsule__btn" id="btn-erase"><svg class="icon" aria-hidden="true"><use href="#i-eraser"/></svg><span>Erase</span></button>
+            <button class="tb-btn capsule__btn" id="btn-undo"><svg class="icon" aria-hidden="true"><use href="#i-undo"/></svg><span>Undo</span></button>
+            <button class="tb-btn capsule__btn" id="btn-clear"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span>Clear</span></button>
+          </div>
+          <span class="capsule__divider" aria-hidden="true"></span>
+          <div class="capsule__actions">
+            <button type="button" class="capsule__btn capsule__btn--kbd" id="btn-cmd-palette" title="Command Palette (Ctrl+K)" aria-label="Open Command Palette">
+              <svg class="icon" aria-hidden="true"><use href="#i-command"/></svg>
+              <kbd>K</kbd>
+            </button>
+          </div>
         </div>
         <!-- Compact Bottom-Right Zoom Pill -->
         <div id="floating-zoom-ctrl" title="PDF Zoom">
@@ -384,9 +629,9 @@
       <!-- Pane B (Reference — read-only) -->
       <div id="pane-b" class="pdf-pane" style="display:none">
         <div class="pane-header" id="pane-b-header">
-          <span class="pane-badge reference">🅑 Reference</span>
+          <span class="pane-badge reference">Reference</span>
           <span class="pane-pdf-name" id="pane-b-name"></span>
-          <button class="pane-close-btn" id="btn-close-pane-b" title="Close Reference Pane">✕</button>
+          <button class="pane-close-btn" id="btn-close-pane-b" title="Close Reference Pane" aria-label="Close Reference Pane"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
         </div>
         <div id="canvas-scroll-b"></div>
       </div>
@@ -399,16 +644,41 @@
   <div id="notepad-panel">
     <div id="np-resize-handle" class="panel-resizer-left" title="Drag to resize notepad"></div>
     <div class="np-hd">
-      <span class="np-title">📝 PDF Notepad</span>
+      <span class="np-title"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>PDF Notepad</span></span>
       <span id="np-local-lbl" style="font-size:11px;font-weight:600;opacity:0.85;white-space:nowrap;transition:color 0.3s;" title="Local storage save status"></span>
       <span id="np-save-lbl"></span>
-      <button id="np-save-now-btn" title="Manually save notes to cloud now (Ctrl+S)" style="background:#1e6b3a;color:#d1fae5;border:none;padding:3px 9px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:4px;white-space:nowrap;flex-shrink:0;">💾 Save Now</button>
-      <button class="ap-close" id="np-close">✕</button>
+      <button id="np-save-now-btn" title="Manually save notes to cloud now (Ctrl+S)" style="background:#1e6b3a;color:#d1fae5;border:none;padding:3px 9px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:4px;white-space:nowrap;flex-shrink:0;"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg><span>Save Now</span></button>
+      <button class="ap-close" id="np-close" aria-label="Close Notepad"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
     <!-- Tabs: Notes vs Case Digest -->
     <div class="ap-tabs" id="np-tabs" style="display:flex; border-bottom:1px solid var(--navy-b); background:rgba(0,0,0,0.18); flex-shrink:0;">
-      <button class="ap-tab active" data-nptab="notes" id="nptab-notes">📝 Notes</button>
-      <button class="ap-tab" data-nptab="digest" id="nptab-digest">⚖ Case Digest</button>
+      <button class="ap-tab active" data-nptab="notes" id="nptab-notes"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>Notes</span></button>
+      <button class="ap-tab" data-nptab="digest" id="nptab-digest"><svg class="icon" aria-hidden="true"><use href="#i-scale"/></svg><span>Case Digest</span></button>
+    </div>
+    <!-- Perplexity Case Digest Monitor Strip -->
+    <div class="pplx-monitor" id="pplxMonitorStrip" data-state="idle" hidden>
+      <div class="pplx-monitor__row">
+        <span class="pplx-monitor__dot" id="pplxMonitorDot" data-state="idle" aria-hidden="true"></span>
+        <div class="pplx-monitor__meta">
+          <span class="pplx-monitor__title" id="pplxMonitorTitle">Perplexity Studio</span>
+          <span class="pplx-monitor__status" id="pplxMonitorStatus">Ready</span>
+        </div>
+        <div class="pplx-monitor__actions">
+          <button type="button" class="pplx-monitor__btn" id="focusPplxBtn">
+            <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg>
+            <span>Focus / Reopen</span>
+          </button>
+          <button type="button" class="pplx-monitor__btn pplx-monitor__btn--stop" id="stopDigestBtn" disabled>
+            <svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>
+            <span>Stop</span>
+          </button>
+        </div>
+      </div>
+      <div class="pplx-monitor__alert" id="pplxMonitorAlert" role="alert" hidden>
+        <svg class="icon pplx-monitor__alert-icon" aria-hidden="true"><use href="#i-alert"/></svg>
+        <span class="pplx-monitor__alert-text" id="pplxMonitorAlertText">Perplexity Studio requires attention.</span>
+        <button type="button" class="pplx-monitor__alert-btn" id="pplxMonitorAlertBtn">Focus Studio</button>
+      </div>
     </div>
     <!-- Notepad Toolbar -->
     <div id="np-toolbar" class="toolbar-strip" style="position:sticky; top:0; z-index:100; padding:6px 14px; border-bottom:1px solid var(--navy-b); background:var(--navy-l); gap:6px; align-items:center; display:flex; flex-wrap:wrap;">
@@ -416,29 +686,29 @@
       <button class="np-fmt-btn" data-cmd="italic" title="Italic"><i>I</i></button>
       <button class="np-fmt-btn" data-cmd="underline" title="Underline"><u>U</u></button>
       <button class="np-fmt-btn" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
-      <button class="np-fmt-btn" data-cmd="grayOut" title="Subtly Gray Out / Dim Text (Low Relevance)" style="color:var(--muted); font-size:11px; font-weight:600">🌫️ Dim</button>
-      <button class="np-fmt-btn" id="np-highlight-btn" title="Highlight selected text with your annotation colours" style="font-size:11px; font-weight:600">🖊 Highlight</button>
+      <button class="np-fmt-btn" data-cmd="grayOut" title="Subtly Gray Out / Dim Text (Low Relevance)" style="color:var(--muted); font-size:11px; font-weight:600">Dim</button>
+      <button class="np-fmt-btn" id="np-highlight-btn" title="Highlight selected text with your annotation colours" style="font-size:11px; font-weight:600"><svg class="icon" aria-hidden="true"><use href="#i-highlight"/></svg><span>Highlight</span></button>
       <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
       <button class="np-fmt-btn" data-cmd="formatBlock" data-val="H1" title="Heading 1" style="font-weight:bold;font-size:11px">H1</button>
       <button class="np-fmt-btn" data-cmd="formatBlock" data-val="H2" title="Heading 2" style="font-weight:bold;font-size:11px">H2</button>
-      <button class="np-fmt-btn" data-cmd="insertBanner" title="Section Header Banner (Box with line)" style="font-weight:600;font-size:11px">🏷️ Banner</button>
+      <button class="np-fmt-btn" data-cmd="insertBanner" title="Section Header Banner (Box with line)" style="font-weight:600;font-size:11px"><svg class="icon" aria-hidden="true"><use href="#i-tag"/></svg><span>Banner</span></button>
       <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
       <button class="np-fmt-btn" data-cmd="insertUnorderedList" title="Bullet List">• List</button>
       <button class="np-fmt-btn" data-cmd="insertOrderedList" title="Number List">1. List</button>
-      <button class="np-fmt-btn" data-cmd="outdent" title="Outdent / Decrease Indent (Shift+Tab or Backspace)" style="font-size:11px; font-weight:600">⇤ Outdent</button>
-      <button class="np-fmt-btn" data-cmd="indent" title="Indent / Increase Indent (Tab)" style="font-size:11px; font-weight:600">⇥ Indent</button>
+      <button class="np-fmt-btn" data-cmd="outdent" title="Outdent / Decrease Indent (Shift+Tab or Backspace)" style="font-size:11px; font-weight:600"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg><span>Outdent</span></button>
+      <button class="np-fmt-btn" data-cmd="indent" title="Indent / Increase Indent (Tab)" style="font-size:11px; font-weight:600"><svg class="icon" aria-hidden="true"><use href="#i-arrow-right"/></svg><span>Indent</span></button>
       <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
       <button class="np-fmt-btn" data-cmd="insertTable" title="Insert Table">Table</button>
-      <button class="np-fmt-btn" id="np-copy-summary-table" title="Copy the 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.45); font-weight:600; font-size:11px;">📋 Copy Summary Table</button>
+      <button class="np-fmt-btn" id="np-copy-summary-table" title="Copy the 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.45); font-weight:600; font-size:11px;"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Summary Table</span></button>
       <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
-      <button class="np-fmt-btn" id="np-link-pdf" title="Link a PDF from your library">📄 Link PDF</button>
-      <button class="np-fmt-btn" id="np-link-url" title="Insert Web Link">🌐 Web Link</button>
+      <button class="np-fmt-btn" id="np-link-pdf" title="Link a PDF from your library"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>Link PDF</span></button>
+      <button class="np-fmt-btn" id="np-link-url" title="Insert Web Link"><svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span>Web Link</span></button>
       <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
       <button class="np-fmt-btn" data-cmd="fontSize" data-val="2" title="Small Text">S</button>
       <button class="np-fmt-btn" data-cmd="fontSize" data-val="3" title="Normal Text">M</button>
       <button class="np-fmt-btn" data-cmd="fontSize" data-val="5" title="Large Text">L</button>
       <div class="tb-sep" style="height:14px; width:1px; background:var(--navy-b); margin:0 2px;"></div>
-      <button class="np-fmt-btn" id="np-history-btn" title="View note history and restore a previous version" style="font-size:11px;">🕐 History</button>
+      <button class="np-fmt-btn" id="np-history-btn" title="View note history and restore a previous version" style="font-size:11px;"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span>History</span></button>
     </div>
     <div id="np-body">
       <div
@@ -464,17 +734,17 @@
     <div id="np-history-box">
       <div class="nhm-header">
         <div class="nhm-tabs">
-          <button class="nhm-tab-btn active" id="nhm-tab-snapshots">⏱️ Version Snapshots</button>
-          <button class="nhm-tab-btn" id="nhm-tab-logs">🚨 Error &amp; Sync Log (<span id="nhm-log-count">0</span>)</button>
+          <button class="nhm-tab-btn active" id="nhm-tab-snapshots"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span>Version Snapshots</span></button>
+          <button class="nhm-tab-btn" id="nhm-tab-logs"><svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg><span>Error &amp; Sync Log (<span id="nhm-log-count">0</span>)</span></button>
         </div>
-        <button class="nhm-action-btn" id="nhm-copy-diag-btn" title="Copy full diagnostic report to clipboard">📋 Copy Diagnostics</button>
-        <button class="nhm-close" id="np-history-close" title="Close">✕</button>
+        <button class="nhm-action-btn" id="nhm-copy-diag-btn" title="Copy full diagnostic report to clipboard"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Diagnostics</span></button>
+        <button class="nhm-close" id="np-history-close" title="Close" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
       
       <!-- Tab 1: Version Snapshots -->
       <div id="np-history-view-snapshots" class="nhm-tab-view active">
         <div id="np-history-warning">
-          ⚠️ Up to 20 local snapshots are kept per PDF. Restoring replaces your current notes — your current content is snapshotted first so you can always go back.
+          <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg> Up to 20 local snapshots are kept per PDF. Restoring replaces your current notes — your current content is snapshotted first so you can always go back.
         </div>
         <div id="np-history-list">
           <div class="nhm-empty">Loading history…</div>
@@ -485,7 +755,7 @@
       <!-- Tab 2: Error & Sync Diagnostics -->
       <div id="np-history-view-logs" class="nhm-tab-view" style="display:none;">
         <div id="np-diag-warning">
-          🔍 Real-time audit log of all Save, Load, and Sync actions for this PDF with exact Supabase HTTP codes, error messages, and payload sizes.
+          <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg> Real-time audit log of all Save, Load, and Sync actions for this PDF with exact Supabase HTTP codes, error messages, and payload sizes.
         </div>
         <div id="np-diag-list">
           <div class="nhm-empty">Loading diagnostic logs…</div>
@@ -502,18 +772,22 @@
     <div id="ap-resize-handle" class="panel-resizer-left" title="Drag to resize notes panel"></div>
     <div class="ap-hd">
       <div class="ap-ex" id="ap-ex"></div>
-      <button class="ap-close" id="ap-close">✕</button>
+      <button class="ap-close" id="ap-close" aria-label="Close Annotations"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
     <div class="ap-colors" id="ap-colors">
       <div class="ap-colors-lbl">Highlight Color</div>
+      <button type="button" id="btn-panel-manage-colors" class="manage-colors-btn" title="Manage highlight colors">
+        <svg class="icon" aria-hidden="true"><use href="#i-palette"/></svg>
+        <span class="manage-colors-btn__label">Customize colors</span>
+      </button>
     </div>
     <!-- Note Category Tabs -->
     <div class="ap-tabs">
       <button class="ap-tab active" data-aptab="general" id="aptab-general">
-        <span>📝 Notes</span> <span class="aptab-badge" id="badge-general">0</span>
+        <svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>Notes</span> <span class="aptab-badge" id="badge-general">0</span>
       </button>
       <button class="ap-tab" data-aptab="case" id="aptab-case">
-        <span>⚖️ Case Summaries</span> <span class="aptab-badge" id="badge-case">0</span>
+        <svg class="icon" aria-hidden="true"><use href="#i-scale"/></svg><span>Case Summaries</span> <span class="aptab-badge" id="badge-case">0</span>
       </button>
     </div>
     <div id="ann-notes"></div>
@@ -531,9 +805,9 @@
 
 <!-- Selection confirm menu -->
 <div id="sel-menu">
-  <button class="sel-btn sel-confirm" id="sel-confirm">✓ Highlight</button>
-  <button class="sel-btn sel-copy" id="sel-copy">📋 Copy Text</button>
-  <button class="sel-btn sel-cancel"  id="sel-cancel">✗ Cancel</button>
+  <button class="sel-btn sel-confirm" id="sel-confirm"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Highlight</span></button>
+  <button class="sel-btn sel-copy" id="sel-copy"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Text</span></button>
+  <button class="sel-btn sel-cancel"  id="sel-cancel"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg><span>Cancel</span></button>
 </div>
 
 <!-- Box drag ghost -->
@@ -648,6 +922,31 @@
   </div>
 </div>
 
+<!-- Manage Highlight Color Categories -->
+<div class="modal-ov" id="mo-color-categories" role="dialog" aria-modal="true" aria-labelledby="colorCatsModalTitle">
+  <div class="modal-box color-cats-modal">
+    <div class="color-cats-modal__head">
+      <div>
+        <h3 id="colorCatsModalTitle">Customize Highlight Colors</h3>
+        <p class="color-cats-modal__sub">Rename categories or adjust colors without altering existing highlight colors.</p>
+      </div>
+      <button type="button" class="ap-close" id="colorCatCloseBtn" data-close="mo-color-categories" aria-label="Close color customization dialog">
+        <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+      </button>
+    </div>
+    <div class="color-cats" id="color-cat-list" role="list" aria-label="Highlight color categories"></div>
+    <form class="color-cat-add" id="color-cat-add-form">
+      <input type="color" class="color-cat-row__color" id="newCatColor" value="#a855f7" aria-label="New category color">
+      <input type="text" class="color-cat-row__hex" id="newCatHex" value="#a855f7" maxlength="7" placeholder="#a855f7" aria-label="New category hex">
+      <input type="text" class="color-cat-row__name" id="newCatName" placeholder="Add new meaning (e.g. Dissenting, Statutory)…" maxlength="40" aria-label="New category name">
+      <button type="submit" class="btn-gold" id="addColorCatBtn">Add</button>
+    </form>
+    <div class="modal-acts">
+      <button type="button" class="btn-gold" id="colorCatDoneBtn" data-close="mo-color-categories">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- Edit Note -->
 <div class="modal-ov" id="mo-edit-note">
   <div class="modal-box" style="width:560px; max-width:92vw;">
@@ -700,7 +999,7 @@
 <div class="modal-ov" id="mo-subj-notes">
   <div class="modal-box">
     <h3 id="mo-subj-notes-title">Subject Notes</h3>
-    <textarea id="subj-notes-ta" style="width:100%; height:150px; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:10px; color:#e8e4db; font-family:'Inter', sans-serif; font-size:13px; resize:vertical; outline:none; transition:border-color .15s" placeholder="Write notes about this subject or professor here..."></textarea>
+    <textarea id="subj-notes-ta" style="width:100%; height:150px; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:10px; color:#e8e4db; font-family:var(--font-ui); font-size:13px; resize:vertical; outline:none; transition:border-color .15s" placeholder="Write notes about this subject or professor here..."></textarea>
     <div class="modal-acts" style="margin-top:12px">
       <button class="btn-sec" data-close="mo-subj-notes">Cancel</button>
       <button class="btn-gold" id="save-subj-notes">Save</button>
@@ -712,8 +1011,8 @@
 <div class="modal-ov" id="mo-edit-schedule">
   <div class="modal-box" style="width:520px; max-width:94vw; max-height:90vh; display:flex; flex-direction:column;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <h3 id="mo-edit-sched-title" style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">✏️ Edit Class Schedule</h3>
-      <button class="btn-sec" data-close="mo-edit-schedule" style="padding:4px 8px;">✕</button>
+      <h3 id="mo-edit-sched-title" style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-pen"/></svg><span>Edit Class Schedule</span></h3>
+      <button class="btn-sec" data-close="mo-edit-schedule" style="padding:4px 8px;" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
 
     <!-- Active Class Form -->
@@ -765,7 +1064,7 @@
       </div>
 
       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; padding-top:10px; border-top:1px solid var(--navy-b);">
-        <button type="button" id="sched-btn-delete" class="btn-sec" style="color:var(--red); border-color:rgba(239,68,68,0.3); font-size:11px; padding:6px 10px;">🗑 Delete Class</button>
+        <button type="button" id="sched-btn-delete" class="btn-sec" style="color:var(--red); border-color:rgba(239,68,68,0.3); font-size:11px; padding:6px 10px;"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span>Delete Class</span></button>
         <div style="display:flex; gap:6px;">
           <button type="button" id="sched-btn-cancel-form" class="btn-sec" style="font-size:11px; padding:6px 10px;">Clear Form</button>
           <button type="button" id="sched-btn-save-entry" class="btn-gold" style="font-size:11px; padding:6px 14px; font-weight:700;">Save Class</button>
@@ -777,7 +1076,7 @@
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <div style="font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Scheduled Classes (<span id="sched-count">0</span>)</div>
       <div style="display:flex; gap:6px;">
-        <button type="button" id="sched-btn-new-class" class="btn-sec" style="font-size:11px; padding:3px 8px; color:var(--gold);">➕ New Class</button>
+        <button type="button" id="sched-btn-new-class" class="btn-sec" style="font-size:11px; padding:3px 8px; color:var(--gold);"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>New Class</span></button>
         <button type="button" id="sched-btn-reset-default" class="btn-sec" style="font-size:11px; padding:3px 8px; color:var(--muted);" title="Reset schedule back to semester default">Reset to Default</button>
       </div>
     </div>
@@ -796,8 +1095,8 @@
 <div class="modal-ov" id="mo-choose-syllabus">
   <div class="modal-box" style="width:460px; max-width:92vw; max-height:85vh; display:flex; flex-direction:column;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <h3 id="mo-choose-syl-title" style="margin:0; font-family:'Libre Baskerville',serif; font-size:15px; color:var(--gold);">📌 Choose Syllabus PDF</h3>
-      <button class="btn-sec" data-close="mo-choose-syllabus" style="padding:4px 8px;">✕</button>
+      <h3 id="mo-choose-syl-title" style="margin:0; font-family:var(--font-display); font-size:15px; color:var(--gold); display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-bookmark"/></svg><span>Choose Syllabus PDF</span></h3>
+      <button class="btn-sec" data-close="mo-choose-syllabus" style="padding:4px 8px;" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
     <div id="mo-choose-syl-sub" style="font-size:11px; color:var(--muted); margin-bottom:10px;">Select a PDF from your library to set as the Syllabus. It will open automatically from your schedule where you last left off.</div>
     <div style="margin-bottom:10px;">
@@ -816,10 +1115,10 @@
 <div class="modal-ov" id="mo-link-pdf">
   <div class="modal-box" style="width:480px; max-width:92vw; max-height:86vh; display:flex; flex-direction:column; padding:22px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
-      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;">
-        <span>🔗</span> <span>Create Shortcut</span>
+      <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;">
+        <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg> <span>Create Shortcut</span>
       </h3>
-      <button class="btn-sec" data-close="mo-link-pdf" style="padding:3px 8px; border:none; font-size:16px; line-height:1; cursor:pointer; background:transparent;">✕</button>
+      <button class="btn-sec" data-close="mo-link-pdf" style="padding:3px 8px; border:none; font-size:16px; line-height:1; cursor:pointer; background:transparent;" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
     
     <div style="font-size:12px; color:var(--muted); margin-bottom:12px; line-height:1.4; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
@@ -829,8 +1128,8 @@
 
     <!-- Quick filter input -->
     <div style="position:relative; margin-bottom:10px;">
-      <input type="text" id="link-folder-search" placeholder="🔍 Search folders…" autocomplete="off" spellcheck="false"
-        style="width:100%; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:7px 10px; color:#e8e4db; font-family:'Inter', sans-serif; font-size:12px; outline:none; transition:border-color .15s;">
+      <input type="text" id="link-folder-search" placeholder="Search folders…" autocomplete="off" spellcheck="false"
+        style="width:100%; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:7px 10px; color:#e8e4db; font-family:var(--font-ui); font-size:12px; outline:none; transition:border-color .15s;">
     </div>
 
     <!-- Tree container matching library structure -->
@@ -857,8 +1156,8 @@
 <div class="modal-ov" id="mo-default-page">
   <div class="modal-box" style="width:430px; max-width:92vw;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">📌 Set Default Opening Page</h3>
-      <button class="btn-sec" data-close="mo-default-page" style="padding:4px 8px;">✕</button>
+      <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg><span>Set Default Opening Page</span></h3>
+      <button class="btn-sec" data-close="mo-default-page" style="padding:4px 8px;" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
 
     <div style="font-size:12px; color:var(--muted); margin-bottom:12px; line-height:1.5;">
@@ -867,7 +1166,7 @@
 
     <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:10px 12px; margin-bottom:14px; font-size:12px;">
       <div style="font-weight:600; color:#e8e4db; margin-bottom:4px;" id="def-page-pdf-name">File Name</div>
-      <div style="color:var(--muted); font-size:11px;" id="def-page-folder-name">📁 Folder: ...</div>
+      <div style="color:var(--muted); font-size:11px;" id="def-page-folder-name">Folder: ...</div>
       <div style="margin-top:6px; color:var(--gold); font-size:11px; font-weight:500;" id="def-page-current-status">Currently: Automatic (resumes where last left)</div>
     </div>
 
@@ -893,8 +1192,8 @@
 <div class="modal-ov" id="mo-dup-upload">
   <div class="modal-box" style="width:480px; max-width:92vw;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
-      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">📄 File Already in Library</h3>
-      <button class="btn-sec" data-close="mo-dup-upload" style="padding:4px 8px">✕</button>
+      <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>File Already in Library</span></h3>
+      <button class="btn-sec" data-close="mo-dup-upload" style="padding:4px 8px" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
     
     <div id="dup-upload-desc" style="font-size:13px; color:#e2e8f0; line-height:1.5; margin-bottom:10px;">
@@ -910,15 +1209,15 @@
 
     <div style="display:flex; flex-direction:column; gap:8px;">
       <button class="btn-gold" id="dup-btn-shortcut" style="width:100%; padding:10px 14px; text-align:left; display:flex; flex-direction:column; gap:2px; cursor:pointer;">
-        <span style="font-weight:700; font-size:13px;">🔗 Create Linked Shortcut (Recommended)</span>
+        <span style="font-weight:700; font-size:13px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><span>Create Linked Shortcut (Recommended)</span></span>
         <span style="font-size:11px; opacity:0.85; font-weight:normal;">Shares the same annotations, notes &amp; digest with the original. Saves Drive storage.</span>
       </button>
       <button class="btn-sec" id="dup-btn-copy" style="width:100%; padding:10px 14px; text-align:left; display:flex; flex-direction:column; gap:2px; border:1px solid var(--navy-b); background:rgba(255,255,255,0.04); color:#e2e8f0; cursor:pointer;">
-        <span style="font-weight:700; font-size:13px;">📄 Upload as Independent Copy</span>
+        <span style="font-weight:700; font-size:13px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>Upload as Independent Copy</span></span>
         <span style="font-size:11px; color:#94a3b8; font-weight:normal;">Uploads a fresh copy with its own independent annotations, notes &amp; digest.</span>
       </button>
       <button class="btn-sec" id="dup-btn-cancel" data-close="mo-dup-upload" style="width:100%; padding:8px 12px; font-size:12px; color:#94a3b8; cursor:pointer;">
-        ✕ Cancel
+        Cancel
       </button>
     </div>
   </div>
@@ -929,12 +1228,12 @@
   <div class="modal-box" style="width:420px; max-height:80vh; display:flex; flex-direction:column">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
       <h3 style="margin:0">Important Links</h3>
-      <button class="btn-sec" data-close="mo-links" style="padding:4px 8px">✕</button>
+      <button class="btn-sec" data-close="mo-links" style="padding:4px 8px" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
     
     <div style="display:flex; gap:6px; margin-bottom:12px">
-      <input type="text" id="new-link-title" placeholder="Title (e.g. LawPhil, Canvas)" style="flex:1; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-family:'Inter', sans-serif; font-size:12px; padding:6px 10px; outline:none">
-      <input type="text" id="new-link-url" placeholder="URL (https://...)" style="flex:1.5; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-family:'Inter', sans-serif; font-size:12px; padding:6px 10px; outline:none">
+      <input type="text" id="new-link-title" placeholder="Title (e.g. LawPhil, Canvas)" style="flex:1; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-family:var(--font-ui); font-size:12px; padding:6px 10px; outline:none">
+      <input type="text" id="new-link-url" placeholder="URL (https://...)" style="flex:1.5; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-family:var(--font-ui); font-size:12px; padding:6px 10px; outline:none">
       <button class="btn-gold" id="btn-add-link" style="padding:6px 12px; border-radius:6px">Add</button>
     </div>
     
@@ -948,10 +1247,10 @@
   <div class="modal-box" style="width:960px; max-width:96vw; height:85vh; max-height:85vh; display:flex; flex-direction:column; padding:16px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid rgba(255,255,255,0.06); padding-bottom:8px;">
       <div style="display:flex; align-items:center; gap:10px;">
-        <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">📊 Legal Diagrammer & Flowchart Studio</h3>
+        <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-diagram"/></svg><span>Legal Diagrammer &amp; Flowchart Studio</span></h3>
         <span id="diag-modal-pdf-title" style="font-size:11px; color:var(--muted); background:rgba(0,0,0,0.25); padding:2px 8px; border-radius:12px; border:1px solid var(--navy-b);"></span>
       </div>
-      <button class="btn-sec" data-close="mo-diagram" style="padding:4px 8px;">✕</button>
+      <button class="btn-sec" data-close="mo-diagram" style="padding:4px 8px;" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
 
     <!-- Template Selector & Controls Bar -->
@@ -1006,26 +1305,26 @@
 </div>
 
 <!-- Fullscreen Diagram Lightbox Modal -->
-<div class="modal-ov" id="mo-diagram-lightbox" style="z-index:4000; padding:10px; background:rgba(4,7,15,0.92); backdrop-filter:blur(6px);">
+<div class="modal-ov" id="mo-diagram-lightbox" style="z-index:4000; padding:10px; background:rgba(4,7,15,0.92);">
   <div style="position:relative; width:96vw; height:94vh; max-width:96vw; max-height:94vh; display:flex; flex-direction:column; background:#0c1322; border:1px solid #2a3b5c; border-radius:12px; box-shadow:0 24px 72px rgba(0,0,0,0.8); overflow:hidden;">
     <!-- Header -->
     <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 16px; border-bottom:1px solid var(--navy-b); background:var(--navy-l); flex-shrink:0;">
       <div style="display:flex; align-items:center; gap:8px;">
-        <span style="font-size:14px; font-weight:600; color:var(--gold); font-family:'Libre Baskerville',serif;">🔍 Expanded Diagram Viewer</span>
+        <span style="font-size:14px; font-weight:600; color:var(--gold); font-family:var(--font-display); display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-expand"/></svg><span>Expanded Diagram Viewer</span></span>
         <span style="font-size:11px; color:var(--muted);">(Scroll to zoom • Drag to pan)</span>
       </div>
       <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-        <button class="btn-sec" id="btn-lb-download-jpg" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download diagram as high-resolution JPG image">💾 Download JPG</button>
-        <button class="btn-sec" id="btn-lb-download-png" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download diagram as high-resolution PNG image">💾 Download PNG</button>
-        <button class="btn-sec" id="btn-lb-download-svg" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download as infinite-resolution Vector SVG">💾 Export SVG</button>
+        <button class="btn-sec" id="btn-lb-download-jpg" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download diagram as high-resolution JPG image"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download JPG</span></button>
+        <button class="btn-sec" id="btn-lb-download-png" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download diagram as high-resolution PNG image"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download PNG</span></button>
+        <button class="btn-sec" id="btn-lb-download-svg" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download as infinite-resolution Vector SVG"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Export SVG</span></button>
         <div style="width:1px; height:16px; background:var(--navy-b); margin:0 2px;"></div>
-        <button class="btn-sec" id="btn-lb-zout" style="padding:4px 10px; font-size:12px;" title="Zoom Out">🔍−</button>
+        <button class="btn-sec" id="btn-lb-zout" style="padding:4px 10px; font-size:12px;" title="Zoom Out"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button>
         <span id="lb-zoom-lbl" style="font-size:11px; color:#e8e4db; min-width:44px; text-align:center;">100%</span>
-        <button class="btn-sec" id="btn-lb-zin" style="padding:4px 10px; font-size:12px;" title="Zoom In">🔍+</button>
+        <button class="btn-sec" id="btn-lb-zin" style="padding:4px 10px; font-size:12px;" title="Zoom In"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
         <button class="btn-sec" id="btn-lb-zreset" style="padding:4px 10px; font-size:12px;" title="Reset Zoom">100%</button>
         <button class="btn-sec" id="btn-lb-fit" style="padding:4px 10px; font-size:12px;" title="Fit to Screen">Fit</button>
         <div style="width:1px; height:16px; background:var(--navy-b); margin:0 4px;"></div>
-        <button class="btn-sec" data-close="mo-diagram-lightbox" style="padding:4px 12px; font-size:14px; color:var(--gold);">✕</button>
+        <button class="btn-sec" data-close="mo-diagram-lightbox" style="padding:4px 12px; font-size:14px; color:var(--gold);" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
     </div>
     <!-- Viewport Area with Pan & Zoom -->
@@ -1039,21 +1338,21 @@
 </div>
 
 <!-- Fullscreen Table Lightbox Modal -->
-<div class="modal-ov" id="mo-table-lightbox" style="z-index:4000; padding:10px; background:rgba(4,7,15,0.92); backdrop-filter:blur(6px);">
+<div class="modal-ov" id="mo-table-lightbox" style="z-index:4000; padding:10px; background:rgba(4,7,15,0.92);">
   <div style="position:relative; width:96vw; height:94vh; max-width:96vw; max-height:94vh; display:flex; flex-direction:column; background:#0c1322; border:1px solid #2a3b5c; border-radius:12px; box-shadow:0 24px 72px rgba(0,0,0,0.8); overflow:hidden;">
     <!-- Header -->
     <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 16px; border-bottom:1px solid var(--navy-b); background:var(--navy-l); flex-shrink:0; gap:10px; flex-wrap:wrap;">
       <div style="display:flex; align-items:center; gap:8px;">
-        <span style="font-size:14px; font-weight:600; color:var(--gold); font-family:'Libre Baskerville',serif;">📊 Expanded Table Viewer</span>
+        <span style="font-size:14px; font-weight:600; color:var(--gold); font-family:var(--font-display); display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-table"/></svg><span>Expanded Table Viewer</span></span>
         <span id="table-lb-info" style="font-size:11px; color:var(--muted);"></span>
       </div>
       <div style="display:flex; gap:6px; align-items:center; margin-left:auto;">
         <input type="text" id="table-lb-search" placeholder="Filter rows..." style="background:var(--navy); border:1px solid var(--navy-b); color:#e8e4db; border-radius:4px; padding:4px 8px; font-size:12px; outline:none; width:160px;">
-        <button class="btn-sec" id="btn-table-copy-md" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Copy table in Markdown format">📋 Copy Markdown</button>
-        <button class="btn-sec" id="btn-table-copy-html" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Copy table preserving rich formatting">📋 Copy Formatted Table</button>
-        <button class="btn-sec" id="btn-table-export-csv" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download table as CSV spreadsheet">💾 Export CSV</button>
+        <button class="btn-sec" id="btn-table-copy-md" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Copy table in Markdown format"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Markdown</span></button>
+        <button class="btn-sec" id="btn-table-copy-html" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Copy table preserving rich formatting"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Formatted Table</span></button>
+        <button class="btn-sec" id="btn-table-export-csv" style="padding:4px 10px; font-size:12px; color:var(--gold);" title="Download table as CSV spreadsheet"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Export CSV</span></button>
         <div style="width:1px; height:16px; background:var(--navy-b); margin:0 4px;"></div>
-        <button class="btn-sec" data-close="mo-table-lightbox" style="padding:4px 12px; font-size:14px; color:var(--gold);">✕</button>
+        <button class="btn-sec" data-close="mo-table-lightbox" style="padding:4px 12px; font-size:14px; color:var(--gold);" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
     </div>
     <!-- Scrollable Table Viewport -->
@@ -1067,30 +1366,30 @@
 <div class="modal-ov" id="mo-settings">
   <div class="modal-box" style="width:400px; max-width:92vw;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:16px; color:var(--gold);">⚙️ Settings & Tools</h3>
-      <button class="btn-sec" data-close="mo-settings" style="padding:4px 8px;">✕</button>
+      <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>Settings &amp; Tools</span></h3>
+      <button class="btn-sec" data-close="mo-settings" style="padding:4px 8px;" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
 
     <!-- PWA Install Button -->
-    <button class="btn-gold" id="btn-pwa-install" style="display:none; width:100%; padding:9px 12px; font-size:13px; font-weight:600; margin-bottom:12px; border-radius:6px; box-shadow:0 2px 8px rgba(212,175,55,0.25);">📲 Install as Desktop App</button>
+    <button class="btn-gold" id="btn-pwa-install" style="display:none; width:100%; padding:9px 12px; font-size:13px; font-weight:600; margin-bottom:12px; border-radius:6px; box-shadow:0 2px 8px rgba(212,175,55,0.25);"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Install as Desktop App</span></button>
 
     <div style="display:flex; flex-direction:column; gap:12px;">
       <!-- Data Backup & Cloud Backup -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-          <div style="font-size:13px; font-weight:600; color:#e8e4db;">💾 Data Backup</div>
+          <div style="font-size:13px; font-weight:600; color:#e8e4db; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg><span>Data Backup</span></div>
           <span id="backup-last-lbl" style="font-size:10px; color:var(--muted);"></span>
         </div>
         <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Download a complete JSON snapshot of all your data or save to your Google Drive backup folder.</div>
         <div style="display:flex; gap:8px;">
-          <button class="btn-sec" id="backup-dl-btn" style="flex:1; padding:7px 10px; font-size:12px;" title="Download all data as a JSON file">⬇ Download JSON</button>
-          <button class="btn-gold" id="backup-drive-btn" style="flex:1; padding:7px 10px; font-size:12px;" title="Backup to Google Drive (auto-runs every 30 min)">☁ Drive Backup</button>
+          <button class="btn-sec" id="backup-dl-btn" style="flex:1; padding:7px 10px; font-size:12px;" title="Download all data as a JSON file"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download JSON</span></button>
+          <button class="btn-gold" id="backup-drive-btn" style="flex:1; padding:7px 10px; font-size:12px;" title="Backup to Google Drive (auto-runs every 30 min)"><svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg><span>Drive Backup</span></button>
         </div>
       </div>
 
       <!-- Export Annotations -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
-        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">📥 Export Annotations</div>
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Export Annotations</span></div>
         <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Export all highlights and notes from the active PDF as a Markdown document.</div>
         <button class="btn-sec" id="btn-export-settings" style="width:100%; padding:7px 10px; font-size:12px;">Export to Markdown</button>
       </div>
@@ -1098,7 +1397,7 @@
       <!-- Offline PDF & Notes Storage Manager -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-          <div style="font-size:13px; font-weight:600; color:#e8e4db;">📴 Offline Study &amp; Storage</div>
+          <div style="font-size:13px; font-weight:600; color:#e8e4db; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span>Offline Study &amp; Storage</span></div>
           <span id="cache-stats-lbl" style="font-size:10px; color:var(--gold); font-weight:500;">Calculating…</span>
         </div>
         <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Pre-download all your notes/digests or right-click any folder → <strong>Make Folder Available Offline</strong> so you can study with zero Wi-Fi and remove cached files afterwards.</div>
@@ -1106,68 +1405,68 @@
         <!-- All Notes Offline Pre-Download -->
         <div style="background:rgba(0,0,0,0.28); border:1px solid var(--navy-b); border-radius:4px; padding:8px; margin-bottom:8px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
-            <span style="font-size:11px; font-weight:600; color:#e8e4db;">📝 All Notes, Digests &amp; Highlights</span>
+            <span style="font-size:11px; font-weight:600; color:#e8e4db; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>All Notes, Digests &amp; Highlights</span></span>
             <span id="offline-notes-status-lbl" style="font-size:10px; color:var(--muted);">On-demand</span>
           </div>
           <div style="display:flex; gap:6px;">
-            <button class="btn-sec" id="btn-offline-all-notes" style="flex:1; padding:6px 8px; font-size:11px; color:#4ade80; border-color:rgba(74,222,128,0.35);">📥 Download All Notes for Offline</button>
-            <button class="btn-sec" id="btn-clear-offline-notes" style="padding:6px 8px; font-size:11px; color:var(--muted);" title="Delete pre-downloaded offline notes cache">🗑</button>
+            <button class="btn-sec" id="btn-offline-all-notes" style="flex:1; padding:6px 8px; font-size:11px; color:#4ade80; border-color:rgba(74,222,128,0.35);"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download All Notes for Offline</span></button>
+            <button class="btn-sec" id="btn-clear-offline-notes" style="padding:6px 8px; font-size:11px; color:var(--muted);" title="Delete pre-downloaded offline notes cache" aria-label="Clear offline notes"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg></button>
           </div>
         </div>
 
         <!-- Pinned Offline Folders List -->
         <div id="offline-folders-wrap" style="display:none; background:rgba(0,0,0,0.28); border:1px solid var(--navy-b); border-radius:4px; padding:8px; margin-bottom:8px;">
-          <div style="font-size:11px; font-weight:600; color:#e8e4db; margin-bottom:6px;">📂 Folders Saved Offline</div>
+          <div style="font-size:11px; font-weight:600; color:#e8e4db; margin-bottom:6px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span>Folders Saved Offline</span></div>
           <div id="offline-folders-list" style="display:flex; flex-direction:column; gap:4px; max-height:130px; overflow-y:auto;"></div>
         </div>
         
         <!-- Storage Folder Path Display -->
         <div style="background:rgba(0,0,0,0.3); border:1px solid var(--navy-b); border-radius:4px; padding:6px 8px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
           <div style="font-size:11px; color:#e8e4db; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;" id="cache-dir-display">
-            📁 Location: <span style="color:var(--gold);" id="cache-dir-name">Default Browser Storage</span>
+            Location: <span style="color:var(--gold);" id="cache-dir-name">Default Browser Storage</span>
           </div>
         </div>
 
         <div style="display:flex; gap:6px; margin-bottom:8px;" id="custom-folder-actions">
-          <button class="btn-sec" id="btn-choose-folder" style="flex:1; padding:6px 8px; font-size:11px;" title="Select a custom folder on your PC to store cached PDFs">📁 Choose Folder…</button>
-          <button class="btn-sec" id="btn-reset-folder" style="display:none; padding:6px 8px; font-size:11px;" title="Reset back to default browser sandbox">↩ Default</button>
+          <button class="btn-sec" id="btn-choose-folder" style="flex:1; padding:6px 8px; font-size:11px;" title="Select a custom folder on your PC to store cached PDFs"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span>Choose Folder…</span></button>
+          <button class="btn-sec" id="btn-reset-folder" style="display:none; padding:6px 8px; font-size:11px;" title="Reset back to default browser sandbox"><svg class="icon" aria-hidden="true"><use href="#i-undo"/></svg><span>Default</span></button>
         </div>
 
-        <button class="btn-sec" id="btn-clear-cache" style="width:100%; padding:6px 8px; font-size:11px; color:var(--red);" onmouseover="this.style.borderColor='var(--red)'" onmouseout="this.style.borderColor=''">🗑 Clear All Offline PDF Cache</button>
+        <button class="btn-sec" id="btn-clear-cache" style="width:100%; padding:6px 8px; font-size:11px; color:var(--red);" onmouseover="this.style.borderColor='var(--red)'" onmouseout="this.style.borderColor=''"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span>Clear All Offline PDF Cache</span></button>
       </div>
 
       <!-- Download Folder Setting -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-          <div style="font-size:13px; font-weight:600; color:#e8e4db;">⬇ Download Folder</div>
+          <div style="font-size:13px; font-weight:600; color:#e8e4db; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download Folder</span></div>
         </div>
         <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">When set, "Download to PC" saves PDFs directly to this folder — no dialog needed. Chrome/Edge only.</div>
         <div style="background:rgba(0,0,0,0.3); border:1px solid var(--navy-b); border-radius:4px; padding:6px 8px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
           <div style="font-size:11px; color:#e8e4db; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;">
-            📁 <span id="dl-folder-name">None set — uses Downloads folder</span>
+            <span id="dl-folder-name">None set — uses Downloads folder</span>
           </div>
         </div>
         <div style="display:flex; gap:6px;">
-          <button class="btn-sec" id="btn-choose-dl-folder" style="flex:1; padding:6px 8px; font-size:11px;" title="Select a folder where PDFs will be saved when you click Download to PC">📁 Choose Folder…</button>
-          <button class="btn-sec" id="btn-clear-dl-folder" style="display:none; padding:6px 8px; font-size:11px; color:var(--muted);" title="Reset back to browser Downloads folder">✕ Clear</button>
+          <button class="btn-sec" id="btn-choose-dl-folder" style="flex:1; padding:6px 8px; font-size:11px;" title="Select a folder where PDFs will be saved when you click Download to PC"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span>Choose Folder…</span></button>
+          <button class="btn-sec" id="btn-clear-dl-folder" style="display:none; padding:6px 8px; font-size:11px; color:var(--muted);" title="Reset back to browser Downloads folder"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg><span>Clear</span></button>
         </div>
       </div>
 
       <!-- System Diagnostics & Error Logs -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
-        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">🛠 System & Sync Diagnostics</div>
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-wrench"/></svg><span>System &amp; Sync Diagnostics</span></div>
         <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Force-sync all folders, PDFs, notes &amp; Case Digests with Supabase, organize Google Drive to match your library tree, or inspect connection logs.</div>
         <div style="display:flex; flex-direction:column; gap:6px;">
-          <button class="btn-gold" id="settings-btn-force-sync" style="width:100%; padding:8px 10px; font-size:12px; font-weight:700;">☁️ Force Sync Entire App Now</button>
-          <button class="btn-sec" id="settings-btn-organize-drive" style="width:100%; padding:7px 10px; font-size:12px; font-weight:600; color:var(--gold); border-color:rgba(201,168,76,0.4);">📁 Organize Google Drive Folders Now</button>
+          <button class="btn-gold" id="settings-btn-force-sync" style="width:100%; padding:8px 10px; font-size:12px; font-weight:700;"><svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg><span>Force Sync Entire App Now</span></button>
+          <button class="btn-sec" id="settings-btn-organize-drive" style="width:100%; padding:7px 10px; font-size:12px; font-weight:600; color:var(--gold); border-color:rgba(201,168,76,0.4);"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span>Organize Google Drive Folders Now</span></button>
           <button class="btn-sec" onclick="window.openSyncDiagnostics && window.openSyncDiagnostics()" style="width:100%; padding:7px 10px; font-size:12px;">Open Diagnostics &amp; Logs</button>
         </div>
       </div>
 
       <!-- Apple Pencil / Pen -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
-        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">✒ Apple Pencil / Pen</div>
-        <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Pen mode lets the Pencil highlight text and draw while your fingers scroll and zoom. You can also toggle it from the ✒ Pen button in the toolbar.</div>
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-pen"/></svg><span>Apple Pencil / Pen</span></div>
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Pen mode lets the Pencil highlight text and draw while your fingers scroll and zoom. You can also toggle it from the Pen button in the toolbar.</div>
         <button class="btn-sec" id="btn-pen-setting" style="width:100%; padding:7px 10px; font-size:12px; margin-bottom:6px;">Toggle Pen Mode</button>
         <a class="btn-sec" href="pen-debug.html" target="_blank" rel="noopener" style="display:block; box-sizing:border-box; width:100%; padding:7px 10px; font-size:12px; text-align:center; text-decoration:none;">Open Pen Diagnostic Page (for testing the Pencil)</a>
       </div>
@@ -1175,7 +1474,7 @@
       <!-- Auto-Close Inactive Tabs -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
-          <div style="font-size:13px; font-weight:600; color:#e8e4db;">🗂️ Auto-Close Inactive Tabs (10m)</div>
+          <div style="font-size:13px; font-weight:600; color:#e8e4db; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span>Auto-Close Inactive Tabs (10m)</span></div>
           <span id="auto-close-tabs-badge" style="font-size:11px; padding:2px 7px; border-radius:4px; background:rgba(34,197,94,0.18); color:#4ade80; font-weight:600;">Enabled</span>
         </div>
         <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Automatically removes top document tabs that haven't been opened or touched for 10 minutes (your currently open tab stays open).</div>
@@ -1184,19 +1483,19 @@
 
       <!-- Gemini AI API Key (for AI Table of Contents) -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
-        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">✨ Gemini AI API Key</div>
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>Gemini AI API Key</span></div>
         <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Used for AI Table of Contents generation. Get a free API key from Google AI Studio.</div>
         <div style="display:flex; gap:8px; margin-bottom:6px;">
           <input type="password" id="settings-gemini-key" placeholder="AIzaSy…" style="flex:1; padding:7px 10px; font-size:12px; border-radius:4px; border:1px solid var(--navy-b); background:rgba(0,0,0,0.3); color:#e8e4db; outline:none; box-sizing:border-box;">
           <button class="btn-gold" id="settings-btn-save-gemini" style="padding:7px 12px; font-size:12px;">Save</button>
-          <button class="btn-sec" id="settings-btn-clear-gemini" style="padding:7px 10px; font-size:12px; color:var(--red);" title="Remove saved API key">✕</button>
+          <button class="btn-sec" id="settings-btn-clear-gemini" style="padding:7px 10px; font-size:12px; color:var(--red);" title="Remove saved API key" aria-label="Remove saved API key"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
         </div>
         <div id="settings-gemini-status" style="font-size:11px; color:var(--muted);"></div>
       </div>
 
       <!-- Keyboard Shortcuts -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
-        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">⌨️ Keyboard Shortcuts</div>
+        <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg><span>Keyboard Shortcuts</span></div>
         <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">View the list of hotkeys and shortcuts for faster navigation and annotating.</div>
         <button class="btn-sec" id="btn-open-keys" style="width:100%; padding:7px 10px; font-size:12px;">View Keyboard Shortcuts (?)</button>
       </div>
@@ -1212,8 +1511,8 @@
 <div class="modal-ov" id="mo-sync-diag">
   <div class="modal-box" style="width:440px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <h3 style="margin:0; font-family:'Libre Baskerville',serif; font-size:15px; color:var(--gold);">🛠 System & Sync Diagnostics</h3>
-      <button class="btn-sec" data-close="mo-sync-diag" style="padding:2px 8px;">✕</button>
+      <h3 style="margin:0; font-family:var(--font-display); font-size:15px; color:var(--gold); display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-wrench"/></svg><span>System &amp; Sync Diagnostics</span></h3>
+      <button class="btn-sec" data-close="mo-sync-diag" style="padding:2px 8px;" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
 
     <div style="display:flex; flex-direction:column; gap:10px; font-size:12px;">
@@ -1231,7 +1530,7 @@
 
       <!-- Force Sync Entire App Action -->
       <button class="btn-gold" id="diag-btn-force-sync" style="width:100%; padding:9px 12px; font-size:12px; font-weight:700; cursor:pointer; border-radius:6px;">
-        ☁️ Force Sync Entire App Now
+        <svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg><span>Force Sync Entire App Now</span>
       </button>
 
       <!-- Last Error Card -->
@@ -1255,9 +1554,9 @@
 
     <!-- Modal Actions -->
     <div style="display:flex; gap:8px; justify-content:space-between; margin-top:16px;">
-      <button class="btn-sec" id="diag-btn-clear-queue" style="font-size:11px; padding:6px 10px; color:var(--red);" title="Purge stuck offline queue">🗑 Reset Queue</button>
+      <button class="btn-sec" id="diag-btn-clear-queue" style="font-size:11px; padding:6px 10px; color:var(--red);" title="Purge stuck offline queue"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span>Reset Queue</span></button>
       <div style="display:flex; gap:6px;">
-        <button class="btn-sec" id="diag-btn-copy" style="font-size:11px; padding:6px 12px;">📋 Copy Error</button>
+        <button class="btn-sec" id="diag-btn-copy" style="font-size:11px; padding:6px 12px;"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Error</span></button>
         <button class="btn-gold" data-close="mo-sync-diag" style="font-size:11px; padding:6px 14px;">Close</button>
       </div>
     </div>
@@ -1267,7 +1566,7 @@
 <!-- Keyboard Shortcuts Help -->
 <div class="modal-ov" id="mo-keys">
   <div class="modal-box">
-    <h3>⌨ Keyboard Shortcuts</h3>
+    <h3 style="display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg><span>Keyboard Shortcuts</span></h3>
     <div class="key-grid">
       <div class="key-row"><kbd>T</kbd><span class="key-desc">Text highlight mode</span></div>
       <div class="key-row"><kbd>B</kbd><span class="key-desc">Box select mode</span></div>
@@ -1288,21 +1587,21 @@
 <!-- Subfolder Copy Instructions Modal -->
 <div class="modal-ov" id="mo-copy-instructions">
   <div class="modal-box" style="max-width:540px; width:92%;">
-    <h3 style="margin-bottom:4px;">📋 Copy Text Instructions</h3>
+    <h3 style="margin-bottom:4px; display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>Copy Text Instructions</span></h3>
     <p id="copy-instr-folder-lbl" style="font-size:12px; color:var(--gold); margin-bottom:10px; font-weight:500;">Subfolder: —</p>
     <div style="background:rgba(201,168,76,0.1); border:1px solid rgba(201,168,76,0.35); border-radius:6px; padding:8px 10px; margin-bottom:10px;">
-      <div style="font-size:11px; color:var(--gold); font-weight:600; margin-bottom:3px;">✨ Automatic Main Instruction (Always Included from Folder &amp; Subfolder):</div>
+      <div style="font-size:11px; color:var(--gold); font-weight:600; margin-bottom:3px; display:inline-flex; align-items:center; gap:5px;"><svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>Automatic Main Instruction (Always Included from Folder &amp; Subfolder):</span></div>
       <div id="copy-instr-auto-preview" style="font-size:12px; color:#e8e4db; line-height:1.45;">Create a digest for this case.</div>
     </div>
     <p style="font-size:11.5px; color:var(--muted); line-height:1.5; margin-bottom:8px;">
       Add any <strong>additional custom instructions</strong> below that you also want appended for all PDFs inside this subfolder (other folders will not be affected):
     </p>
-    <textarea id="copy-instr-textarea" rows="6" placeholder="Optional extra instructions for this subfolder (e.g., Focus on the requisites of a valid sale, double sales under Art. 1544, etc.)…" style="width:100%; box-sizing:border-box; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-family:'Inter',sans-serif; font-size:12.5px; line-height:1.5; padding:10px; resize:vertical; outline:none; margin-bottom:12px;"></textarea>
+    <textarea id="copy-instr-textarea" rows="6" placeholder="Optional extra instructions for this subfolder (e.g., Focus on the requisites of a valid sale, double sales under Art. 1544, etc.)…" style="width:100%; box-sizing:border-box; background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; color:#e8e4db; font-family:var(--font-ui); font-size:12.5px; line-height:1.5; padding:10px; resize:vertical; outline:none; margin-bottom:12px;"></textarea>
     <div class="modal-acts" style="display:flex; justify-content:space-between; align-items:center; width:100%;">
-      <button class="btn-sec" id="btn-copy-instr-clear" style="color:var(--red); font-size:12px;">🗑 Clear Extra Instruction</button>
+      <button class="btn-sec" id="btn-copy-instr-clear" style="color:var(--red); font-size:12px;"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span>Clear Extra Instruction</span></button>
       <div style="display:flex; gap:8px;">
         <button class="btn-sec" data-close="mo-copy-instructions">Cancel</button>
-        <button class="btn-gold" id="btn-copy-instr-save">💾 Save Extra Instruction</button>
+        <button class="btn-gold" id="btn-copy-instr-save"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg><span>Save Extra Instruction</span></button>
       </div>
     </div>
   </div>
@@ -1355,7 +1654,7 @@
   // Fallback Escape listener
   window.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
-      document.querySelectorAll('#ann-panel, #search-panel').forEach(function(el) {
+      document.querySelectorAll('#ann-panel, #search-panel, #tags-panel').forEach(function(el) {
         el.classList.remove('open');
       });
     }
@@ -1370,50 +1669,49 @@
   });
   // Set pdf.js worker
   pdfjsLib.GlobalWorkerOptions.workerSrc =
-    './vendor/pdf.worker.min.js';
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 </script>
 
 <!-- Main app (ES module) -->
-<script type="module" src="./src/desktop-bridge.js"></script>
 <script type="module" src="./src/main.js"></script>
 
 <!-- Backup (completely independent module — zero imports from main app) -->
 <script type="module" src="./src/backup.js"></script>
 
 <!-- Table Context Menu -->
-<div id="table-ctx-menu" style="display:none; position:absolute; z-index:9999; background:var(--navy-l); border:1px solid var(--navy-b); border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.6); flex-direction:column; padding:4px; min-width:150px;">
-  <div class="ctx-item" id="ctx-copy-table" style="color:var(--gold); font-weight:600;">📋 Copy Formatted Table</div>
-  <div class="ctx-item" id="ctx-expand-table" style="color:var(--gold); font-weight:600;">🔍 Expand Table</div>
-  <div class="ctx-item" id="ctx-export-csv">💾 Export CSV</div>
-  <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>
+<div id="table-ctx-menu" class="ctx-menu" style="display:none; position:absolute; z-index:9999; flex-direction:column;">
+  <div class="ctx-item ctx-item--accent" id="ctx-copy-table"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Formatted Table</span></div>
+  <div class="ctx-item ctx-item--accent" id="ctx-expand-table"><svg class="icon" aria-hidden="true"><use href="#i-expand"/></svg><span>Expand Table</span></div>
+  <div class="ctx-item" id="ctx-export-csv"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Export CSV</span></div>
+  <div class="ctx-sep"></div>
   <div class="ctx-item" id="ctx-row-above">Add Row Above</div>
   <div class="ctx-item" id="ctx-row-below">Add Row Below</div>
-  <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>
+  <div class="ctx-sep"></div>
   <div class="ctx-item" id="ctx-col-left">Add Column Left</div>
   <div class="ctx-item" id="ctx-col-right">Add Column Right</div>
-  <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>
-  <div class="ctx-item" id="ctx-del-row" style="color:var(--red);">Delete Row</div>
-  <div class="ctx-item" id="ctx-del-col" style="color:var(--red);">Delete Column</div>
-  <div class="ctx-item" id="ctx-del-table" style="color:var(--red);">Delete Table</div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item ctx-item--danger" id="ctx-del-row">Delete Row</div>
+  <div class="ctx-item ctx-item--danger" id="ctx-del-col">Delete Column</div>
+  <div class="ctx-item ctx-item--danger" id="ctx-del-table">Delete Table</div>
 </div>
 
 <!-- Library Right-Click Context Menu -->
-<div id="lib-ctx-menu">
-  <div class="ctx-item" id="lib-ctx-open">📖 Open</div>
-  <div class="ctx-item" id="lib-ctx-reference">📑 Open as Reference</div>
-  <div class="ctx-item" id="lib-ctx-set-page">📌 Set Default Opening Page…</div>
-  <div class="ctx-item" id="ctx-set-syllabus" style="display:none">📌 Set as Subject Syllabus</div>
-  <div class="ctx-item" id="ctx-move-folder">📂 Move to Folder…</div>
-  <div class="ctx-item" id="lib-ctx-link">🔗 Create Shortcut…</div>
-  <div class="ctx-item" id="lib-ctx-offline">💾 Save for Offline</div>
-  <div class="ctx-item" id="lib-ctx-download">⬇ Download to PC</div>
-  <div class="ctx-item" id="lib-ctx-syllabus" style="display:none">📋 Import / Order from Syllabus…</div>
-  <div class="ctx-item" id="lib-ctx-export-pdf" style="display:none">📥 Export Notes to PDF</div>
-  <div class="ctx-item" id="lib-ctx-export-tables-pdf" style="display:none; color:var(--gold); font-weight:600;">📊 Export Summary Tables Only</div>
-  <div class="ctx-item" id="lib-ctx-open-print-studio" style="display:none; color:var(--gold); font-weight:600;">🖨️ Open in Print Studio…</div>
-  <div class="ctx-item" id="lib-ctx-force-sync" style="color:var(--gold); font-weight:600;">☁️ Force Sync to Cloud</div>
-  <div style="height:1px; background:var(--navy-b); margin:4px 0;"></div>
-  <div class="ctx-item" id="lib-ctx-gdrive">☁ Open in Google Drive</div>
+<div id="lib-ctx-menu" class="ctx-menu">
+  <div class="ctx-item" id="lib-ctx-open"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>Open</span></div>
+  <div class="ctx-item" id="lib-ctx-reference"><svg class="icon" aria-hidden="true"><use href="#i-dual"/></svg><span>Open as Reference</span></div>
+  <div class="ctx-item" id="lib-ctx-set-page"><svg class="icon" aria-hidden="true"><use href="#i-bookmark"/></svg><span>Set Default Opening Page…</span></div>
+  <div class="ctx-item" id="ctx-set-syllabus" style="display:none"><svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg><span>Set as Subject Syllabus</span></div>
+  <div class="ctx-item" id="ctx-move-folder"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span>Move to Folder…</span></div>
+  <div class="ctx-item" id="lib-ctx-link"><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg><span>Create Shortcut…</span></div>
+  <div class="ctx-item" id="lib-ctx-offline"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg><span>Save for Offline</span></div>
+  <div class="ctx-item" id="lib-ctx-download"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download to PC</span></div>
+  <div class="ctx-item" id="lib-ctx-syllabus" style="display:none"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg><span>Import / Order from Syllabus…</span></div>
+  <div class="ctx-item" id="lib-ctx-export-pdf" style="display:none"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>Export Notes to PDF</span></div>
+  <div class="ctx-item ctx-item--accent" id="lib-ctx-export-tables-pdf" style="display:none"><svg class="icon" aria-hidden="true"><use href="#i-table"/></svg><span>Export Summary Tables Only</span></div>
+  <div class="ctx-item ctx-item--accent" id="lib-ctx-open-print-studio" style="display:none"><svg class="icon" aria-hidden="true"><use href="#i-printer"/></svg><span>Open in Print Studio…</span></div>
+  <div class="ctx-item ctx-item--accent" id="lib-ctx-force-sync"><svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg><span>Force Sync to Cloud</span></div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item" id="lib-ctx-gdrive"><svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span>Open in Google Drive</span></div>
 </div>
 
 <!-- Service Worker Registration & PWA Install Prompter -->
@@ -1449,7 +1747,7 @@
   document.getElementById('btn-pwa-install')?.addEventListener('click', triggerPWAInstall);
   document.getElementById('btn-install-sidebar')?.addEventListener('click', triggerPWAInstall);
 
-  if ('serviceWorker' in navigator) { try { navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(()=>{}); if (typeof caches !== 'undefined' && caches.keys) caches.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(()=>{}); } catch {} } if (false && 'serviceWorker' in navigator) {
+  if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js').then(reg => {
         console.log('[PWA] ServiceWorker registered with scope:', reg.scope);
@@ -1462,21 +1760,21 @@
 
 <!-- Export PDF Options Modal -->
 <div id="export-opts-modal" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">
-  <div style="background:#1a2135;border:1px solid #2e3f5c;border-radius:10px;padding:24px 28px;min-width:300px;max-width:380px;box-shadow:0 12px 40px rgba(0,0,0,0.6);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8e4db;">
-    <div id="export-opts-title" style="font-size:15px;font-weight:700;margin-bottom:6px;">📄 Export Notes to PDF</div>
+  <div style="background:#1a2135;border:1px solid #2e3f5c;border-radius:10px;padding:24px 28px;min-width:300px;max-width:380px;box-shadow:0 12px 40px rgba(0,0,0,0.6);font-family:var(--font-ui);color:#e8e4db;">
+    <div id="export-opts-title" style="font-size:15px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>Export Notes to PDF</span></div>
     <div id="export-opts-desc" style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Choose what to include and page orientation before exporting.</div>
 
     <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;margin-bottom:6px;">Content to Export / Print</div>
     <div style="display:flex;gap:10px;margin-bottom:16px;">
       <label id="export-opt-mode-all-lbl" style="flex:1;border:2px solid #2e6bd6;border-radius:8px;padding:10px 8px;cursor:pointer;text-align:center;background:rgba(46,107,214,0.12);transition:all .15s;">
         <input type="radio" name="export-content-mode" id="export-opt-mode-all" value="all" checked style="display:none">
-        <div style="font-size:18px;margin-bottom:3px;">📝</div>
+        <div style="margin-bottom:4px;display:flex;justify-content:center;"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg></div>
         <div style="font-size:11.5px;font-weight:700;">Full Notes &amp; Digests</div>
         <div style="font-size:9.5px;color:#94a3b8;margin-top:2px;">Tables, facts &amp; notes</div>
       </label>
       <label id="export-opt-mode-tables-lbl" style="flex:1;border:2px solid #2e3f5c;border-radius:8px;padding:10px 8px;cursor:pointer;text-align:center;background:transparent;transition:all .15s;">
         <input type="radio" name="export-content-mode" id="export-opt-mode-tables" value="tables-only" style="display:none">
-        <div style="font-size:18px;margin-bottom:3px;">📊</div>
+        <div style="margin-bottom:4px;display:flex;justify-content:center;"><svg class="icon" aria-hidden="true"><use href="#i-table"/></svg></div>
         <div style="font-size:11.5px;font-weight:700;">Summary Tables Only</div>
         <div style="font-size:9.5px;color:#94a3b8;margin-top:2px;">1st summary table per case</div>
       </label>
@@ -1486,13 +1784,13 @@
     <div style="display:flex;gap:12px;margin-bottom:20px;">
       <label id="export-opt-portrait-lbl" style="flex:1;border:2px solid #2e6bd6;border-radius:8px;padding:12px 10px;cursor:pointer;text-align:center;background:rgba(46,107,214,0.12);transition:all .15s;">
         <input type="radio" name="export-orientation" id="export-opt-portrait" value="portrait" checked style="display:none">
-        <div style="font-size:22px;margin-bottom:4px;">📄</div>
+        <div style="margin-bottom:4px;display:flex;justify-content:center;"><svg class="icon" aria-hidden="true"><use href="#i-portrait"/></svg></div>
         <div style="font-size:12px;font-weight:700;">Portrait</div>
         <div style="font-size:10px;color:#94a3b8;margin-top:2px;">8.5 × 11 in</div>
       </label>
       <label id="export-opt-landscape-lbl" style="flex:1;border:2px solid #2e3f5c;border-radius:8px;padding:12px 10px;cursor:pointer;text-align:center;background:transparent;transition:all .15s;">
         <input type="radio" name="export-orientation" id="export-opt-landscape" value="landscape" style="display:none">
-        <div style="font-size:22px;margin-bottom:4px;">🖼️</div>
+        <div style="margin-bottom:4px;display:flex;justify-content:center;"><svg class="icon" aria-hidden="true"><use href="#i-landscape"/></svg></div>
         <div style="font-size:12px;font-weight:700;">Landscape</div>
         <div style="font-size:10px;color:#94a3b8;margin-top:2px;">11 × 8.5 in</div>
       </label>
@@ -1502,9 +1800,73 @@
       <button id="export-opts-cancel" style="flex:1;padding:8px;border:1px solid #2e3f5c;background:transparent;color:#94a3b8;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
       <button id="export-opts-go" style="flex:2;padding:8px;border:none;background:#2e6bd6;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">Export / Print PDF →</button>
     </div>
-    <button id="export-opts-studio-btn" style="width:100%;margin-top:10px;padding:8px 12px;border:1px solid rgba(201,168,76,0.55);background:rgba(201,168,76,0.12);color:#fcd34d;border-radius:6px;cursor:pointer;font-size:12.5px;font-weight:600;">🖨️ Open in Print Studio…</button>
+    <button id="export-opts-studio-btn" style="width:100%;margin-top:10px;padding:8px 12px;border:1px solid rgba(201,168,76,0.55);background:rgba(201,168,76,0.12);color:#fcd34d;border-radius:6px;cursor:pointer;font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-printer"/></svg><span>Open in Print Studio…</span></button>
   </div>
 </div>
+
+<!-- Command Palette (Ctrl/Cmd+K) -->
+<dialog id="commandPalette" class="cmd-palette palette" aria-label="Command palette">
+  <div class="palette__box">
+    <div class="palette__search">
+      <svg class="icon palette__icon" aria-hidden="true"><use href="#i-search"/></svg>
+      <input type="search" class="palette__input" id="paletteInput" placeholder="Jump to case, command, or skin..." autocomplete="off" aria-label="Search commands and cases">
+      <kbd class="palette__esc">ESC</kbd>
+    </div>
+    <div class="palette__results" id="paletteResults" role="listbox" aria-label="Command results">
+      <div class="palette__group" id="paletteCasesGroup">
+        <div class="palette__heading">Cases &amp; Documents</div>
+      </div>
+      <div class="palette__group" id="paletteActionsGroup">
+        <div class="palette__heading">Actions &amp; Navigation</div>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="go-desk">
+          <span class="palette__item-label">Go to Study Desk</span>
+          <span class="palette__item-hint">View</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="perplexity-digest">
+          <span class="palette__item-label">Case Digest (Perplexity)</span>
+          <span class="palette__item-hint">Perplexity</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="open-digest">
+          <span class="palette__item-label">Focus Case Digest Editor</span>
+          <span class="palette__item-hint">Notepad</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="open-notes">
+          <span class="palette__item-label">Toggle PDF Notepad</span>
+          <span class="palette__item-hint">Panel</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="open-color-categories">
+          <span class="palette__item-label">Manage Highlight Colors</span>
+          <span class="palette__item-hint">Highlights</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="toggle-rail-autohide">
+          <span class="palette__item-label">Toggle Sidebar Pin / Auto-Hide</span>
+          <span class="palette__item-hint">Layout</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="toggle-skin">
+          <span class="palette__item-label">Switch Skin (Folio / Casebook)</span>
+          <span class="palette__item-hint">Appearance</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="toggle-search">
+          <span class="palette__item-label">Search in PDF / Annotations</span>
+          <span class="palette__item-hint">Ctrl+F</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="toggle-tags">
+          <span class="palette__item-label">Topic Coverage &amp; Tags</span>
+          <span class="palette__item-hint">Panel</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="zoom-in">
+          <span class="palette__item-label">Zoom In</span>
+          <span class="palette__item-hint">+25%</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="zoom-out">
+          <span class="palette__item-label">Zoom Out</span>
+          <span class="palette__item-hint">-25%</span>
+        </button>
+      </div>
+      <p class="palette__empty" id="paletteEmpty" hidden>No matching cases or commands.</p>
+    </div>
+  </div>
+</dialog>
 
 </body>
 </html>

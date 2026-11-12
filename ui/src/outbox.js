@@ -8,73 +8,32 @@ import { safeStorageSet, safeStorageGet } from './storage.js';
 
 const QUEUE_KEY = 'offline_outbox_queue';
 let _isReplaying = false;
-let _memoryQueue = null;
 
-// ── Read / Write Queue in localStorage + Native SQLite Mirror ──
+// ── Read / Write Queue in localStorage ──
 export function getOutboxQueue() {
-  if (Array.isArray(_memoryQueue)) return _memoryQueue;
   try {
-    _memoryQueue = JSON.parse(safeStorageGet(QUEUE_KEY, '[]') || '[]');
-    return _memoryQueue;
+    return JSON.parse(safeStorageGet(QUEUE_KEY, '[]') || '[]');
   } catch {
-    _memoryQueue = [];
-    return _memoryQueue;
+    return [];
   }
 }
 
 function saveOutboxQueue(queue) {
-  _memoryQueue = Array.isArray(queue) ? queue : [];
-  safeStorageSet(QUEUE_KEY, JSON.stringify(_memoryQueue));
-  window.__DESKTOP_SQLITE__?.saveOutbox?.(_memoryQueue);
+  safeStorageSet(QUEUE_KEY, JSON.stringify(queue));
   updateOutboxUI();
 }
 
-// ── Add action to offline queue (with smart coalescing for notes/drawings/folders) ──
+// ── Add action to offline queue ──
 export function enqueueAction(table, action, data, matchQuery = null) {
-  const queue = [...getOutboxQueue()];
+  const queue = getOutboxQueue();
   const entry = {
     qid: 'outbox_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
     table,
-    action, // 'upsert' | 'update' | 'delete'
+    action, // 'upsert' | 'delete'
     data,
-    matchQuery, // { id: '...' } for delete/update
+    matchQuery, // { id: '...' } for delete
     created_at: Date.now()
   };
-
-  // Coalesce repeated offline upserts/updates to the same note, folder, drawing, or setting
-  if (action === 'upsert' && data) {
-    const keyField = table === 'pdf_notes' ? 'pdf_id'
-      : table === 'dictionary' ? 'word'
-      : table === 'app_settings' ? 'key'
-      : data.id ? 'id' : null;
-    if (keyField && data[keyField]) {
-      const existingIdx = queue.findIndex(
-        item => item.table === table && item.action === 'upsert' && item.data?.[keyField] === data[keyField]
-      );
-      if (existingIdx !== -1) {
-        queue[existingIdx] = {
-          ...queue[existingIdx],
-          data: { ...queue[existingIdx].data, ...data },
-          created_at: Date.now(),
-        };
-        saveOutboxQueue(queue);
-        return;
-      }
-    }
-  } else if (action === 'update' && matchQuery?.id) {
-    const existingIdx = queue.findIndex(
-      item => item.table === table && item.action === 'update' && item.matchQuery?.id === matchQuery.id
-    );
-    if (existingIdx !== -1) {
-      queue[existingIdx] = {
-        ...queue[existingIdx],
-        data: { ...queue[existingIdx].data, ...data },
-        created_at: Date.now(),
-      };
-      saveOutboxQueue(queue);
-      return;
-    }
-  }
 
   queue.push(entry);
   saveOutboxQueue(queue);
@@ -251,27 +210,7 @@ export async function safeDbWrite(dbClient, table, action, data, matchQuery = nu
 }
 
 // ── Initialize event listeners for online reconnection ──
-export async function initOutbox(dbClient) {
-  // 0. Hydrate any persisted offline queue items from Native SQLite Mirror on D: drive
-  if (window.__DESKTOP_SQLITE__?.loadOutbox) {
-    try {
-      const sqQueue = await window.__DESKTOP_SQLITE__.loadOutbox();
-      if (Array.isArray(sqQueue) && sqQueue.length > 0) {
-        const cur = getOutboxQueue();
-        const seenQids = new Set(cur.map(x => x.qid));
-        let changed = false;
-        for (const item of sqQueue) {
-          if (item && item.qid && !seenQids.has(item.qid)) {
-            cur.push(item);
-            seenQids.add(item.qid);
-            changed = true;
-          }
-        }
-        if (changed) saveOutboxQueue(cur);
-      }
-    } catch {}
-  }
-
+export function initOutbox(dbClient) {
   // 1. When Wi-Fi reconnects, automatically replay queue
   window.addEventListener('online', () => {
     console.log('[Outbox] Device is back ONLINE. Triggering auto-sync…');

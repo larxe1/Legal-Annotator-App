@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// GOODNOTES SCHOOL NOTEBOOK UI — Warm Paper Theme Switcher, Multi-Case Tabs,
-// Color-Coded Subject Binders, Case Digest Tracker, & Study Desk Home
+// GOODNOTES & DUAL-SKIN UI — Chancery & Folio (Day) / Darkroom Casebook (Night),
+// Multi-Case Tabs, Color-Coded Subject Binders, & Study Desk Home
 // ═══════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
 import { safeStorageGet, safeStorageSet, safeStorageRemove, initStorageManager } from './storage.js';
@@ -68,42 +68,119 @@ export function pruneInactiveTabs() {
   }
 }
 
-// ── 1. Theme System (Default: GoodNotes Warm Paper) ─────────────────────────
-export function getAppTheme() {
-  return safeStorageGet(THEME_KEY) || 'paper';
+// ── 1. Theme System (Default: Chancery & Folio Day Skin) ─────────────────────
+function normalizeAppTheme(raw) {
+  if (raw === 'paper' || raw === 'folio') return 'folio';
+  if (raw === 'slate' || raw === 'casebook') return 'casebook';
+  if (raw === 'classic') return 'classic';
+  return 'folio';
 }
 
-export function applyAppTheme(theme) {
-  const valid = ['paper', 'slate', 'classic'].includes(theme) ? theme : 'paper';
-  document.body.classList.remove('theme-paper', 'theme-slate', 'theme-classic');
-  document.body.classList.add(`theme-${valid}`);
-  safeStorageSet(THEME_KEY, valid);
+function skinToLegacyBodyClass(skin) {
+  if (skin === 'casebook') return 'theme-slate';
+  if (skin === 'classic') return 'theme-classic';
+  return 'theme-paper';
+}
 
+export function getAppTheme() {
+  const raw = safeStorageGet(THEME_KEY);
+  const normalized = normalizeAppTheme(raw);
+  if (raw === 'paper' || raw === 'slate') {
+    safeStorageSet(THEME_KEY, normalized);
+  }
+  return normalized;
+}
+
+function updateThemeToggleButton(skin) {
   const btn = document.getElementById('btn-theme-toggle');
-  if (btn) {
-    if (valid === 'paper') {
-      btn.innerHTML = '<span>☀️</span><span>Paper</span>';
-      btn.title = 'Current: GoodNotes Warm Paper (Click for Cozy Dark Mode)';
-    } else if (valid === 'slate') {
-      btn.innerHTML = '<span>🌙</span><span>Dark</span>';
-      btn.title = 'Current: GoodNotes Cozy Dark (Click for Classic Navy)';
-    } else {
-      btn.innerHTML = '<span>⚖️</span><span>Classic</span>';
-      btn.title = 'Current: Classic Navy (Click for GoodNotes Warm Paper)';
-    }
+  if (!btn) return;
+  if (skin === 'folio') {
+    btn.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-sun"/></svg><span>Folio</span>';
+    btn.title = 'Current: Chancery & Folio (Day) — Click to switch to Darkroom Casebook';
+  } else if (skin === 'casebook') {
+    btn.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-moon"/></svg><span>Casebook</span>';
+    btn.title = 'Current: Darkroom Casebook (Night) — Click to switch to Chancery & Folio';
+  } else {
+    btn.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-scale"/></svg><span>Classic</span>';
+    btn.title = 'Current: Classic Legal Navy — Click to switch to Chancery & Folio';
   }
 }
 
-export function cycleAppTheme() {
+export function applyAppTheme(theme) {
+  const valid = normalizeAppTheme(theme);
+  const root = document.documentElement;
+  root.setAttribute('data-skin', valid);
+  document.body.classList.remove('theme-paper', 'theme-slate', 'theme-classic');
+  document.body.classList.add(skinToLegacyBodyClass(valid));
+  safeStorageSet(THEME_KEY, valid);
+  updateThemeToggleButton(valid);
+}
+
+export function cycleAppTheme(originEvent) {
   const cur = getAppTheme();
-  const next = cur === 'paper' ? 'slate' : cur === 'slate' ? 'classic' : 'paper';
-  applyAppTheme(next);
-  const names = {
-    paper: '☀️ GoodNotes Warm Paper theme active',
-    slate: '🌙 GoodNotes Cozy Dark theme active',
-    classic: '⚖️ Classic Legal Navy theme active',
+  const next = cur === 'folio' ? 'casebook' : 'folio';
+  const root = document.documentElement;
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const swap = () => applyAppTheme(next);
+
+  const announce = () => {
+    const names = {
+      folio: 'Chancery & Folio (Day) active',
+      casebook: 'Darkroom Casebook (Night) active',
+      classic: 'Classic Legal Navy active',
+    };
+    toast(names[next]);
   };
-  toast(names[next]);
+
+  if (!document.startViewTransition || reduceMotion) {
+    swap();
+    announce();
+    return;
+  }
+
+  let x = window.innerWidth / 2;
+  let y = window.innerHeight / 2;
+  const toggleBtn = document.getElementById('btn-theme-toggle');
+  if (originEvent && typeof originEvent.clientX === 'number' && originEvent.clientX > 0) {
+    x = originEvent.clientX;
+    y = originEvent.clientY;
+  } else if (toggleBtn) {
+    const rect = toggleBtn.getBoundingClientRect();
+    x = rect.left + rect.width / 2;
+    y = rect.top + rect.height / 2;
+  }
+
+  const endRadius = Math.hypot(
+    Math.max(x, window.innerWidth - x),
+    Math.max(y, window.innerHeight - y)
+  );
+
+  root.setAttribute('data-transition', 'skin');
+  try {
+    const vt = document.startViewTransition(swap);
+    vt.ready.then(() => {
+      root.animate(
+        {
+          clipPath: [
+            `circle(0px at ${x}px ${y}px)`,
+            `circle(${endRadius}px at ${x}px ${y}px)`,
+          ],
+        },
+        {
+          duration: 320,
+          easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+          pseudoElement: '::view-transition-new(root)',
+        }
+      );
+    }).catch(() => {});
+    vt.finished.finally(() => {
+      root.removeAttribute('data-transition');
+    });
+  } catch {
+    root.removeAttribute('data-transition');
+    swap();
+  }
+  announce();
 }
 
 // ── 2. Subject Binder Color Helper ──────────────────────────────────────────
@@ -379,10 +456,10 @@ export function renderDocTabs() {
 
   bar.innerHTML = '';
 
-  // 1. Pinned "🏠 Study Desk" Tab
+  // 1. Pinned "Study Desk" Tab
   const homeTab = document.createElement('div');
   homeTab.className = 'gn-tab gn-tab-home' + (_activeTabId === 'home' && !S.curPDF ? ' active' : '');
-  homeTab.innerHTML = `<span class="gn-tab-icon">🏠</span><span class="gn-tab-title">Study Desk</span>`;
+  homeTab.innerHTML = `<span class="gn-tab-icon"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-desk"/></svg></span><span class="gn-tab-title">Study Desk</span>`;
   homeTab.title = 'Return to Study Desk & Class Schedule';
   homeTab.addEventListener('click', () => activateDocTab('home'));
   bar.appendChild(homeTab);
@@ -402,7 +479,7 @@ export function renderDocTabs() {
         const subj = getSubjectForPdf(pdf);
         if (subj) color = getSubjectBinderColor(subj);
         if (hasCaseDigest(pdf)) {
-          statusBadge = '<span class="gn-tab-status" title="Has Case Digest">⚖️</span>';
+          statusBadge = '<span class="gn-tab-status" title="Has Case Digest"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-scale"/></svg></span>';
         }
       }
     } else {
@@ -414,13 +491,14 @@ export function renderDocTabs() {
       }
     }
 
-    const icon = t.type === 'pdf' ? '📄' : '📓';
+    const iconId = t.type === 'pdf' ? 'i-note' : 'i-book';
+    el.style.setProperty('--spine', color);
     el.innerHTML = `
       <span class="gn-tab-dot" style="background:${color}"></span>
-      <span class="gn-tab-icon">${icon}</span>
+      <span class="gn-tab-icon"><svg class="icon icon-sm" aria-hidden="true"><use href="#${iconId}"/></svg></span>
       <span class="gn-tab-title" title="${(t.name || '').replace(/"/g, '&quot;')}">${t.name}</span>
       ${statusBadge}
-      <button class="gn-tab-close" title="Close tab">×</button>
+      <button class="gn-tab-close" title="Close tab" aria-label="Close tab"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-close"/></svg></button>
     `;
 
     el.addEventListener('click', () => activateDocTab(t.tabId));
@@ -563,7 +641,7 @@ export function openSubjectBinderByTitle(rawTitle) {
   }
 
   if (!matchedSubj) {
-    toast(`📚 Tip: Create or open "${rawTitle}" in the Library sidebar on the left.`);
+    toast(`Tip: Create or open "${rawTitle}" in the Library sidebar on the left.`);
     return false;
   }
 
@@ -581,8 +659,16 @@ export function openSubjectBinderByTitle(rawTitle) {
       }
     }, 60);
   });
-  toast(`📚 Opened "${matchedSubj.name}" binder`);
+  toast(`Opened "${matchedSubj.name}" binder`);
   return true;
+}
+
+function escDeskHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 export function renderStudyDesk(options = {}) {
@@ -612,7 +698,7 @@ export function renderStudyDesk(options = {}) {
   // Update header subtitle with live Digest stats pill
   const headerP = cal.querySelector('.cal-header p');
   if (headerP) {
-    headerP.innerHTML = `2ND YEAR, 1ST SEMESTER &nbsp;•&nbsp; <span class="gn-desk-stat">⚖️ ${digestedCount} / ${totalCases} Digested</span>`;
+    headerP.innerHTML = `2ND YEAR, 1ST SEMESTER &nbsp;•&nbsp; <span class="gn-desk-stat" style="display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums;"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-scale"/></svg><span>${digestedCount} / ${totalCases} Digested</span></span>`;
   }
 
   const recentItems = getRecentPdfsForShelf();
@@ -620,13 +706,13 @@ export function renderStudyDesk(options = {}) {
     shelf.style.display = 'block';
     shelf.innerHTML = `
       <div class="gn-shelf-hd">
-        <span>📖 Continue Studying</span>
+        <span style="display:inline-flex;align-items:center;gap:6px;"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-book"/></svg><span>Continue Studying</span></span>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="gn-shelf-sub">Your most recently opened cases</span>
           <button type="button" class="gn-shelf-clear" title="Clear Continue Studying list">Clear list</button>
         </div>
       </div>
-      <div class="gn-shelf-grid"></div>
+      <div class="gn-shelf-grid folios" aria-label="Case folios"></div>
     `;
     shelf.querySelector('.gn-shelf-clear')?.addEventListener('click', e => clearAllRecentReads(e));
     const grid = shelf.querySelector('.gn-shelf-grid');
@@ -636,23 +722,27 @@ export function renderStudyDesk(options = {}) {
       const spineColor = getSubjectBinderColor(subj, i);
       const digested = hasCaseDigest(pdf);
       const stClass = digested ? 'read' : '';
-      const stLabel = digested ? '⚖️ Digest Ready' : '📝 No Digest Yet';
+      const stLabel = digested ? 'Digest Ready' : 'No Digest Yet';
+      const stIcon = digested ? 'i-scale' : 'i-note';
       const timeLabel = formatRelativeTime(ts);
 
       const card = document.createElement('div');
-      card.className = 'gn-notebook-card';
+      card.className = 'gn-notebook-card folio';
+      card.dataset.caseId = String(pdf.id);
       card.style.setProperty('--spine-color', spineColor);
+      card.style.setProperty('--spine', spineColor);
+      card.style.borderInlineStart = `4px solid ${spineColor}`;
+      card.style.padding = '14px 16px';
       card.innerHTML = `
-        <div class="gn-nb-spine" style="background:${spineColor}"></div>
-        <div class="gn-nb-body">
-          <div class="gn-nb-top-row">
-            <div class="gn-nb-meta">${subj ? subj.name : 'Library'}${fold ? ' › ' + fold.name : ''}</div>
-            <button type="button" class="gn-nb-dismiss" title="Remove from Continue Studying">✕</button>
+        <div class="gn-nb-body" style="padding:0;gap:6px;">
+          <div class="gn-nb-top-row folio__top">
+            <div class="gn-nb-meta folio__subject">${escDeskHtml(subj ? subj.name : 'Library')}${fold ? ' › ' + escDeskHtml(fold.name) : ''}</div>
+            <button type="button" class="gn-nb-dismiss" title="Remove from Continue Studying" aria-label="Remove from Continue Studying"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-close"/></svg></button>
           </div>
-          <div class="gn-nb-title" title="${pdf.name.replace(/"/g, '&quot;')}">${pdf.name}</div>
-          <div class="gn-nb-footer">
-            <span class="gn-nb-status ${stClass}">${stLabel}</span>
-            <span class="gn-nb-time">${timeLabel}</span>
+          <div class="gn-nb-title folio__title" style="font-family:var(--font-display);" title="${escDeskHtml(pdf.name)}">${escDeskHtml(pdf.name)}</div>
+          <div class="gn-nb-footer folio__footer">
+            <span class="gn-nb-status folio__status ${stClass}" data-digest="${digested ? 'ready' : 'none'}" style="display:inline-flex;align-items:center;gap:4px;"><svg class="icon icon-sm" aria-hidden="true"><use href="#${stIcon}"/></svg><span>${stLabel}</span></span>
+            <span class="gn-nb-time folio__pages" style="font-family:var(--font-mono, var(--font-num));font-variant-numeric:tabular-nums;">${timeLabel}</span>
           </div>
         </div>
       `;
@@ -683,17 +773,26 @@ export function renderStudyDesk(options = {}) {
     const subjTitle = strong.textContent.trim();
     const color = getSubjectBinderColor({ name: subjTitle });
     item.style.borderLeft = `4px solid ${color}`;
+    item.style.setProperty('--spine', color);
 
     if (!item.querySelector('.gn-cal-actions')) {
       const bar = document.createElement('div');
       bar.className = 'gn-cal-actions';
       bar.innerHTML = `
-        <span class="gn-cal-open-binder" title="Open ${subjTitle} binder in Library">📖 Open Syllabus ↗</span>
-        <button class="gn-cal-note-btn" type="button" title="Open quick class notes for ${subjTitle}">📝 Note</button>
+        <span class="gn-cal-open-binder" style="display:inline-flex;align-items:center;gap:4px;" title="Open ${escDeskHtml(subjTitle)} binder in Library"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-book"/></svg><span>Open Syllabus</span><svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-right"/></svg></span>
+        <button class="gn-cal-note-btn" type="button" style="display:inline-flex;align-items:center;gap:4px;" title="Open quick class notes for ${escDeskHtml(subjTitle)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-note"/></svg><span>Note</span></button>
       `;
       item.appendChild(bar);
     }
   });
+
+  if (!cal.querySelector('.desk-quote')) {
+    const quote = document.createElement('blockquote');
+    quote.className = 'desk-quote cal-quote';
+    quote.style.fontFamily = 'var(--font-display)';
+    quote.textContent = '“Lex scripta manet — the written law endures.”';
+    cal.appendChild(quote);
+  }
 }
 
 // ── 6. Initialize All GoodNotes UI Upgrades ─────────────────────────────────
@@ -708,7 +807,7 @@ export function initGoodNotesUI() {
   renderDocTabs();
   renderStudyDesk();
 
-  document.getElementById('btn-theme-toggle')?.addEventListener('click', cycleAppTheme);
+  document.getElementById('btn-theme-toggle')?.addEventListener('click', (e) => cycleAppTheme(e));
 
   // Background timer to prune inactive tabs every 20 seconds and on window focus/visibility change
   setInterval(pruneInactiveTabs, 20000);

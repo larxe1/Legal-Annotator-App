@@ -1,7 +1,7 @@
 {
-  "version": "1.17.0",
-  "build": 43,
-  "updatedAt": "2026-11-12",
-  "notes": "Add modular standalone Legal Print Studio window for previewing, customizing, and printing Notes, Case Digests, Folder Docs, and Summary Tables.",
-  "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
+    "version":  "1.18.0",
+    "build":  44,
+    "updatedAt":  "2026-11-12T23:21:36Z",
+    "notes":  "Dual UI skins (Chancery & Folio / Darkroom Casebook), live Perplexity digest monitor & popup focus fix, and customizable highlight color categories.",
+    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

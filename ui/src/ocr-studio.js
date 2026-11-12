@@ -58,19 +58,8 @@ export function initReaderOcrStatusPill() {
   const pill = document.createElement('button');
   pill.id = 'ocr-status-pill';
   pill.type = 'button';
-  pill.className = 'tb-btn ocr-status-pill-btn';
-  pill.style.cssText = [
-    'display:none',
-    'align-items:center',
-    'gap:6px',
-    'padding:3px 10px',
-    'border-radius:999px',
-    'font-size:11.5px',
-    'font-weight:600',
-    'cursor:pointer',
-    'transition:all 0.2s ease',
-    'white-space:nowrap',
-  ].join(';');
+  pill.className = 'tb-btn casebar__btn ocr-status-pill-btn';
+  pill.style.display = 'none';
   pill.title = 'Click to view OCR status or open Legal OCR & Compressor Studio';
 
   ocrBtn.insertAdjacentElement('afterend', pill);
@@ -102,10 +91,7 @@ export async function updateReaderOcrStatusPill(overrideState = null) {
       const pct = Math.min(99, Math.max(0, Math.round(overrideState.pct || 0)));
       const curP = overrideState.currentPage || 1;
       const totP = overrideState.totalPages || totalPages;
-      pill.innerHTML = `<span class="ocr-pulse-dot" style="width:8px;height:8px;border-radius:50%;background:#facc15;display:inline-block;box-shadow:0 0 8px #facc15;"></span><span>⏳ OCR ${overrideState.isStudio ? '& Compress' : 'Scan'}: ${curP}/${totP} (${pct}%)</span>`;
-      pill.style.background = 'rgba(234, 179, 8, 0.16)';
-      pill.style.border = '1px solid rgba(250, 204, 21, 0.55)';
-      pill.style.color = '#fde047';
+      pill.innerHTML = `<span class="ocr-pulse-dot"></span><svg class="icon" aria-hidden="true"><use href="#i-scan"/></svg><span>OCR ${overrideState.isStudio ? '& Compress' : 'Scan'}: ${curP}/${totP} (${pct}%)</span>`;
       return;
     }
     pill.style.display = 'none';
@@ -120,10 +106,7 @@ export async function updateReaderOcrStatusPill(overrideState = null) {
       if (job && (job.status === 'running' || job.status === 'downloading')) {
         pill.style.display = 'inline-flex';
         const pct = job.totalPages > 0 ? Math.round((job.currentPage / job.totalPages) * 100) : 0;
-        pill.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:#facc15;display:inline-block;"></span><span>⏳ Studio OCR & Compress: ${job.currentPage}/${job.totalPages || totalPages} (${pct}%)</span>`;
-        pill.style.background = 'rgba(234, 179, 8, 0.16)';
-        pill.style.border = '1px solid rgba(250, 204, 21, 0.55)';
-        pill.style.color = '#fde047';
+        pill.innerHTML = `<span class="ocr-pulse-dot"></span><svg class="icon" aria-hidden="true"><use href="#i-scan"/></svg><span>Studio OCR & Compress: ${job.currentPage}/${job.totalPages || totalPages} (${pct}%)</span>`;
         watchStudioJobForCurrentPdf(tid);
         return;
       }
@@ -177,17 +160,17 @@ export function showPersistentOcrCompletionBanner({
     'gap:16px',
     'max-width:92vw',
     'color:#ecfdf5',
-    'font-family:Inter, sans-serif',
+    'font-family:var(--font-ui, "Public Sans", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif)',
   ].join(';');
 
   const hasCompression = originalBytes > 0 && compressedBytes > 0 && savedPct > 1;
   const sizeBadgeHtml = hasCompression
-    ? `<span style="background:rgba(74,222,128,0.2);border:1px solid rgba(74,222,128,0.45);color:#86efac;padding:3px 9px;border-radius:6px;font-weight:700;font-size:12px;">🗜️ Compressed ${formatBytesMB(originalBytes)} → ${formatBytesMB(compressedBytes)} (-${Math.round(savedPct)}%)</span>`
+    ? `<span style="background:rgba(74,222,128,0.2);border:1px solid rgba(74,222,128,0.45);color:#86efac;padding:3px 9px;border-radius:6px;font-weight:700;font-size:12px;">Compressed ${formatBytesMB(originalBytes)} → ${formatBytesMB(compressedBytes)} (-${Math.round(savedPct)}%)</span>`
     : '';
   const wordsTxt = words > 0 ? ` • ${words.toLocaleString()} words indexed` : '';
 
   banner.innerHTML = `
-    <div style="font-size:26px;line-height:1;">✅</div>
+    <div style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:rgba(74,222,128,0.18);color:#4ade80;flex-shrink:0;"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></div>
     <div style="display:flex;flex-direction:column;gap:4px;flex:1;">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <strong style="font-size:14px;color:#4ade80;letter-spacing:0.01em;">
@@ -200,11 +183,11 @@ export function showPersistentOcrCompletionBanner({
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-      <button id="ocr-banner-btn-search" style="padding:7px 13px;border-radius:7px;border:1px solid #4ade80;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">
-        🔍 Test Search (Ctrl+F)
+      <button id="ocr-banner-btn-search" style="padding:7px 13px;border-radius:7px;border:1px solid #4ade80;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;">
+        <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><span>Test Search (Ctrl+F)</span>
       </button>
-      <button id="ocr-banner-btn-dismiss" style="padding:7px 11px;border-radius:7px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.08);color:#d1fae5;font-size:12px;cursor:pointer;">
-        ✓ Got It
+      <button id="ocr-banner-btn-dismiss" style="padding:7px 11px;border-radius:7px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.08);color:#d1fae5;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;">
+        <svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Got It</span>
       </button>
     </div>
   `;
@@ -240,7 +223,7 @@ export async function launchLinkedOcrStudioForPdf(pdfObj = null, preset = 'balan
 
   const targetPdf = pdfObj || S.curPDF;
   if (!targetPdf && !isDesktop) {
-    toast('⚠️ Please open or select a PDF first.');
+    toast('Please open or select a PDF first.');
     return;
   }
 
@@ -273,15 +256,15 @@ export async function launchLinkedOcrStudioForPdf(pdfObj = null, preset = 'balan
       ? await window.__DESKTOP_PDFIUM__.launchOcrStudio(launchArgs)
       : await window.__TAURI_INTERNALS__.invoke('desktop_launch_ocr_studio', launchArgs);
     if (res?.ok) {
-      toast(`🚀 Launched "Legal OCR & Compressor Studio" for "${pdfName}"!`);
+      toast(`Launched "Legal OCR & Compressor Studio" for "${pdfName}"`);
       if (tid) {
         watchStudioJobForCurrentPdf(tid);
       }
     } else {
-      toast('⚠️ Could not launch Legal OCR Studio: ' + (res?.error || 'Unknown error'));
+      toast('Could not launch Legal OCR Studio: ' + (res?.error || 'Unknown error'));
     }
   } catch (err) {
-    toast('❌ Failed to launch Legal OCR Studio: ' + (err.message || err));
+    toast('Failed to launch Legal OCR Studio: ' + (err.message || err));
   }
 }
 
@@ -415,19 +398,19 @@ function renderStandaloneOcrStudioUI(studioInfo) {
   };
 
   document.body.innerHTML = `
-    <div id="ocr-studio-app" style="min-height:100vh;background:#0a0f1a;color:#e8e4db;font-family:'Inter',sans-serif;display:flex;flex-direction:column;box-sizing:border-box;user-select:none;">
+    <div id="ocr-studio-app" style="min-height:100vh;background:#0a0f1a;color:#e8e4db;font-family:var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);display:flex;flex-direction:column;box-sizing:border-box;user-select:none;">
       
       <!-- Top Studio Bar -->
       <header style="background:#111a2c;border-bottom:1px solid #22334d;padding:16px 26px;display:flex;align-items:center;justify-content:space-between;gap:16px;">
         <div style="display:flex;align-items:center;gap:12px;">
-          <div style="width:42px;height:42px;border-radius:10px;background:linear-gradient(135deg,#c9a84c,#9b7824);display:flex;align-items:center;justify-content:center;font-size:22px;box-shadow:0 4px 14px rgba(201,168,76,0.3);">
-            🗜️
+          <div style="width:42px;height:42px;border-radius:10px;background:linear-gradient(135deg,#c9a84c,#9b7824);color:#090d16;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(201,168,76,0.3);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V4h3M20 7V4h-3M4 17v3h3M20 17v3h-3M7 12h10"/></svg>
           </div>
           <div>
-            <h1 style="margin:0;font-family:'Libre Baskerville',serif;font-size:19px;color:#f3ead6;display:flex;align-items:center;gap:10px;">
+            <h1 style="margin:0;font-family:var(--font-display, 'Literata', Georgia, 'Palatino Linotype', 'Book Antiqua', serif);font-size:19px;color:#f3ead6;display:flex;align-items:center;gap:10px;">
               Legal OCR &amp; Compressor Studio
-              <span style="font-family:'Inter',sans-serif;font-size:11px;padding:3px 9px;border-radius:999px;background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(74,222,128,0.4);">
-                🔗 Linked with Legal Annotator
+              <span style="font-family:var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);font-size:11px;padding:3px 9px;border-radius:999px;background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(74,222,128,0.4);">
+                Linked with Legal Annotator
               </span>
             </h1>
             <p style="margin:3px 0 0 0;font-size:12px;color:#8ea0b8;">
@@ -438,7 +421,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
 
         <!-- Unmistakable Top Status Badge -->
         <div id="studio-top-status-badge" style="padding:8px 16px;border-radius:999px;font-size:12.5px;font-weight:700;background:rgba(255,255,255,0.06);border:1px solid #2e4366;color:#cbd5e1;display:flex;align-items:center;gap:8px;">
-          <span>⚪</span>
+          <span style="width:8px;height:8px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>
           <span id="studio-top-status-text">Ready — Select a PDF</span>
         </div>
       </header>
@@ -454,20 +437,20 @@ function renderStandaloneOcrStudioUI(studioInfo) {
             </label>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <button id="studio-btn-pick-file" style="padding:7px 14px;border-radius:7px;border:1px solid #c9a84c;background:rgba(201,168,76,0.14);color:#f3ead6;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;">
-                📂 Pick Any PDF from Computer…
+                Pick Any PDF from Computer…
               </button>
             </div>
           </div>
 
           <div id="studio-file-card" style="background:#0b111e;border:1px solid #22334d;border-radius:9px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:14px;">
             <div style="display:flex;align-items:center;gap:12px;min-width:0;">
-              <div style="font-size:28px;">📄</div>
+              <div style="width:36px;height:36px;border-radius:8px;background:rgba(201,168,76,0.12);color:#c9a84c;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></svg></div>
               <div style="min-width:0;">
                 <div id="studio-file-name" style="font-size:15px;font-weight:700;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                   ${state.pdfName ? state.pdfName : 'No PDF selected yet'}
                 </div>
                 <div id="studio-file-meta" style="font-size:12px;color:#8ea0b8;margin-top:3px;">
-                  ${state.filePath ? state.filePath : (state.docId || state.driveId ? '☁️ Linked to Legal Annotator Cloud Library (Auto-Downloads to Local Disk Cache if needed)' : 'Click "Pick Any PDF from Computer…" or launch directly from Legal Annotator')}
+                  ${state.filePath ? state.filePath : (state.docId || state.driveId ? 'Linked to Legal Annotator Cloud Library (Auto-Downloads to Local Disk Cache if needed)' : 'Click "Pick Any PDF from Computer…" or launch directly from Legal Annotator')}
                 </div>
               </div>
             </div>
@@ -487,7 +470,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
             <!-- Preset 1: Balanced -->
             <div class="studio-preset-card" data-preset="balanced" style="background:#0b111e;border:2px solid #c9a84c;border-radius:10px;padding:14px;cursor:pointer;display:flex;flex-direction:column;gap:6px;">
               <div style="display:flex;align-items:center;justify-content:space-between;">
-                <strong style="font-size:13.5px;color:#f3ead6;">⭐ Crisp Legal Scan</strong>
+                <strong style="font-size:13.5px;color:#f3ead6;">Crisp Legal Scan</strong>
                 <span style="font-size:10.5px;padding:2px 7px;border-radius:5px;background:rgba(34,197,94,0.18);color:#4ade80;font-weight:700;">~75–80% Smaller</span>
               </div>
               <div style="font-size:11.5px;color:#94a3b8;line-height:1.45;">
@@ -498,7 +481,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
             <!-- Preset 2: Max Compression -->
             <div class="studio-preset-card" data-preset="max" style="background:#0b111e;border:2px solid #22334d;border-radius:10px;padding:14px;cursor:pointer;display:flex;flex-direction:column;gap:6px;">
               <div style="display:flex;align-items:center;justify-content:space-between;">
-                <strong style="font-size:13.5px;color:#f3ead6;">⚡ Max Compression</strong>
+                <strong style="font-size:13.5px;color:#f3ead6;">Max Compression</strong>
                 <span style="font-size:10.5px;padding:2px 7px;border-radius:5px;background:rgba(56,189,248,0.18);color:#38bdf8;font-weight:700;">~85% Smaller</span>
               </div>
               <div style="font-size:11.5px;color:#94a3b8;line-height:1.45;">
@@ -509,7 +492,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
             <!-- Preset 3: Archival -->
             <div class="studio-preset-card" data-preset="archival" style="background:#0b111e;border:2px solid #22334d;border-radius:10px;padding:14px;cursor:pointer;display:flex;flex-direction:column;gap:6px;">
               <div style="display:flex;align-items:center;justify-content:space-between;">
-                <strong style="font-size:13.5px;color:#f3ead6;">🔍 High-DPI Archival</strong>
+                <strong style="font-size:13.5px;color:#f3ead6;">High-DPI Archival</strong>
                 <span style="font-size:10.5px;padding:2px 7px;border-radius:5px;background:rgba(201,168,76,0.18);color:#c9a84c;font-weight:700;">~60% Smaller</span>
               </div>
               <div style="font-size:11.5px;color:#94a3b8;line-height:1.45;">
@@ -532,10 +515,10 @@ function renderStandaloneOcrStudioUI(studioInfo) {
             </div>
             <div style="display:flex;gap:10px;">
               <button id="studio-btn-cancel" style="display:none;padding:10px 18px;border-radius:8px;border:1px solid #ef4444;background:rgba(239,68,68,0.15);color:#fca5a5;font-size:13px;font-weight:700;cursor:pointer;">
-                ⏹ Stop Job
+                Stop Job
               </button>
               <button id="studio-btn-start" style="padding:11px 24px;border-radius:8px;border:none;background:linear-gradient(135deg,#c9a84c,#a8842c);color:#090d16;font-size:13.5px;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(201,168,76,0.3);">
-                🚀 Start OCR &amp; Compress PDF
+                Start OCR &amp; Compress PDF
               </button>
             </div>
           </div>
@@ -583,7 +566,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
           <div id="studio-complete-panel" style="display:none;background:linear-gradient(135deg,#0c2919 0%,#113823 100%);border:2px solid #4ade80;border-radius:12px;padding:20px;flex-direction:column;gap:16px;box-shadow:0 10px 30px rgba(34,197,94,0.18);">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
               <div style="display:flex;align-items:center;gap:12px;">
-                <div style="font-size:34px;">✅</div>
+                <div style="width:36px;height:36px;border-radius:50%;background:rgba(74,222,128,0.2);color:#4ade80;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div>
                 <div>
                   <h2 style="margin:0;font-size:18px;color:#4ade80;font-weight:800;">
                     OCR &amp; PDF COMPRESSION COMPLETE!
@@ -594,7 +577,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
                 </div>
               </div>
               <span style="padding:6px 12px;border-radius:999px;background:#16a34a;color:#fff;font-size:12px;font-weight:700;">
-                ✓ Synced to Legal Annotator
+                Synced to Legal Annotator
               </span>
             </div>
 
@@ -615,17 +598,17 @@ function renderStandaloneOcrStudioUI(studioInfo) {
 
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid rgba(74,222,128,0.25);padding-top:14px;">
               <div style="font-size:12px;color:#a7f3d0;">
-                💡 If this PDF is open in Legal Annotator, it has already been automatically updated &amp; unlocked for search!
+                If this PDF is open in Legal Annotator, it has already been automatically updated &amp; unlocked for search.
               </div>
               <div style="display:flex;gap:10px;flex-wrap:wrap;">
                 <button id="studio-btn-save-as" style="padding:9px 16px;border-radius:8px;border:1px solid #4ade80;background:rgba(22,163,74,0.25);color:#ecfdf5;font-size:12.5px;font-weight:700;cursor:pointer;">
-                  💾 Save Single Compressed PDF As…
+                  Save Single Compressed PDF As…
                 </button>
                 <button id="studio-btn-jump-split" style="padding:9px 16px;border-radius:8px;border:1px solid #38bdf8;background:rgba(56,189,248,0.18);color:#e0f2fe;font-size:12.5px;font-weight:700;cursor:pointer;">
-                  ✂️ Split &amp; Save into Folder…
+                  Split &amp; Save into Folder…
                 </button>
                 <button id="studio-btn-close-win" style="padding:9px 18px;border-radius:8px;border:none;background:#4ade80;color:#052e16;font-size:12.5px;font-weight:800;cursor:pointer;">
-                  ✓ Done — Return to Legal Annotator
+                  Done — Return to Legal Annotator
                 </button>
               </div>
             </div>
@@ -638,14 +621,14 @@ function renderStandaloneOcrStudioUI(studioInfo) {
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
             <div>
               <label style="font-size:11.5px;font-weight:700;text-transform:uppercase;color:#38bdf8;letter-spacing:0.06em;display:flex;align-items:center;gap:6px;">
-                <span>✂️</span> 4. Split &amp; Save PDF into a Folder (For External Use Outside Legal Annotator)
+                4. Split &amp; Save PDF into a Folder (For External Use Outside Legal Annotator)
               </label>
               <div style="font-size:12px;color:#8ea0b8;margin-top:3px;">
                 Saves multiple smaller, compressed &amp; OCR-searchable PDF parts into any folder you choose (e.g. for NotebookLM, ChatGPT, or sharing) while keeping your main book unified inside Legal Annotator &amp; Google Drive.
               </div>
             </div>
             <button id="studio-btn-split-folder" style="padding:10px 18px;border-radius:8px;border:1px solid #38bdf8;background:linear-gradient(135deg,#0284c7,#0369a1);color:#f0f9ff;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap;box-shadow:0 4px 12px rgba(2,132,199,0.3);">
-              📂 Choose Folder &amp; Save Split PDFs…
+              Choose Folder &amp; Save Split PDFs…
             </button>
           </div>
 
@@ -653,10 +636,10 @@ function renderStandaloneOcrStudioUI(studioInfo) {
             <div style="display:flex;flex-direction:column;gap:6px;">
               <label style="font-size:11.5px;font-weight:600;color:#cbd5e1;">How do you want to split the PDF?</label>
               <select id="studio-split-mode" style="padding:9px 12px;border-radius:7px;border:1px solid #2e4366;background:#111a2c;color:#f8fafc;font-size:13px;outline:none;cursor:pointer;">
-                <option value="pages" selected>📄 By Pages per File (e.g. every 100 pages)</option>
-                <option value="size_mb">🗜️ By Max File Size per Part (e.g. max 15 MB each)</option>
-                <option value="parts">🔢 Into N Equal Parts (e.g. split into 5 files)</option>
-                <option value="ranges">📑 By Custom Page Ranges (e.g. 1-120, 121-250, 251-500)</option>
+                <option value="pages" selected>By Pages per File (e.g. every 100 pages)</option>
+                <option value="size_mb">By Max File Size per Part (e.g. max 15 MB each)</option>
+                <option value="parts">Into N Equal Parts (e.g. split into 5 files)</option>
+                <option value="ranges">By Custom Page Ranges (e.g. 1-120, 121-250, 251-500)</option>
               </select>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;">
@@ -713,22 +696,22 @@ function renderStandaloneOcrStudioUI(studioInfo) {
       topBadge.style.background = 'rgba(234,179,8,0.18)';
       topBadge.style.borderColor = '#eab308';
       topBadge.style.color = '#fde047';
-      topBadge.innerHTML = `<span>⏳</span><span>${text}</span>`;
+      topBadge.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:#fde047;display:inline-block;"></span><span>${text}</span>`;
     } else if (mode === 'done') {
       topBadge.style.background = 'rgba(34,197,94,0.2)';
       topBadge.style.borderColor = '#4ade80';
       topBadge.style.color = '#4ade80';
-      topBadge.innerHTML = `<span>🟢</span><span>${text}</span>`;
+      topBadge.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:#4ade80;display:inline-block;"></span><span>${text}</span>`;
     } else if (mode === 'error') {
       topBadge.style.background = 'rgba(239,68,68,0.2)';
       topBadge.style.borderColor = '#ef4444';
       topBadge.style.color = '#fca5a5';
-      topBadge.innerHTML = `<span>❌</span><span>${text}</span>`;
+      topBadge.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:#ef4444;display:inline-block;"></span><span>${text}</span>`;
     } else {
       topBadge.style.background = 'rgba(255,255,255,0.06)';
       topBadge.style.borderColor = '#2e4366';
       topBadge.style.color = '#cbd5e1';
-      topBadge.innerHTML = `<span>⚪</span><span>${text}</span>`;
+      topBadge.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:#94a3b8;display:inline-block;"></span><span>${text}</span>`;
     }
   };
 
@@ -781,7 +764,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
 
         if (st.status === 'downloading') {
           document.getElementById('studio-prog-headline').textContent =
-            '☁️ Downloading PDF from Google Drive to Local Disk Cache…';
+            'Downloading PDF from Google Drive to Local Disk Cache…';
           document.getElementById('studio-prog-pct').textContent = '…';
           document.getElementById('studio-prog-bar').style.width = '8%';
           setTopBadge('running', 'Downloading PDF from Google Drive to Local Disk…');
@@ -811,7 +794,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
           state.running = false;
           btnStart.disabled = false;
           btnStart.style.opacity = '1';
-          btnStart.textContent = '🔄 Re-Run OCR & Compress';
+          btnStart.textContent = 'Re-Run OCR & Compress';
           btnCancel.style.display = 'none';
           progPanel.style.display = 'none';
           donePanel.style.display = 'flex';
@@ -934,7 +917,7 @@ function renderStandaloneOcrStudioUI(studioInfo) {
       });
 
       btnSplit.disabled = false;
-      btnSplit.textContent = '📂 Choose Folder & Save Split PDFs…';
+      btnSplit.textContent = 'Choose Folder & Save Split PDFs…';
 
       if (res?.cancelled) {
         if (resBox) resBox.style.display = 'none';
@@ -951,24 +934,24 @@ function renderStandaloneOcrStudioUI(studioInfo) {
           resBox.style.display = 'block';
           resBox.innerHTML = `
             <div style="font-weight:700;color:#4ade80;margin-bottom:4px;">
-              ✅ Saved ${res.totalParts} Split &amp; Searchable PDF Files (${formatBytesMB(res.totalBytes)} total) to:
+              Saved ${res.totalParts} Split &amp; Searchable PDF Files (${formatBytesMB(res.totalBytes)} total) to:
             </div>
             <div style="font-family:monospace;font-size:12px;color:#f8fafc;margin-bottom:6px;word-break:break-all;">
-              📁 ${res.folderPath}
+              ${res.folderPath}
             </div>
             <div>${filesList}${moreTxt}</div>
           `;
         }
       } else if (resBox) {
         resBox.style.display = 'block';
-        resBox.innerHTML = `<span style="color:#fca5a5;">❌ Failed to split PDF: ${res?.error || 'Unknown error'}</span>`;
+        resBox.innerHTML = `<span style="color:#fca5a5;">Failed to split PDF: ${res?.error || 'Unknown error'}</span>`;
       }
     } catch (err) {
       btnSplit.disabled = false;
-      btnSplit.textContent = '📂 Choose Folder & Save Split PDFs…';
+      btnSplit.textContent = 'Choose Folder & Save Split PDFs…';
       if (resBox) {
         resBox.style.display = 'block';
-        resBox.innerHTML = `<span style="color:#fca5a5;">❌ Error: ${err.message || err}</span>`;
+        resBox.innerHTML = `<span style="color:#fca5a5;">Error: ${err.message || err}</span>`;
       }
     }
   });

@@ -611,18 +611,67 @@ export async function dbSaveDrawings(pfid, page, strokes) {
 }
 
 // ── Color Categories ──
+function _normalizeColorHex(val) {
+  if (typeof val !== 'string') return null;
+  const s = val.trim().toLowerCase();
+  if (!s) return null;
+  const m6 = s.match(/^#?([0-9a-f]{6})$/);
+  if (m6) return '#' + m6[1];
+  const m3 = s.match(/^#?([0-9a-f]{3})$/);
+  if (m3) return '#' + m3[1].split('').map(ch => ch + ch).join('');
+  const mRgb = s.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*[\d.]+)?\s*\)$/);
+  if (mRgb) {
+    const hex = [mRgb[1], mRgb[2], mRgb[3]].map(n => Math.max(0, Math.min(255, Number(n))).toString(16).padStart(2, '0')).join('');
+    return '#' + hex;
+  }
+  return null;
+}
+
+function _syncLocalSnapshotColors() {
+  try {
+    const raw = safeStorageGet('local_lib_snapshot');
+    const snap = raw ? JSON.parse(raw) : {};
+    snap.colorCats = S.colorCats || [];
+    snap.saved_at = Date.now();
+    safeStorageSet('local_lib_snapshot', JSON.stringify(snap));
+  } catch {}
+}
+
 export async function dbCreateColorCat(name, hex_color) {
   const id = 'cc_' + Date.now();
-  const cat = { id, name, hex_color };
+  const cleanName = String(name || '').trim() || 'Color';
+  const cleanHex = _normalizeColorHex(hex_color) || '#c9a84c';
+  const cat = { id, name: cleanName, hex_color: cleanHex };
   await safeDbWrite(db, 'color_categories', 'upsert', cat);
   S.colorCats.push(cat);
+  _syncLocalSnapshotColors();
   broadcastSync({ type: 'LIBRARY_CHANGED' });
   return cat;
+}
+
+export async function dbUpdateColorCat(id, name, hex_color) {
+  const cleanId = String(id || '').trim();
+  const cleanName = String(name || '').trim();
+  if (!cleanId || !cleanName) {
+    throw new Error('dbUpdateColorCat requires non-empty id and name');
+  }
+  const idx = S.colorCats.findIndex(c => c.id === cleanId);
+  const existing = idx >= 0 ? S.colorCats[idx] : null;
+  const cleanHex = _normalizeColorHex(hex_color) || _normalizeColorHex(existing?.hex_color) || '#c9a84c';
+  const row = { id: cleanId, name: cleanName, hex_color: cleanHex };
+  await safeDbWrite(db, 'color_categories', 'upsert', row);
+  const updated = { ...(existing || {}), ...row };
+  if (idx >= 0) S.colorCats[idx] = updated;
+  else S.colorCats.push(updated);
+  _syncLocalSnapshotColors();
+  broadcastSync({ type: 'LIBRARY_CHANGED' });
+  return updated;
 }
 
 export async function dbDelColorCat(id) {
   await safeDbWrite(db, 'color_categories', 'delete', null, { id });
   S.colorCats = S.colorCats.filter(c => c.id !== id);
+  _syncLocalSnapshotColors();
   broadcastSync({ type: 'LIBRARY_CHANGED' });
 }
 

@@ -1542,12 +1542,53 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     }
   }
 
-  function sendBridgeMsg(payload) {
+  var _bridgeQueue = [];
+  var _bridgeBusy = false;
+  function flushBridgeQueue() {
+    if (_bridgeBusy || !_bridgeQueue.length) return;
+    _bridgeBusy = true;
+    var payload = _bridgeQueue.shift();
     var b64 = toUtf8Base64(payload);
-    if (!b64) return;
-    try {
-      window.location.href = 'http://127.0.0.1:19876/__pplx_msg?d=' + encodeURIComponent(b64);
-    } catch (e) {}
+    if (b64) {
+      try {
+        window.location.href = 'http://127.0.0.1:19876/__pplx_msg?d=' + encodeURIComponent(b64);
+      } catch (e) {}
+    }
+    setTimeout(function() {
+      _bridgeBusy = false;
+      if (_bridgeQueue.length) flushBridgeQueue();
+    }, 45);
+  }
+
+  function sendBridgeMsg(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (payload.action === 'studio_status' || payload.action === 'studio_error') {
+      _bridgeQueue = _bridgeQueue.filter(function(item) {
+        return item.action !== 'studio_status' && item.action !== 'studio_error';
+      });
+    }
+    _bridgeQueue.push(payload);
+    flushBridgeQueue();
+  }
+
+  var _lastEmittedStatusKey = '';
+  var _lastEmittedStatusAt = 0;
+  function emitStudioStatus(state, stepLabel, message, canRetry, force) {
+    var st = state || 'idle';
+    var action = st === 'error' ? 'studio_error' : 'studio_status';
+    var key = action + '|' + st + '|' + (stepLabel || '') + '|' + (message || '') + '|' + (_state.pdfId || '');
+    var now = Date.now();
+    if (!force && key === _lastEmittedStatusKey && (now - _lastEmittedStatusAt) < 3500) return;
+    _lastEmittedStatusKey = key;
+    _lastEmittedStatusAt = now;
+    sendBridgeMsg({
+      action: action,
+      state: st,
+      stepLabel: stepLabel || '',
+      message: message || '',
+      pdfId: _state.pdfId || '',
+      canRetry: !!canRetry
+    });
   }
 
   function syncPrefsToApp() {
@@ -1645,22 +1686,27 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
 
     var bar = document.createElement('div');
     bar.id = 'la-pplx-studio-bar';
-    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:44px;background:linear-gradient(90deg,#0f172a 0%,#172542 100%);border-bottom:1.5px solid #c9a84c;z-index:2147483647;display:flex;align-items:center;gap:8px;padding:0 12px;font-family:Inter,system-ui,sans-serif;font-size:12px;color:#e8e4db;box-shadow:0 4px 16px rgba(0,0,0,0.45);user-select:none;overflow-x:auto;';
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:44px;background:linear-gradient(90deg,#0f172a 0%,#172542 100%);border-bottom:1.5px solid #c9a84c;z-index:2147483647;display:flex;align-items:center;gap:8px;padding:0 12px;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;font-size:12px;color:#e8e4db;box-shadow:0 4px 16px rgba(0,0,0,0.45);user-select:none;overflow-x:auto;';
 
-    var btnStyle = 'padding:5px 9px;border-radius:5px;border:1px solid #334155;background:#1e293b;color:#e2e8f0;font-size:11.5px;font-weight:500;cursor:pointer;white-space:nowrap;font-family:Inter,system-ui,sans-serif;transition:all 0.15s;';
-    var goldBtnStyle = 'padding:5px 12px;border-radius:5px;border:1px solid #c9a84c;background:linear-gradient(180deg,#d4b254 0%,#b89334 100%);color:#0f172a;font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:Inter,system-ui,sans-serif;box-shadow:0 2px 8px rgba(201,168,76,0.3);';
+    var btnStyle = 'padding:5px 9px;border-radius:5px;border:1px solid #334155;background:#1e293b;color:#e2e8f0;font-size:11.5px;font-weight:500;cursor:pointer;white-space:nowrap;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;transition:all 0.15s;display:inline-flex;align-items:center;gap:5px;';
+    var goldBtnStyle = 'padding:5px 12px;border-radius:5px;border:1px solid #c9a84c;background:linear-gradient(180deg,#d4b254 0%,#b89334 100%);color:#0f172a;font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;box-shadow:0 2px 8px rgba(201,168,76,0.3);display:inline-flex;align-items:center;gap:5px;';
+
+    var svgScale = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7h6l-3-7z"/><path d="M19 7l-3 7h6l-3-7z"/><path d="M8 21h8"/></svg>';
+    var svgPin = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>';
+    var svgSpark = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>';
+    var svgCopy = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 
     bar.innerHTML =
-      '<span style="color:#c9a84c;font-weight:700;font-size:12.5px;white-space:nowrap;letter-spacing:0.02em;">⚖ Law Digest Studio</span>' +
-      '<span id="la-pplx-pdf-lbl" style="max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(255,255,255,0.06);padding:3px 8px;border-radius:4px;font-size:11px;color:#cbd5e1;">📄 Current PDF</span>' +
-      '<button id="la-pplx-pin-btn" style="' + btnStyle + '">📌 Pin "Law" Project</button>' +
-      '<button id="la-pplx-model-btn" style="padding:5px 9px;border-radius:5px;border:1px solid rgba(192,132,252,0.55);background:rgba(192,132,252,0.14);color:#e9d5ff;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:Inter,system-ui,sans-serif;" title="Always enforces Claude 5.5 Sonnet (or latest Claude model) before submitting. Click to force-verify model now.">🤖 Claude Sonnet ✓</button>' +
-      '<button id="la-pplx-autosubmit-btn" style="' + btnStyle + '" title="Toggle whether pasting a case automatically presses Submit">☑ Auto-Submit: ON</button>' +
-      '<button id="la-pplx-autosend-btn" style="' + btnStyle + '" title="Toggle whether the finished digest is automatically sent to the Case Digest tab once Perplexity finishes generating">☑ Auto-Send: ON</button>' +
-      '<button id="la-pplx-mode-btn" style="' + btnStyle + '" title="Choose whether sending to Case Digest appends at the bottom or replaces existing digest (Notes tab is never touched)">📥 Digest: Append (Bottom)</button>' +
-      '<button id="la-pplx-paste-btn" style="' + btnStyle + '" title="Paste Subfolder Instruction + PDF Text into Perplexity prompt box">📋 Paste Case</button>' +
+      '<span style="color:#c9a84c;font-weight:700;font-size:12.5px;white-space:nowrap;letter-spacing:0.02em;display:inline-flex;align-items:center;gap:5px;">' + svgScale + 'Law Digest Studio</span>' +
+      '<span id="la-pplx-pdf-lbl" style="max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(255,255,255,0.06);padding:3px 8px;border-radius:4px;font-size:11px;color:#cbd5e1;">Current PDF</span>' +
+      '<button id="la-pplx-pin-btn" style="' + btnStyle + '">' + svgPin + 'Pin "Law" Project</button>' +
+      '<button id="la-pplx-model-btn" style="padding:5px 9px;border-radius:5px;border:1px solid rgba(192,132,252,0.55);background:rgba(192,132,252,0.14);color:#e9d5ff;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:&quot;Public Sans&quot;,&quot;Segoe UI&quot;,system-ui,sans-serif;display:inline-flex;align-items:center;gap:5px;" title="Always enforces Claude 5.5 Sonnet (or latest Claude model) before submitting. Click to force-verify model now.">' + svgSpark + 'Claude Sonnet</button>' +
+      '<button id="la-pplx-autosubmit-btn" style="' + btnStyle + '" title="Toggle whether pasting a case automatically presses Submit">Auto-Submit: ON</button>' +
+      '<button id="la-pplx-autosend-btn" style="' + btnStyle + '" title="Toggle whether the finished digest is automatically sent to the Case Digest tab once Perplexity finishes generating">Auto-Send: ON</button>' +
+      '<button id="la-pplx-mode-btn" style="' + btnStyle + '" title="Choose whether sending to Case Digest appends at the bottom or replaces existing digest (Notes tab is never touched)">Digest: Append (Bottom)</button>' +
+      '<button id="la-pplx-paste-btn" style="' + btnStyle + '" title="Paste Subfolder Instruction + PDF Text into Perplexity prompt box">' + svgCopy + 'Paste Case</button>' +
       '<span id="la-pplx-status" style="font-size:11px;color:#fbbf24;white-space:nowrap;margin-left:auto;margin-right:4px;"></span>' +
-      '<button id="la-pplx-send-btn" style="' + goldBtnStyle + '" title="Send Perplexity\'s latest response directly into the Case Digest tab in Legal Annotator">⚖ Send to Case Digest</button>';
+      '<button id="la-pplx-send-btn" style="' + goldBtnStyle + '" title="Send Perplexity\'s latest response directly into the Case Digest tab in Legal Annotator">' + svgScale + 'Send to Case Digest</button>';
 
     document.body.appendChild(bar);
     document.documentElement.style.scrollPaddingTop = '48px';
@@ -1669,8 +1715,8 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     // Also add floating quick-send button at bottom right so user doesn't have to scroll up
     var fab = document.createElement('button');
     fab.id = 'la-pplx-fab-send';
-    fab.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483646;padding:9px 15px;border-radius:999px;border:1.5px solid #c9a84c;background:#0f172a;color:#f3d37a;font-family:Inter,system-ui,sans-serif;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,0.55);display:flex;align-items:center;gap:6px;';
-    fab.innerHTML = '<span>⚖ Send to Case Digest</span>';
+    fab.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483646;padding:9px 15px;border-radius:999px;border:1.5px solid #c9a84c;background:#0f172a;color:#f3d37a;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,0.55);display:flex;align-items:center;gap:6px;';
+    fab.innerHTML = svgScale + '<span>Send to Case Digest</span>';
     fab.title = 'Send latest Perplexity answer directly into the Case Digest tab';
     fab.addEventListener('click', function() { extractAndSendDigest(); });
     document.body.appendChild(fab);
@@ -2476,32 +2522,87 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     } catch (e) {}
   }
 
+  var _awaitingLastChangeAt = 0;
+  var _awaitingStoppedAt = 0;
+  var _studioBlockerReported = false;
+  var _studioMountedAt = Date.now();
+
+  function detectStudioPageBlocker() {
+    if (Date.now() - _studioMountedAt < 3500) return false;
+    var url = (window.location.href || '').toLowerCase();
+    var hasInput = !!findPromptInput();
+    if (/\/(auth|login|signin|sign-in)\b/.test(url)) {
+      emitStudioStatus('error', 'Sign-in required', 'Sign in to Perplexity inside the Studio window, then click Paste Case.', true);
+      return true;
+    }
+    var bodyTxt = '';
+    try {
+      bodyTxt = ((document.body && document.body.innerText) || '').slice(0, 2500);
+    } catch (e) {}
+    if (!hasInput && /\b(sign in|log in|continue with google|continue with email)\b/i.test(bodyTxt)) {
+      emitStudioStatus('error', 'Sign-in required', 'Sign in to Perplexity inside the Studio window, then click Paste Case.', true);
+      return true;
+    }
+    if (!hasInput && /\b(something went wrong|rate limit|too many requests|verify you are human)\b/i.test(bodyTxt)) {
+      emitStudioStatus('error', 'Perplexity error', 'Perplexity reported an error or verification prompt — check the Studio window.', true);
+      return true;
+    }
+    return false;
+  }
+
   function checkAutoSendProgress() {
     if (_state.autoSendDigest === false) return;
     var awaitingJobId = sessionStorage.getItem('la_pplx_awaiting_autosend_job_id');
-    if (!awaitingJobId) return;
+    if (!awaitingJobId) {
+      _awaitingLastChangeAt = 0;
+      _awaitingStoppedAt = 0;
+      return;
+    }
     if (sessionStorage.getItem('la_pplx_autosent_job_id') === awaitingJobId) {
       sessionStorage.removeItem('la_pplx_awaiting_autosend_job_id');
+      _awaitingLastChangeAt = 0;
+      _awaitingStoppedAt = 0;
       return;
     }
 
+    if (!_awaitingLastChangeAt) _awaitingLastChangeAt = Date.now();
+
     var baseline = sessionStorage.getItem('la_pplx_baseline_text') || '';
     var snap = getLatestAnswerSnapshot();
+    var generating = isPerplexityStillGenerating();
 
     // Still waiting for Perplexity to start or reach minimum digest length (~55 words)
     if (!snap.text || snap.text === baseline || snap.wordCount < 55) {
       if (snap.text && snap.text !== baseline && snap.wordCount > 5) {
+        if (snap.text !== _autoSendLastText) {
+          _awaitingLastChangeAt = Date.now();
+          _awaitingStoppedAt = 0;
+        }
         showStatus('⏳ Perplexity is writing digest (' + snap.wordCount + ' words)… will auto-send when finished.', '#fbbf24');
+        emitStudioStatus('streaming', 'Writing digest (' + snap.wordCount + ' words)', 'Perplexity is writing digest (' + snap.wordCount + ' words)…', false);
+      } else if (!generating) {
+        if (!_awaitingStoppedAt) _awaitingStoppedAt = Date.now();
+        if (Date.now() - _awaitingStoppedAt > 25000 && Date.now() - _awaitingLastChangeAt > 25000) {
+          emitStudioStatus('error', 'Generation stalled', 'Perplexity did not start or stalled before completing digest — focus Studio to check.', true);
+        }
+      } else {
+        _awaitingStoppedAt = 0;
       }
       _autoSendLastText = snap.text || '';
       _autoSendStableSince = Date.now();
       return;
     }
 
-    if (snap.text !== _autoSendLastText || isPerplexityStillGenerating()) {
+    _awaitingStoppedAt = 0;
+    if (snap.text !== _autoSendLastText || generating) {
+      if (snap.text !== _autoSendLastText) _awaitingLastChangeAt = Date.now();
       _autoSendLastText = snap.text;
       _autoSendStableSince = Date.now();
       showStatus('⏳ Perplexity is writing digest (' + snap.wordCount + ' words)… will auto-send when finished.', '#fbbf24');
+      emitStudioStatus('streaming', 'Writing digest (' + snap.wordCount + ' words)', 'Perplexity is writing digest (' + snap.wordCount + ' words)…', false);
+      if (Date.now() - _awaitingLastChangeAt > 150000) {
+        emitStudioStatus('error', 'Generation stalled', 'Perplexity digest generation appears stalled — focus Studio to check or send manually.', true);
+      }
       return;
     }
 
@@ -2514,12 +2615,15 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (stableMs < 4500) {
       var secsLeft = Math.max(1, Math.ceil((4500 - stableMs) / 1000));
       showStatus('⏳ Digest complete (' + snap.wordCount + ' words) — auto-sending to Case Digest in ' + secsLeft + 's…', '#4ade80');
+      emitStudioStatus('streaming', 'Finalizing digest (' + snap.wordCount + ' words)', 'Digest complete (' + snap.wordCount + ' words) — sending in ' + secsLeft + 's…', false);
       return;
     }
 
     // Answer has stabilized for 4.5s and Stop button is gone — auto-send!
     sessionStorage.setItem('la_pplx_autosent_job_id', awaitingJobId);
     sessionStorage.removeItem('la_pplx_awaiting_autosend_job_id');
+    _awaitingLastChangeAt = 0;
+    _awaitingStoppedAt = 0;
     sendDigestPayload(snap.html, snap.text);
   }
 
@@ -2528,6 +2632,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     var fullText = (_state.fullPromptText || '').trim();
     if (!fullText) {
       showStatus('⚠️ No PDF text loaded yet — click "⚡ Perplexity Digest" in Legal Annotator.', '#f87171');
+      emitStudioStatus('error', 'No PDF text', 'No PDF text loaded yet — retry Perplexity Digest from Legal Annotator.', true);
       return;
     }
 
@@ -2539,6 +2644,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
 
     _isPasting = true;
     showStatus('🤖 Ensuring Claude Sonnet + 📋 Pasting case…', '#fbbf24');
+    emitStudioStatus('extracting', 'Pasting case', 'Selecting Claude Sonnet and pasting case into Perplexity…', false);
 
     // Also copy to clipboard so manual Ctrl+V always has it
     try {
@@ -2599,13 +2705,17 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
           armAutoSendWatcher();
           if (_state.autoSubmit) {
             triggerSubmit(activeInput);
+            _awaitingLastChangeAt = Date.now();
+            _awaitingStoppedAt = 0;
             if (_state.autoSendDigest !== false) {
               showStatus('🚀 Submitted with Claude Sonnet! Waiting 1–2 mins to auto-send to Case Digest…', '#4ade80');
             } else {
-              showStatus('🚀 Submitted with Claude Sonnet! Click "⚖ Send to Case Digest" when done.', '#4ade80');
+              showStatus('🚀 Submitted with Claude Sonnet! Click "Send to Case Digest" when done.', '#4ade80');
             }
+            emitStudioStatus('submitted', 'Prompt submitted', 'Submitted with Claude Sonnet — waiting for Perplexity response…', false, true);
           } else {
             showStatus('✅ Pasted with Claude Sonnet! Review prompt and press Enter to submit.', '#4ade80');
+            emitStudioStatus('idle', 'Ready in Studio', 'Pasted with Claude Sonnet — press Enter in Studio to submit.', false, true);
           }
         }, 380);
       }, 280);
@@ -2641,12 +2751,15 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
           sendDigestPayload('', stripLeadingPreambleTextInStudio(stripTrailingSourcesTextInStudio(clipText.trim())));
         } else {
           showStatus('⚠️ No Perplexity answer found yet — wait for answer or select text.', '#f87171');
+          emitStudioStatus('error', 'No answer found', 'No Perplexity answer found yet — wait for reply or select text in Studio.', true);
         }
       }).catch(function() {
         showStatus('⚠️ No Perplexity answer found on page yet.', '#f87171');
+        emitStudioStatus('error', 'No answer found', 'No Perplexity answer found on page yet.', true);
       });
     } else {
       showStatus('⚠️ No Perplexity answer found on page yet.', '#f87171');
+      emitStudioStatus('error', 'No answer found', 'No Perplexity answer found on page yet.', true);
     }
   }
 
@@ -2666,6 +2779,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (ok) {
       var modeWord = _state.digestMode === 'replace' ? 'Replaced in' : 'Appended to';
       showStatus('✅ ' + modeWord + ' Case Digest tab! Ready for next case.', '#4ade80');
+      emitStudioStatus('done', 'Digest saved', modeWord + ' Case Digest tab!', false, true);
       var sendBtn = document.getElementById('la-pplx-send-btn');
       var fabBtn = document.getElementById('la-pplx-fab-send');
       if (sendBtn) {
@@ -2698,7 +2812,14 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     var curUrl = window.location.href;
     // Never force-redirect window.location.href in a loop! Only auto-paste when on a Space/Collection page.
     if (!isSpaceOrCollectionUrl(curUrl)) {
-      showStatus('👉 Open your "Law" project (or click "📋 Paste Case" anytime to paste here).', '#fbbf24');
+      showStatus('👉 Open your "Law" project (or click "Paste Case" anytime to paste here).', '#fbbf24');
+      if (!detectStudioPageBlocker()) {
+        if (!_state.pinnedProjectUrl) {
+          emitStudioStatus('error', 'Law Space not pinned', 'Open your "Law" project in Perplexity Studio and click Pin "Law" Project.', true);
+        } else {
+          emitStudioStatus('extracting', 'Open Law Space', 'Navigate to your pinned "Law" project or click Paste Case in Studio.', true);
+        }
+      }
       return;
     }
 
@@ -2729,7 +2850,10 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         clearInterval(_jobTimer);
         _jobTimer = null;
         sessionStorage.setItem('la_pplx_handled_job_id', String(_state.jobId));
-        showStatus('Click "📋 Paste Case" above when prompt box is ready.', '#fbbf24');
+        showStatus('Click "Paste Case" above when prompt box is ready.', '#fbbf24');
+        if (!detectStudioPageBlocker()) {
+          emitStudioStatus('error', 'Prompt box missing', 'Perplexity prompt box not found — focus Studio and click Paste Case.', true);
+        }
       }
     }, 350);
   }
@@ -2771,9 +2895,13 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
   setInterval(function() {
     ensureStudioBar();
     checkAutoSendProgress();
+    if (!_studioBlockerReported && !sessionStorage.getItem('la_pplx_handled_job_id')) {
+      if (detectStudioPageBlocker()) _studioBlockerReported = true;
+    }
     if (window.location.href !== _lastHref) {
       var prevHref = _lastHref;
       _lastHref = window.location.href;
+      _studioBlockerReported = false;
       updateBarUI();
       if (isSpaceOrCollectionUrl(_lastHref)) {
         if (!isSpaceOrCollectionUrl(prevHref)) {
@@ -2787,10 +2915,12 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function() {
       ensureStudioBar();
+      emitStudioStatus('extracting', 'Studio ready', 'Perplexity Studio loaded.', false);
       processActiveJob();
     });
   } else {
     ensureStudioBar();
+    emitStudioStatus('extracting', 'Studio ready', 'Perplexity Studio loaded.', false);
     processActiveJob();
   }
 })();
@@ -2811,6 +2941,48 @@ async fn desktop_save_perplexity_prefs(prefs: serde_json::Value) -> Result<bool,
     }
     save_pplx_prefs_disk(&current);
     Ok(true)
+}
+
+fn emit_pplx_studio_status(app: &tauri::AppHandle, mut payload: serde_json::Value) {
+    if let Some(obj) = payload.as_object_mut() {
+        if !obj.contains_key("action") {
+            let is_err = obj.get("state").and_then(|v| v.as_str()) == Some("error");
+            obj.insert(
+                "action".to_string(),
+                serde_json::Value::String(
+                    if is_err {
+                        "studio_error"
+                    } else {
+                        "studio_status"
+                    }
+                    .to_string(),
+                ),
+            );
+        }
+    }
+    if let Some(main_win) = app.get_webview_window("main") {
+        if let Ok(json_str) = serde_json::to_string(&payload) {
+            let js = format!(
+                "(function(p){{ if (typeof window.__desktopForwardPerplexityStatus === 'function') window.__desktopForwardPerplexityStatus(p); else if (typeof window.__onPerplexityStudioStatus === 'function') window.__onPerplexityStudioStatus(p); }})({});",
+                json_str
+            );
+            let _ = main_win.eval(&js);
+        }
+    }
+}
+
+#[tauri::command]
+fn desktop_focus_perplexity_studio(app: tauri::AppHandle) -> Result<bool, String> {
+    if let Some(win) = app.get_webview_window("perplexity-studio") {
+        if win.is_minimized().unwrap_or(false) {
+            let _ = win.unminimize();
+        }
+        let _ = win.show();
+        let _ = win.set_focus();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 #[tauri::command]
@@ -2897,14 +3069,27 @@ async fn desktop_open_perplexity_studio(
             "Perplexity 'Law' Digest Studio — {} — Legal Annotator",
             pdf_name
         ));
+        if existing.is_minimized().unwrap_or(false) {
+            let _ = existing.unminimize();
+        }
         let _ = existing.show();
-        let _ = existing.unminimize();
         let _ = existing.set_focus();
         let eval_js = format!(
             "window.__PPLX_STUDIO_RECEIVE_JOB && window.__PPLX_STUDIO_RECEIVE_JOB({});",
             job_json_str
         );
         let _ = existing.eval(&eval_js);
+        emit_pplx_studio_status(
+            &app,
+            serde_json::json!({
+                "action": "studio_status",
+                "state": "extracting",
+                "stepLabel": "Studio focused",
+                "message": format!("Opened Perplexity Studio for {}", pdf_name),
+                "pdfId": pdf_id,
+                "canRetry": false
+            }),
+        );
         return Ok(true);
     }
 
@@ -3017,6 +3202,24 @@ async fn desktop_open_perplexity_studio(
                                     }
                                 }
                             });
+                        } else if action == "studio_status" || action == "studio_error" {
+                            let mut status_val = msg_val.clone();
+                            if let Some(obj) = status_val.as_object_mut() {
+                                if !obj.contains_key("pdfId") {
+                                    if let Ok(st) = state_for_nav.lock() {
+                                        if let Some(pid) = st.get("pdfId").cloned() {
+                                            obj.insert("pdfId".to_string(), pid);
+                                        }
+                                    }
+                                }
+                                if action == "studio_error" && !obj.contains_key("state") {
+                                    obj.insert(
+                                        "state".to_string(),
+                                        serde_json::Value::String("error".to_string()),
+                                    );
+                                }
+                            }
+                            emit_pplx_studio_status(&app_for_nav, status_val);
                         }
                     }
                 }
@@ -3026,10 +3229,64 @@ async fn desktop_open_perplexity_studio(
         true
     });
 
-    let win = builder.build().map_err(|e| e.to_string())?;
+    let win = match builder.build() {
+        Ok(w) => w,
+        Err(e) => {
+            let err_msg = e.to_string();
+            emit_pplx_studio_status(
+                &app,
+                serde_json::json!({
+                    "action": "studio_error",
+                    "state": "error",
+                    "stepLabel": "Studio failed to open",
+                    "message": format!("Could not open Perplexity Studio: {}", err_msg),
+                    "pdfId": pdf_id,
+                    "canRetry": true
+                }),
+            );
+            return Err(err_msg);
+        }
+    };
     let _ = win.show();
     let _ = win.unminimize();
     let _ = win.set_focus();
+    emit_pplx_studio_status(
+        &app,
+        serde_json::json!({
+            "action": "studio_status",
+            "state": "extracting",
+            "stepLabel": "Studio opened",
+            "message": format!("Opening Perplexity Studio for {}", pdf_name),
+            "pdfId": pdf_id,
+            "canRetry": false
+        }),
+    );
+    let app_for_close = app.clone();
+    let state_for_close = get_pplx_job_state();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            let cur_pdf_id = state_for_close
+                .lock()
+                .ok()
+                .and_then(|st| {
+                    st.get("pdfId")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_default();
+            emit_pplx_studio_status(
+                &app_for_close,
+                serde_json::json!({
+                    "action": "studio_status",
+                    "state": "idle",
+                    "stepLabel": "Studio closed",
+                    "message": "Perplexity Studio window was closed.",
+                    "pdfId": cur_pdf_id,
+                    "canRetry": false
+                }),
+            );
+        }
+    });
     Ok(true)
 }
 
@@ -4556,6 +4813,7 @@ fn main() {
             desktop_get_perplexity_prefs,
             desktop_save_perplexity_prefs,
             desktop_open_perplexity_studio,
+            desktop_focus_perplexity_studio,
             desktop_cache_get_path,
             desktop_cache_save_pdf,
             desktop_cache_read_pdf,

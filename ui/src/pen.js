@@ -94,8 +94,8 @@ export function setPenMode(on, { silent = false } = {}) {
   if (!_enabled) cancelStroke();
   if (!silent) {
     toast(_enabled
-      ? '✒ Pen mode ON — drag Pencil over text to highlight, fingers scroll & zoom'
-      : '✒ Pen mode OFF');
+      ? 'Pen mode ON — drag Pencil over text to highlight, fingers scroll & zoom'
+      : 'Pen mode OFF');
   }
 }
 
@@ -109,8 +109,8 @@ export function setFingerHighlight(on, { silent = false } = {}) {
   updateFingerSettingBtn();
   if (!silent) {
     toast(_fingerOn
-      ? '✋ Finger highlighting ON — drag a finger over text to highlight, two fingers scroll'
-      : '✋ Finger highlighting OFF — fingers scroll and select text as before');
+      ? 'Finger highlighting ON — drag a finger over text to highlight, two fingers scroll'
+      : 'Finger highlighting OFF — fingers scroll and select text as before');
   }
 }
 
@@ -130,7 +130,7 @@ function buildFingerSetting() {
   card.id = 'finger-setting-card';
   card.style.cssText = penCard.style.cssText;
   card.innerHTML = `
-    <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px;">✋ Touchscreen Finger Highlighting</div>
+    <div style="font-size:13px; font-weight:600; color:var(--ink, #e8e4db); margin-bottom:4px; display:flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-hand"/></svg><span>Touchscreen Finger Highlighting</span></div>
     <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">The app detects mouse vs. finger automatically. With a finger: drag across text to highlight it instantly, drag on a blank margin or use two fingers to scroll, pinch to zoom, and tap a highlight to open it. The mouse keeps working exactly as before. (Pauses while Pen mode is on.)</div>
     <button class="btn-sec" id="btn-finger-setting" type="button" style="width:100%; padding:7px 10px; font-size:12px;"></button>`;
   penCard.parentNode.insertBefore(card, penCard.nextSibling);
@@ -144,7 +144,7 @@ function injectStyle() {
   st.id = 'pen-style';
   st.textContent = `
     #pen-toggle { white-space: nowrap; }
-    #pen-toggle.active { background: var(--gold-bg); color: var(--gold); border-color: var(--gold); }
+    #pen-toggle.active { background: var(--gold-bg); color: var(--accent, var(--gold)); border-color: var(--accent, var(--gold)); }
     .hi-grp.pen-preview { pointer-events: none !important; opacity: 0.4; mix-blend-mode: multiply; }
     .hi-grp.pen-preview .hr { pointer-events: none !important; transition: none !important; }
     body.pen-on #canvas-scroll { -webkit-touch-callout: none; }
@@ -156,9 +156,9 @@ function buildButton(toolbar) {
   _btn = document.createElement('button');
   _btn.id = 'pen-toggle';
   _btn.type = 'button';
-  _btn.className = 'tb-btn';
+  _btn.className = 'tb-btn capsule__tool';
   _btn.title = 'Pen mode: use Apple Pencil to highlight text / draw. Fingers keep scrolling and zooming.';
-  _btn.innerHTML = '✒ <span>Pen</span>';
+  _btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-pen"/></svg><span>Pen</span>';
   const anchor = document.getElementById('mode-tog');
   if (anchor?.parentNode) anchor.parentNode.insertBefore(_btn, anchor.nextSibling);
   else toolbar.appendChild(_btn);
@@ -181,10 +181,10 @@ function guard(fn) {
       cancelStroke();
       if (_errors >= MAX_ERRORS && _enabled) {
         setPenMode(false, { silent: true });
-        toast('✒ Pen mode turned off after repeated errors — app is unaffected.');
+        toast('Pen mode turned off after repeated errors — app is unaffected.');
       } else if (_errors >= MAX_ERRORS && _fingerOn) {
         setFingerHighlight(false, { silent: true });
-        toast('✋ Finger highlighting turned off after repeated errors — app is unaffected.');
+        toast('Finger highlighting turned off after repeated errors — app is unaffected.');
       }
     }
   };

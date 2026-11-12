@@ -5,6 +5,7 @@
 import { S } from './state.js';
 import { safeStorageSet, safeStorageGet, safeStorageRemove } from './storage.js';
 import { handleEditorKeyDown } from './tablepicker.js';
+import { getColorCategoryForHex } from './colors.js';
 
 // ── Sync status ──
 const $sdot = () => document.getElementById('sdot');
@@ -105,7 +106,7 @@ export function closeOtherPanels(exceptId = null) {
     import('./notepad.js').then(m => m.flushNotepadSave?.()).catch(() => {});
   }
 
-  const panelIds = ['notepad-panel', 'ann-panel', 'search-panel'];
+  const panelIds = ['notepad-panel', 'ann-panel', 'search-panel', 'tags-panel'];
   panelIds.forEach(id => {
     if (id !== exceptId) {
       document.getElementById(id)?.classList.remove('open');
@@ -170,14 +171,13 @@ window.openSyncDiagnostics = openSyncDiagnosticsModal;
 export function initSyncDiagnostics() {
   const syncBar = document.getElementById('sync-bar');
   if (syncBar) {
-    syncBar.addEventListener('click', (e) => {
-      if (e.target.closest('#btn-force-sync-all')) return;
+    syncBar.addEventListener('click', () => {
       openSyncDiagnosticsModal();
     });
   }
 
-  // Force Sync buttons (Sidebar sync bar, Diagnostics modal, Settings modal)
-  ['btn-force-sync-all', 'diag-btn-force-sync', 'settings-btn-force-sync'].forEach(btnId => {
+  // Force Sync buttons (Diagnostics modal, Settings modal)
+  ['diag-btn-force-sync', 'settings-btn-force-sync'].forEach(btnId => {
     document.getElementById(btnId)?.addEventListener('click', async (e) => {
       e.stopPropagation();
       const { forceSyncAll } = await import('./notepad.js');
@@ -245,6 +245,23 @@ export function initModals() {
 
 // ── Sidebar (Auto-Hide, Hover-Peek & Mobile) ──
 let _hoverCloseTimer = null;
+let _sidebarResizing = false;
+
+function _isCtxMenuOpen(el) {
+  if (!el) return false;
+  if (el.hidden) return false;
+  if (el.classList.contains('open') || el.classList.contains('show')) return true;
+  const disp = el.style.display;
+  return Boolean(disp && disp !== 'none');
+}
+
+function _isSidebarBusy() {
+  if (_sidebarResizing) return true;
+  if (document.getElementById('lib-resize-handle')?.classList.contains('resizing')) return true;
+  return ['lib-ctx-menu', 'folder-ctx-menu', 'multi-folder-ctx-menu'].some(
+    id => _isCtxMenuOpen(document.getElementById(id))
+  );
+}
 
 export function isSidebarAutoHide() {
   return safeStorageGet('sidebar_autohide', 'false') === 'true';
@@ -254,28 +271,32 @@ export function setSidebarAutoHide(enabled, showNotification = true) {
   safeStorageSet('sidebar_autohide', String(enabled));
   const app = document.getElementById('app');
   const pinBtn = document.getElementById('btn-pin-sidebar');
-  if (app) app.classList.toggle('sidebar-autohide', enabled);
+  if (app) {
+    app.classList.toggle('sidebar-autohide', enabled);
+    app.setAttribute('data-rail-autohide', enabled ? 'true' : 'false');
+  }
 
   if (pinBtn) {
+    pinBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg>';
+    pinBtn.setAttribute('aria-pressed', String(!enabled));
+    pinBtn.classList.toggle('is-autohide', enabled);
+    pinBtn.style.color = '';
+    pinBtn.style.borderColor = '';
     if (enabled) {
-      pinBtn.textContent = '⚡';
       pinBtn.title = 'Sidebar: Auto-Hide Mode (Hover left edge to show) — Click to Pin';
-      pinBtn.style.color = 'var(--gold)';
-      pinBtn.style.borderColor = 'var(--gold)';
+      pinBtn.setAttribute('aria-label', 'Auto-Hide active, click to Pin sidebar');
     } else {
-      pinBtn.textContent = '📌';
       pinBtn.title = 'Sidebar: Pinned (Always visible) — Click to Auto-Hide';
-      pinBtn.style.color = 'var(--muted)';
-      pinBtn.style.borderColor = 'var(--navy-b)';
+      pinBtn.setAttribute('aria-label', 'Sidebar pinned, click to enable Auto-Hide');
     }
   }
 
   if (enabled) {
     closeSidebar();
-    if (showNotification) toast('⚡ Sidebar Auto-Hide active (hover left edge to reveal)');
+    if (showNotification) toast('Sidebar Auto-Hide active (hover left edge to reveal)');
   } else {
     document.getElementById('lib-side')?.classList.remove('hover-open');
-    if (showNotification) toast('📌 Sidebar pinned (always visible)');
+    if (showNotification) toast('Sidebar pinned (always visible)');
   }
 }
 
@@ -333,8 +354,11 @@ export function initSidebar() {
 
   function handleHoverLeave() {
     if (!isSidebarAutoHide()) return;
+    if (_isSidebarBusy()) return;
     if (_hoverCloseTimer) clearTimeout(_hoverCloseTimer);
     _hoverCloseTimer = setTimeout(() => {
+      _hoverCloseTimer = null;
+      if (!isSidebarAutoHide() || _isSidebarBusy()) return;
       libSide?.classList.remove('hover-open');
     }, 280);
   }
@@ -346,6 +370,26 @@ export function initSidebar() {
     libSide.addEventListener('mouseenter', handleHoverEnter);
     libSide.addEventListener('mouseleave', handleHoverLeave);
   }
+
+  // Re-evaluate hover collapse once a sidebar context menu closes
+  ['lib-ctx-menu', 'folder-ctx-menu', 'multi-folder-ctx-menu'].forEach(menuId => {
+    const menuEl = document.getElementById(menuId);
+    if (!menuEl) return;
+    menuEl.addEventListener('mouseenter', () => {
+      if (_hoverCloseTimer) {
+        clearTimeout(_hoverCloseTimer);
+        _hoverCloseTimer = null;
+      }
+    });
+    const obs = new MutationObserver(() => {
+      if (!_isCtxMenuOpen(menuEl) && isSidebarAutoHide() && libSide?.classList.contains('hover-open')) {
+        if (!libSide.matches(':hover') && !hoverZone?.matches(':hover')) {
+          handleHoverLeave();
+        }
+      }
+    });
+    obs.observe(menuEl, { attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+  });
 
   // 5. Global mouse move near left edge (safety net for quick mouse motions)
   window.addEventListener('mousemove', (e) => {
@@ -363,10 +407,10 @@ export function initSidebar() {
   });
 
   // 7. Drag resizer on right edge of sidebar
-  initSidebarResizer();
+  initSidebarResizer(handleHoverLeave);
 }
 
-function initSidebarResizer() {
+function initSidebarResizer(onHoverLeave) {
   const libSide = document.getElementById('lib-side');
   const handle = document.getElementById('lib-resize-handle');
   if (!handle || !libSide) return;
@@ -388,6 +432,11 @@ function initSidebarResizer() {
     e.preventDefault();
     e.stopPropagation();
     isResizing = true;
+    _sidebarResizing = true;
+    if (_hoverCloseTimer) {
+      clearTimeout(_hoverCloseTimer);
+      _hoverCloseTimer = null;
+    }
     startX = e.clientX;
     startWidth = libSide.offsetWidth;
     handle.setPointerCapture(e.pointerId);
@@ -409,6 +458,7 @@ function initSidebarResizer() {
   const stopResize = (e) => {
     if (!isResizing) return;
     isResizing = false;
+    _sidebarResizing = false;
     handle.classList.remove('resizing');
     libSide.style.transition = '';
     document.body.style.cursor = '';
@@ -419,6 +469,9 @@ function initSidebarResizer() {
 
     const curWidth = libSide.offsetWidth;
     safeStorageSet('lib_sidebar_width', String(curWidth));
+    if (isSidebarAutoHide() && !libSide.matches(':hover') && typeof onHoverLeave === 'function') {
+      onHoverLeave();
+    }
   };
 
   handle.addEventListener('pointerup', stopResize);
@@ -673,10 +726,26 @@ if (typeof window !== 'undefined') {
   window.copyEntirePdfText = copyEntirePdfText;
 }
 
+function _openColorManager() {
+  import('./colors.js')
+    .then(m => {
+      if (typeof m.openColorCategoriesModal === 'function') {
+        m.openColorCategoriesModal();
+      } else {
+        openModal('mo-color');
+      }
+    })
+    .catch(() => openModal('mo-color'));
+}
+
 export function initZoom() {
   document.getElementById('btn-zin')?.addEventListener('click',  () => changeZoom( 0.25));
   document.getElementById('btn-zout')?.addEventListener('click', () => changeZoom(-0.25));
   document.getElementById('btn-copy-pdf-text')?.addEventListener('click', copyEntirePdfText);
+  document.getElementById('btn-manage-colors')?.addEventListener('click', _openColorManager);
+  document.getElementById('btn-panel-manage-colors')?.addEventListener('click', _openColorManager);
+  document.getElementById('btn-cmd-palette')?.addEventListener('click', () => openCommandPalette());
+  initCommandPalette();
 }
 
 let _scrollTimer = null;
@@ -940,10 +1009,200 @@ export async function jumpToPage(pg, smooth = false, ratio = 0) {
   await scrollToPageAndRatio(pg, ratio || 0, smooth);
 }
 
+// ── Command Palette (Ctrl/Cmd+K) ──
+let _paletteWired = false;
+let _paletteDeps = null;
+
+function _populatePaletteCases() {
+  const group = document.getElementById('paletteCasesGroup');
+  if (!group) return;
+  group.querySelectorAll('.palette__item').forEach(el => el.remove());
+
+  const pdfs = Array.isArray(S.pdfs) ? S.pdfs : [];
+  const subjMap = new Map((S.subjects || []).map(s => [s.id, s.name]));
+  const foldMap = new Map((S.folders || []).map(f => [f.id, f]));
+
+  pdfs.slice(0, 60).forEach((pdf) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'palette__item';
+    btn.setAttribute('role', 'option');
+    btn.setAttribute('aria-selected', 'false');
+    btn.dataset.cmd = 'open-case';
+    btn.dataset.pdfId = String(pdf.id);
+
+    const lbl = document.createElement('span');
+    lbl.className = 'palette__item-label';
+    lbl.textContent = pdf.name || 'Untitled PDF';
+
+    const folder = foldMap.get(pdf.folder_id);
+    const subjName = folder ? (subjMap.get(folder.subject_id) || folder.name) : (subjMap.get(pdf.subject_id) || 'Library');
+    const hint = document.createElement('span');
+    hint.className = 'palette__item-hint';
+    hint.textContent = folder && subjName !== folder.name ? `${subjName} / ${folder.name}` : subjName;
+
+    btn.appendChild(lbl);
+    btn.appendChild(hint);
+    group.appendChild(btn);
+  });
+}
+
+function _getVisiblePaletteItems() {
+  return Array.from(document.querySelectorAll('#paletteResults .palette__item')).filter(el => !el.hidden);
+}
+
+function _setActivePaletteItem(target) {
+  const items = _getVisiblePaletteItems();
+  items.forEach(el => el.setAttribute('aria-selected', el === target ? 'true' : 'false'));
+  if (target) target.scrollIntoView({ block: 'nearest' });
+}
+
+function _filterPaletteItems(query) {
+  const q = String(query || '').trim().toLowerCase();
+  const palette = document.getElementById('commandPalette');
+  if (!palette) return;
+
+  let anyVisible = false;
+  palette.querySelectorAll('.palette__group').forEach(group => {
+    let groupVisible = 0;
+    group.querySelectorAll('.palette__item').forEach(item => {
+      const txt = item.textContent.toLowerCase();
+      const match = !q || txt.includes(q);
+      item.hidden = !match;
+      if (match) groupVisible++;
+    });
+    group.hidden = groupVisible === 0;
+    anyVisible = anyVisible || groupVisible > 0;
+  });
+
+  const empty = document.getElementById('paletteEmpty');
+  if (empty) empty.hidden = anyVisible;
+
+  const visible = _getVisiblePaletteItems();
+  _setActivePaletteItem(visible[0] || null);
+}
+
+async function _executePaletteItem(item) {
+  const palette = document.getElementById('commandPalette');
+  if (!item) return;
+  const cmd = item.dataset.cmd;
+  const pdfId = item.dataset.pdfId;
+  if (palette?.open) palette.close();
+
+  if (cmd === 'open-case' && pdfId) {
+    const pdf = (S.pdfs || []).find(p => String(p.id) === String(pdfId));
+    if (pdf) {
+      const { openPDFFromLibrary } = await import('./viewer.js');
+      await openPDFFromLibrary(pdf);
+    }
+  } else if (cmd === 'go-desk') {
+    const homeTab = document.querySelector('.gn-tab-home');
+    if (homeTab) homeTab.click();
+    else {
+      const { closeActivePDF } = await import('./viewer.js');
+      closeActivePDF?.();
+    }
+  } else if (cmd === 'perplexity-digest') {
+    document.getElementById('btn-perplexity-digest')?.click();
+  } else if (cmd === 'open-digest') {
+    const npPanel = document.getElementById('notepad-panel');
+    if (npPanel && !npPanel.classList.contains('open')) {
+      document.getElementById('btn-notepad')?.click();
+    }
+    document.getElementById('nptab-digest')?.click();
+    document.getElementById('np-digest-editor')?.focus();
+  } else if (cmd === 'open-notes') {
+    document.getElementById('btn-notepad')?.click();
+  } else if (cmd === 'open-color-categories') {
+    _openColorManager();
+  } else if (cmd === 'toggle-rail-autohide') {
+    setSidebarAutoHide(!isSidebarAutoHide(), true);
+  } else if (cmd === 'toggle-skin') {
+    document.getElementById('btn-theme-toggle')?.click();
+  } else if (cmd === 'toggle-search') {
+    _paletteDeps?.openSearch?.();
+  } else if (cmd === 'toggle-tags') {
+    document.getElementById('btn-tags')?.click();
+  } else if (cmd === 'zoom-in') {
+    await changeZoom(0.25);
+  } else if (cmd === 'zoom-out') {
+    await changeZoom(-0.25);
+  }
+}
+
+export function openCommandPalette() {
+  const palette = document.getElementById('commandPalette');
+  const input = document.getElementById('paletteInput');
+  if (!palette) return;
+  if (palette.open) {
+    palette.close();
+    return;
+  }
+  _populatePaletteCases();
+  if (input) input.value = '';
+  _filterPaletteItems('');
+  if (typeof palette.showModal === 'function') palette.showModal();
+  else palette.setAttribute('open', '');
+  if (input) input.focus();
+}
+
+export function closeCommandPalette() {
+  const palette = document.getElementById('commandPalette');
+  if (!palette) return;
+  if (palette.open && typeof palette.close === 'function') palette.close();
+  else palette.removeAttribute('open');
+}
+
+function initCommandPalette() {
+  if (_paletteWired) return;
+  const palette = document.getElementById('commandPalette');
+  const input = document.getElementById('paletteInput');
+  if (!palette) return;
+  _paletteWired = true;
+
+  palette.addEventListener('click', (e) => {
+    if (e.target === palette) {
+      closeCommandPalette();
+      return;
+    }
+    const item = e.target.closest('.palette__item');
+    if (item) _executePaletteItem(item);
+  });
+
+  palette.addEventListener('keydown', (e) => {
+    const visible = _getVisiblePaletteItems();
+    if (!visible.length) return;
+    let currentIdx = visible.findIndex(el => el.getAttribute('aria-selected') === 'true');
+    if (currentIdx === -1) currentIdx = 0;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      _setActivePaletteItem(visible[(currentIdx + 1) % visible.length]);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      _setActivePaletteItem(visible[(currentIdx - 1 + visible.length) % visible.length]);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      _executePaletteItem(visible[currentIdx]);
+    }
+  });
+
+  input?.addEventListener('input', () => _filterPaletteItems(input.value));
+}
+
 // ── Keyboard shortcuts ──
 export function initKeyboard(deps) {
   // deps: { setMode, openSearch, closeSearch, closeAnnPanel }
+  _paletteDeps = deps;
+  initCommandPalette();
+
   document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      openCommandPalette();
+      return;
+    }
+
     const tag      = document.activeElement?.tagName;
     const editable = document.activeElement?.contentEditable === 'true';
     if (tag === 'INPUT' || tag === 'TEXTAREA' || editable) return;
@@ -972,9 +1231,20 @@ export function initKeyboard(deps) {
     else if (e.key === 'd' || e.key === 'D') deps.setMode('draw');
     else if (e.key === '?') openModal('mo-keys');
     else if (e.key === 'Escape') {
+      closeCommandPalette();
       deps.closeAnnPanel();
       deps.closeSearch();
       closeModal('mo-keys');
+      document.getElementById('tags-panel')?.classList.remove('open');
+      ['mo-color-categories', 'mo-color', 'topic-notes-modal', 'mo-syllabus', 'mo-move-to-folder', 'mo-ocr-tool'].forEach(id => {
+        closeModal(id);
+        const m = document.getElementById(id);
+        if (m && m.style.display && m.style.display !== 'none') m.style.display = 'none';
+      });
+      document.getElementById('lib-ctx-menu')?.classList.remove('open');
+      const tblMenu = document.getElementById('table-ctx-menu');
+      if (tblMenu) tblMenu.style.display = 'none';
+      document.getElementById('sel-menu')?.classList.remove('open');
       import('./notepad.js').then(m => m.closeNotepad?.()).catch(() => {
         document.getElementById('notepad-panel')?.classList.remove('open');
       });
@@ -1015,7 +1285,9 @@ export function exportAnnotations() {
   const lines = [`# Annotations — ${S.curPDF.name}`, ''];
   const sorted = [...S.annotations].sort((a, b) => a.page - b.page);
   for (const ann of sorted) {
-    lines.push(`## Page ${ann.page}`);
+    const cat = getColorCategoryForHex(ann.hex_color);
+    const catSuffix = cat?.name ? ` · ${cat.name}` : '';
+    lines.push(`## Page ${ann.page}${catSuffix}`);
     lines.push(`> ${ann.highlighted_text}`);
     lines.push('');
     if (ann.notes.length) {
@@ -1061,11 +1333,29 @@ export function getScreenIndicator() {
 
 export function updateAppTitle() {
   const prefix = getScreenIndicator();
+  const cbInfo = document.getElementById('casebar-info');
+  const cbTitle = document.getElementById('casebar-title');
+  const cbMeta = document.getElementById('casebar-meta');
+
   if (S.curPDF) {
     const pageStr = S.curPage ? `(p. ${S.curPage})` : '';
     document.title = `${prefix}📄 ${S.curPDF.name} ${pageStr} — Legal Annotator`;
+    if (cbInfo && cbTitle && cbMeta) {
+      const folder = (S.folders || []).find(f => f.id === S.curPDF.folder_id);
+      const subj = folder
+        ? (S.subjects || []).find(s => s.id === folder.subject_id)
+        : (S.subjects || []).find(s => s.id === S.curPDF.subject_id);
+      cbTitle.textContent = S.curPDF.name || 'Case Document';
+      const parts = [];
+      if (subj?.name) parts.push(subj.name);
+      if (folder?.name) parts.push(folder.name);
+      if (S.curPage && S.totalPages) parts.push(`p. ${S.curPage} / ${S.totalPages}`);
+      cbMeta.textContent = parts.join(' · ');
+      cbInfo.hidden = false;
+    }
   } else {
     document.title = `${prefix}Legal Annotator`;
+    if (cbInfo) cbInfo.hidden = true;
   }
 }
 

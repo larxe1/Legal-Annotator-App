@@ -1052,7 +1052,7 @@ export function initOcrTool() {
       <!-- Header -->
       <div style="display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid var(--navy-b,#22334d);padding-bottom:12px;">
         <div>
-          <h3 style="margin:0;font-family:'Libre Baskerville',serif;font-size:18px;color:var(--gold,#c9a84c);display:flex;align-items:center;gap:8px;">
+          <h3 style="margin:0;font-family:var(--font-display, 'Literata', Georgia, 'Palatino Linotype', 'Book Antiqua', serif);font-size:18px;color:var(--gold,#c9a84c);display:flex;align-items:center;gap:8px;">
             <span>🔍</span> Scan-to-OCR
           </h3>
           <p style="margin:4px 0 0 0;font-size:12px;color:var(--muted,#8ea0b8);line-height:1.4;">

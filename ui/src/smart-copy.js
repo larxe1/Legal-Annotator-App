@@ -131,7 +131,7 @@ export function updateCopyInstructionButtonState() {
 
   if (instr) {
     btn.classList.add('has-instr');
-    btn.innerHTML = '<span>📝 Instruction ✓</span>';
+    btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Instruction</span>';
     const preview = instr.length > 140 ? instr.slice(0, 140) + '…' : instr;
     btn.title = `Main Instruction: ${autoMain}\nExtra Subfolder Instruction for "${breadcrumb}" (click to edit):\n${preview}`;
   } else {
@@ -159,7 +159,7 @@ export function updateCopyInstructionButtonState() {
 export function openCopyInstructionModal() {
   const folderId = getActiveSubfolderId();
   if (!folderId) {
-    toast('⚠️ Open a PDF first to set copy instructions for its subfolder.');
+    toast('Open a PDF first to set copy instructions for its subfolder.');
     return;
   }
   const modal = document.getElementById('mo-copy-instructions');
@@ -607,22 +607,22 @@ export function cleanSelectedText(rawText) {
 export async function copySelectedTextClean() {
   const rawText = (S.pendingSel?.text || window.getSelection()?.toString() || '').trim();
   if (!rawText) {
-    toast('⚠️ No text selected to copy');
+    toast('No text selected to copy');
     return false;
   }
 
   const clean = cleanSelectedText(rawText);
   if (!clean) {
-    toast('⚠️ No text to copy after filtering');
+    toast('No text to copy after filtering');
     return false;
   }
 
   const ok = await copyToClipboard(clean);
   if (ok) {
-    toast('✅ Copied formatted text (page numbers removed)');
+    toast('Copied formatted text (page numbers removed)');
     return true;
   } else {
-    toast('❌ Failed to copy to clipboard');
+    toast('Failed to copy to clipboard');
     return false;
   }
 }
@@ -640,7 +640,7 @@ export async function copyEntirePdfTextSmart() {
   if (_isExtractingSmart) return;
 
   if (!S.pdfDoc || !S.totalPages || S.totalPages <= 0) {
-    toast('⚠️ No PDF is currently open');
+    toast('No PDF is currently open');
     return;
   }
 
@@ -663,7 +663,7 @@ export async function copyEntirePdfTextSmart() {
   const BATCH_SIZE = 10;
 
   try {
-    toast(`⏳ Extracting text from ${total} page${total === 1 ? '' : 's'}…`);
+    toast(`Extracting text from ${total} page${total === 1 ? '' : 's'}…`);
 
     for (let i = 1; i <= total; i += BATCH_SIZE) {
       if (doc !== S.pdfDoc) {
@@ -716,7 +716,7 @@ export async function copyEntirePdfTextSmart() {
     // Combine non-empty pages without injecting '--- Page X ---' headers
     const validPages = pageTexts.filter(t => t && t.trim().length > 0);
     if (!validPages.length) {
-      toast('⚠️ No selectable text found in this PDF (it may be a scanned document without OCR).');
+      toast('No selectable text found in this PDF (it may be a scanned document without OCR).');
       return;
     }
 
@@ -730,7 +730,7 @@ export async function copyEntirePdfTextSmart() {
 
     const ok = await copyToClipboard(finalCopyText);
     if (!ok) {
-      toast('❌ Failed to copy to clipboard. Please check clipboard permissions.');
+      toast('Failed to copy to clipboard. Please check clipboard permissions.');
       return;
     }
 
@@ -749,13 +749,13 @@ export async function copyEntirePdfTextSmart() {
     }
 
     if (extraInstr) {
-      toast(`✅ Copied PDF + Topic/Subtopic & Extra Instruction (${wordCount.toLocaleString()} words, ${pageLabel})!`);
+      toast(`Copied PDF + Topic/Subtopic & Extra Instruction (${wordCount.toLocaleString()} words, ${pageLabel})!`);
     } else {
-      toast(`✅ Copied PDF + Topic/Subtopic Digest Instruction (${wordCount.toLocaleString()} words, ${pageLabel})!`);
+      toast(`Copied PDF + Topic/Subtopic Digest Instruction (${wordCount.toLocaleString()} words, ${pageLabel})!`);
     }
   } catch (err) {
     console.error('[smart-copy] Error:', err);
-    toast(`⚠️ Text extraction stopped: ${err.message || err}`);
+    toast(`Text extraction stopped: ${err.message || err}`);
   } finally {
     _isExtractingSmart = false;
     if (btn) {
@@ -770,48 +770,340 @@ export async function copyEntirePdfTextSmart() {
 }
 
 let _isDigestingPerplexity = false;
+let _singleDigestCancelled = false;
+let _lastPplxWebWin = null;
+let _lastPplxUrl = 'https://www.perplexity.ai/spaces';
+let _lastStudioPayload = null;
+let _bannerAutoHideTimer = null;
 let _batchDigestState = {
   running: false,
   cancelled: false,
   currentPdfId: null,
   resolveCurrentPdf: null,
+  countLabel: '',
+};
+let _pplxMonitorState = {
+  state: 'idle',
+  title: 'Perplexity Studio',
+  status: 'Ready',
+  error: '',
+  countLabel: '',
+  pdfId: '',
+  pdfName: '',
+  canRetry: false,
 };
 
-function updateBatchDigestBanner(text = '', showStop = true) {
-  let banner = document.getElementById('la-batch-pplx-banner');
-  if (!text) {
-    if (banner) banner.remove();
+function getTauriInvoke() {
+  if (typeof window === 'undefined') return null;
+  if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
+    return (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
+  }
+  if (typeof window.__TAURI__?.core?.invoke === 'function') {
+    return (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+  }
+  return null;
+}
+
+function hasDesktopPerplexityStudio() {
+  return typeof window !== 'undefined' &&
+    (typeof window.desktopOpenPerplexityStudio === 'function' || !!getTauriInvoke());
+}
+
+function preOpenPerplexityWebWindow() {
+  if (hasDesktopPerplexityStudio()) return null;
+  if (typeof window === 'undefined' || typeof window.open !== 'function') return null;
+  try {
+    const win = window.open('about:blank', '_blank');
+    if (win) {
+      _lastPplxWebWin = win;
+      try {
+        win.document.title = 'Opening Perplexity Case Digest…';
+        win.document.body.innerHTML = '<div style="font-family:system-ui,-apple-system,sans-serif;padding:32px;color:#1b1f23;background:#f8f7f3;min-height:100vh;margin:0;"><h2 style="margin:0 0 8px;font-size:18px;">Preparing Perplexity Case Digest…</h2><p style="margin:0;color:#555;font-size:14px;">Extracting PDF text and subfolder instructions. This tab will redirect to Perplexity automatically.</p></div>';
+      } catch {}
+    }
+    return win;
+  } catch {
+    return null;
+  }
+}
+
+export async function focusOrReopenPerplexityStudio() {
+  if (hasDesktopPerplexityStudio()) {
+    try {
+      if (typeof window.desktopFocusPerplexityStudio === 'function') {
+        const focused = await window.desktopFocusPerplexityStudio();
+        if (focused) return true;
+      } else {
+        const tauriInvoke = getTauriInvoke();
+        if (tauriInvoke) {
+          const focused = await tauriInvoke('desktop_focus_perplexity_studio');
+          if (focused) return true;
+        }
+      }
+    } catch (err) {
+      console.warn('[perplexity-digest] focus desktop studio failed:', err);
+    }
+
+    if (_lastStudioPayload) {
+      try {
+        if (typeof window.desktopOpenPerplexityStudio === 'function') {
+          const reopened = await window.desktopOpenPerplexityStudio(_lastStudioPayload);
+          if (reopened) {
+            toast('Reopened Perplexity Digest Studio');
+            return true;
+          }
+        } else {
+          const tauriInvoke = getTauriInvoke();
+          if (tauriInvoke) {
+            const reopened = await tauriInvoke('desktop_open_perplexity_studio', _lastStudioPayload);
+            if (reopened) {
+              toast('Reopened Perplexity Digest Studio');
+              return true;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[perplexity-digest] reopen desktop studio failed:', err);
+      }
+    }
+    if (S.curPDF) {
+      await openPerplexityDigestForCurrentPdf();
+      return true;
+    }
+    return false;
+  }
+
+  if (_lastPplxWebWin && !_lastPplxWebWin.closed) {
+    try {
+      _lastPplxWebWin.focus();
+      return true;
+    } catch {}
+  }
+
+  const targetUrl = _lastPplxUrl || safeStorageGet('pplx_pinned_project_url', '') || 'https://www.perplexity.ai/spaces';
+  try {
+    const win = window.open(targetUrl, '_blank');
+    if (win) {
+      _lastPplxWebWin = win;
+      win.focus?.();
+      return true;
+    }
+  } catch {}
+  toast('Could not focus Perplexity tab — please allow popups for this site.');
+  return false;
+}
+
+export function stopActivePerplexityDigest() {
+  _singleDigestCancelled = true;
+  if (_batchDigestState.running) {
+    _batchDigestState.cancelled = true;
+    if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
+      _batchDigestState.resolveCurrentPdf(false);
+    }
+  }
+  applyPerplexityStudioStatus({
+    state: 'idle',
+    stepLabel: 'Stopped',
+    message: 'Case Digest stopped by user.',
+    error: '',
+    hideStripAfterMs: 2500,
+  });
+}
+
+function normalizeMonitorDotState(state) {
+  const s = String(state || 'idle').toLowerCase();
+  if (s === 'error' || s === 'failed') return 'error';
+  if (s === 'done' || s === 'saved' || s === 'complete' || s === 'completed') return 'done';
+  if (s === 'extracting' || s === 'preparing' || s === 'loading') return 'extracting';
+  if (s === 'awaiting' || s === 'submitted' || s === 'streaming' || s === 'generating' || s === 'working') return 'awaiting';
+  return 'idle';
+}
+
+function renderPplxMonitorStrip() {
+  const strip = document.getElementById('pplxMonitorStrip');
+  if (!strip) return;
+
+  const { state, title, status, error, countLabel } = _pplxMonitorState;
+  const dotState = normalizeMonitorDotState(state);
+  const isActive = dotState === 'extracting' || dotState === 'awaiting';
+  const showStrip = isActive || dotState === 'error' || (dotState === 'done' && Boolean(status));
+
+  strip.hidden = !showStrip;
+  strip.dataset.state = dotState;
+
+  const dot = document.getElementById('pplxMonitorDot');
+  if (dot) dot.dataset.state = dotState;
+
+  const titleEl = document.getElementById('pplxMonitorTitle');
+  if (titleEl) {
+    titleEl.textContent = countLabel ? `${title} · ${countLabel}` : title;
+  }
+
+  const statusEl = document.getElementById('pplxMonitorStatus');
+  if (statusEl) {
+    statusEl.textContent = status || 'Ready';
+    statusEl.title = status || '';
+  }
+
+  const stopBtn = document.getElementById('stopDigestBtn');
+  if (stopBtn) {
+    stopBtn.disabled = !isActive && !_batchDigestState.running && !_isDigestingPerplexity;
+  }
+
+  const focusBtn = document.getElementById('focusPplxBtn');
+  if (focusBtn) {
+    const labelSpan = focusBtn.querySelector('span');
+    if (labelSpan) {
+      labelSpan.textContent = hasDesktopPerplexityStudio() ? 'Focus / Reopen' : 'Focus Tab';
+    }
+  }
+
+  const alertEl = document.getElementById('pplxMonitorAlert');
+  const alertTextEl = document.getElementById('pplxMonitorAlertText');
+  const alertBtn = document.getElementById('pplxMonitorAlertBtn');
+  if (alertEl) {
+    const hasErr = dotState === 'error' && Boolean(error || status);
+    alertEl.hidden = !hasErr;
+    if (alertTextEl && hasErr) {
+      alertTextEl.textContent = error || status;
+    }
+    if (alertBtn && hasErr) {
+      alertBtn.textContent = _pplxMonitorState.canRetry ? 'Retry' : 'Focus Studio';
+    }
+  }
+}
+
+function renderFloatingMonitorBanner() {
+  clearTimeout(_bannerAutoHideTimer);
+  const existing = document.getElementById('la-batch-pplx-banner');
+  const { state, title, status, error, countLabel } = _pplxMonitorState;
+  const dotState = normalizeMonitorDotState(state);
+  const isRunning = dotState === 'extracting' || dotState === 'awaiting' || _batchDigestState.running || _isDigestingPerplexity;
+  const isError = dotState === 'error';
+  const showBanner = isRunning || isError || Boolean(status && state !== 'idle');
+
+  if (!showBanner) {
+    if (existing) existing.remove();
     return;
   }
+
+  let banner = existing;
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'la-batch-pplx-banner';
-    banner.style.cssText =
-      'position:fixed;bottom:18px;left:18px;z-index:99999;background:linear-gradient(90deg,#0f172a 0%,#172542 100%);border:1.5px solid var(--gold,#c9a84c);border-radius:10px;padding:10px 14px;color:#e8e4db;font-family:Inter,system-ui,sans-serif;font-size:12.5px;display:flex;align-items:center;gap:12px;box-shadow:0 8px 28px rgba(0,0,0,0.6);max-width:540px;';
+    banner.className = 'pplx-floating-banner';
     document.body.appendChild(banner);
   }
+  banner.dataset.state = dotState;
+  banner.style.fontFamily = 'var(--font-ui)';
+
+  const badgeText = countLabel ? `${title} (${countLabel})` : title;
+  const displayMsg = isError ? (error || status || 'Perplexity Studio encountered an issue.') : (status || 'Working…');
+  const focusLabel = hasDesktopPerplexityStudio() ? 'Focus / Reopen' : 'Focus Tab';
+  const stopLabel = _batchDigestState.running ? 'Stop Batch' : (isRunning ? 'Stop' : 'Dismiss');
+
   banner.innerHTML = `
-    <span style="color:var(--gold,#c9a84c);font-weight:700;white-space:nowrap;">⚡ Batch Digest</span>
-    <span id="la-batch-pplx-msg" style="flex:1;line-height:1.4;overflow:hidden;text-overflow:ellipsis;"></span>
-    ${
-      showStop
-        ? '<button id="la-batch-pplx-stop" style="background:#7f1d1d;border:1px solid #ef4444;color:#fecaca;border-radius:6px;padding:4px 10px;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;">⏹ Stop Batch</button>'
-        : ''
-    }
+    <span class="pplx-floating-banner__badge">
+      <svg class="icon" aria-hidden="true"><use href="${isError ? '#i-alert' : '#i-spark'}"/></svg>
+      <span id="la-batch-pplx-title"></span>
+    </span>
+    <span id="la-batch-pplx-msg" class="pplx-floating-banner__msg"></span>
+    <div class="pplx-floating-banner__actions">
+      <button type="button" id="la-batch-pplx-focus" class="pplx-floating-banner__btn">
+        <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg>
+        <span></span>
+      </button>
+      <button type="button" id="la-batch-pplx-stop" class="pplx-floating-banner__btn pplx-floating-banner__btn--stop">
+        <svg class="icon" aria-hidden="true"><use href="${isRunning ? '#i-stop' : '#i-close'}"/></svg>
+        <span></span>
+      </button>
+    </div>
   `;
+
+  const titleEl = banner.querySelector('#la-batch-pplx-title');
+  if (titleEl) titleEl.textContent = badgeText;
   const msgEl = banner.querySelector('#la-batch-pplx-msg');
-  if (msgEl) msgEl.textContent = text;
-  const stopBtn = banner.querySelector('#la-batch-pplx-stop');
-  if (stopBtn) {
-    stopBtn.addEventListener('click', () => {
-      _batchDigestState.cancelled = true;
-      if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
-        _batchDigestState.resolveCurrentPdf(false);
-      }
-      updateBatchDigestBanner('⏹ Batch Digest stopped by user.', false);
-      setTimeout(() => updateBatchDigestBanner(''), 3000);
+  if (msgEl) {
+    msgEl.textContent = displayMsg;
+    msgEl.title = displayMsg;
+  }
+  const focusBtn = banner.querySelector('#la-batch-pplx-focus');
+  if (focusBtn) {
+    const span = focusBtn.querySelector('span');
+    if (span) span.textContent = focusLabel;
+    focusBtn.addEventListener('click', () => {
+      focusOrReopenPerplexityStudio();
     });
   }
+  const stopBtn = banner.querySelector('#la-batch-pplx-stop');
+  if (stopBtn) {
+    const span = stopBtn.querySelector('span');
+    if (span) span.textContent = stopLabel;
+    stopBtn.addEventListener('click', () => {
+      if (isRunning) {
+        stopActivePerplexityDigest();
+      } else {
+        _pplxMonitorState = { ..._pplxMonitorState, state: 'idle', status: '', error: '' };
+        renderPplxMonitorStrip();
+        renderFloatingMonitorBanner();
+      }
+    });
+  }
+}
+
+function applyPerplexityStudioStatus(payload = {}) {
+  if (!payload || typeof payload !== 'object') return;
+  const rawState = payload.state || payload.status || (payload.error ? 'error' : 'idle');
+  const dotState = normalizeMonitorDotState(rawState);
+  const countLabel = payload.count != null
+    ? String(payload.count)
+    : (payload.countLabel || _batchDigestState.countLabel || '');
+  const stageTitle = payload.stepLabel || payload.stage || payload.title || (_batchDigestState.running ? 'Batch Digest' : 'Perplexity Studio');
+  const msg = payload.message || payload.error || payload.detail || (dotState === 'idle' ? '' : stageTitle);
+  const errMsg = dotState === 'error' ? (payload.error || payload.message || 'Perplexity Studio requires attention.') : '';
+
+  _pplxMonitorState = {
+    state: dotState,
+    title: stageTitle,
+    status: msg,
+    error: errMsg,
+    countLabel,
+    pdfId: payload.pdfId != null ? String(payload.pdfId) : _pplxMonitorState.pdfId,
+    pdfName: payload.pdfName != null ? String(payload.pdfName) : _pplxMonitorState.pdfName,
+    canRetry: Boolean(payload.canRetry),
+  };
+
+  renderPplxMonitorStrip();
+  renderFloatingMonitorBanner();
+
+  if (payload.hideStripAfterMs && !isNaN(payload.hideStripAfterMs)) {
+    const delay = Number(payload.hideStripAfterMs);
+    _bannerAutoHideTimer = setTimeout(() => {
+      if (!_batchDigestState.running && !_isDigestingPerplexity && _pplxMonitorState.state !== 'error') {
+        _pplxMonitorState = { ..._pplxMonitorState, state: 'idle', status: '', error: '' };
+        renderPplxMonitorStrip();
+        renderFloatingMonitorBanner();
+      }
+    }, delay);
+  }
+}
+
+function updateBatchDigestBanner(text = '', showStop = true, extra = {}) {
+  if (!text) {
+    if (!showStop) {
+      _pplxMonitorState = { ..._pplxMonitorState, state: 'idle', status: '', error: '', countLabel: '' };
+      renderPplxMonitorStrip();
+      renderFloatingMonitorBanner();
+    }
+    return;
+  }
+  applyPerplexityStudioStatus({
+    state: extra.state || (showStop ? 'streaming' : 'done'),
+    stepLabel: extra.stepLabel || 'Batch Digest',
+    message: text,
+    countLabel: extra.countLabel ?? _batchDigestState.countLabel,
+    hideStripAfterMs: extra.hideStripAfterMs,
+  });
 }
 
 async function ensurePdfOpenedAndLoaded(pdfItem) {
@@ -836,12 +1128,16 @@ async function ensurePdfOpenedAndLoaded(pdfItem) {
  */
 export async function runPerplexityDigestForPdf(pdfItem) {
   if (!pdfItem) return;
+  const preOpenedWebWin = preOpenPerplexityWebWindow();
   const ready = await ensurePdfOpenedAndLoaded(pdfItem);
   if (!ready) {
-    toast(`⚠️ Could not load "${pdfItem.name}" for Perplexity Digest.`);
+    if (preOpenedWebWin && !preOpenedWebWin.closed) {
+      try { preOpenedWebWin.close(); } catch {}
+    }
+    toast(`Could not load "${pdfItem.name}" for Perplexity Digest.`);
     return;
   }
-  await openPerplexityDigestForCurrentPdf();
+  await openPerplexityDigestForCurrentPdf({ preOpenedWebWin });
 }
 
 /**
@@ -852,7 +1148,7 @@ export async function runPerplexityDigestForPdf(pdfItem) {
  */
 export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
   if (_batchDigestState.running) {
-    toast('⚠️ A Batch Perplexity Digest is already running.');
+    toast('A Batch Perplexity Digest is already running.');
     return;
   }
   const folders = (Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder]).filter(Boolean);
@@ -875,30 +1171,33 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
     : [];
 
   if (!pdfQueue.length) {
-    toast('⚠️ No PDFs found inside this folder/subfolder to digest.');
+    toast('No PDFs found inside this folder/subfolder to digest.');
     return;
   }
 
+  const sharedWebWin = preOpenPerplexityWebWindow();
   _batchDigestState.running = true;
   _batchDigestState.cancelled = false;
   _batchDigestState.currentPdfId = null;
   _batchDigestState.resolveCurrentPdf = null;
+  _batchDigestState.countLabel = `0 / ${pdfQueue.length}`;
 
   let completedCount = 0;
   const folderTitle = folders.map(f => f.name).join(', ');
-  toast(`⚡ Starting Batch Perplexity Digest for ${pdfQueue.length} PDF${pdfQueue.length === 1 ? '' : 's'} in "${folderTitle}"…`);
+  toast(`Starting Batch Perplexity Digest for ${pdfQueue.length} PDF${pdfQueue.length === 1 ? '' : 's'} in "${folderTitle}"…`);
 
   try {
     for (let i = 0; i < pdfQueue.length; i++) {
       if (_batchDigestState.cancelled) break;
       const pdfItem = pdfQueue[i];
       const trueId = String(pdfItem.linked_pdf_id || pdfItem.id || '');
-      const stepLabel = `(${i + 1} / ${pdfQueue.length})`;
+      const stepLabel = `${i + 1} / ${pdfQueue.length}`;
+      _batchDigestState.countLabel = stepLabel;
 
-      updateBatchDigestBanner(`${stepLabel} Loading "${pdfItem.name}"…`, true);
+      updateBatchDigestBanner(`Loading "${pdfItem.name}"…`, true, { state: 'extracting', countLabel: stepLabel });
       const loaded = await ensurePdfOpenedAndLoaded(pdfItem);
       if (!loaded || _batchDigestState.cancelled) {
-        toast(`⚠️ Skipping "${pdfItem.name}" (could not load PDF).`);
+        toast(`Skipping "${pdfItem.name}" (could not load PDF).`);
         continue;
       }
 
@@ -920,10 +1219,18 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
         };
       });
 
-      updateBatchDigestBanner(`${stepLabel} Submitting "${pdfItem.name}" to Perplexity "Law" (Claude Sonnet)…`, true);
-      await openPerplexityDigestForCurrentPdf({ forceAutoSubmit: true, forceAutoSend: true });
+      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Perplexity "Law"…`, true, { state: 'extracting', countLabel: stepLabel });
+      await openPerplexityDigestForCurrentPdf({
+        forceAutoSubmit: true,
+        forceAutoSend: true,
+        preOpenedWebWin: sharedWebWin && !sharedWebWin.closed ? sharedWebWin : undefined,
+        keepWebWinOnEmpty: true,
+        countLabel: stepLabel,
+      });
 
-      updateBatchDigestBanner(`${stepLabel} Waiting 1–2 mins for Perplexity to finish "${pdfItem.name}"…`, true);
+      if (_batchDigestState.cancelled) break;
+
+      updateBatchDigestBanner(`Waiting for Perplexity to finish "${pdfItem.name}"…`, true, { state: 'awaiting', countLabel: stepLabel });
       const savedOk = await digestSavedPromise;
       if (_batchDigestState.cancelled) break;
 
@@ -936,8 +1243,9 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
         for (let cd = 5; cd >= 1; cd--) {
           if (_batchDigestState.cancelled) break;
           updateBatchDigestBanner(
-            `✅ Saved "${pdfItem.name}"! Starting next case (${i + 2}/${pdfQueue.length}) in ${cd}s…`,
-            true
+            `Saved "${pdfItem.name}"! Starting next case (${i + 2}/${pdfQueue.length}) in ${cd}s…`,
+            true,
+            { state: 'awaiting', countLabel: stepLabel }
           );
           await new Promise(r => setTimeout(r, 1000));
         }
@@ -946,28 +1254,21 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
 
     if (!_batchDigestState.cancelled) {
       updateBatchDigestBanner(
-        `🎉 Batch Complete! Saved Case Digests for ${completedCount} of ${pdfQueue.length} PDFs.`,
-        false
+        `Batch Complete! Saved Case Digests for ${completedCount} of ${pdfQueue.length} PDFs.`,
+        false,
+        { state: 'done', countLabel: `${completedCount} / ${pdfQueue.length}`, hideStripAfterMs: 5000 }
       );
-      toast(`🎉 Batch Perplexity Digest complete! (${completedCount}/${pdfQueue.length} cases digested)`);
-      setTimeout(() => updateBatchDigestBanner(''), 5000);
+      toast(`Batch Perplexity Digest complete! (${completedCount}/${pdfQueue.length} cases digested)`);
     }
   } finally {
+    if (sharedWebWin && !sharedWebWin.closed && completedCount === 0 && _batchDigestState.cancelled) {
+      try { sharedWebWin.close(); } catch {}
+    }
     _batchDigestState.running = false;
     _batchDigestState.currentPdfId = null;
     _batchDigestState.resolveCurrentPdf = null;
+    _batchDigestState.countLabel = '';
   }
-}
-
-function getTauriInvoke() {
-  if (typeof window === 'undefined') return null;
-  if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
-    return (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
-  }
-  if (typeof window.__TAURI__?.core?.invoke === 'function') {
-    return (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
-  }
-  return null;
 }
 
 /**
@@ -977,26 +1278,26 @@ function getTauriInvoke() {
 export async function openPerplexityDigestForCurrentPdf(opts = {}) {
   if (_isDigestingPerplexity) return;
   if (!S.pdfDoc || !S.totalPages || S.totalPages <= 0 || !S.curPDF) {
-    toast('⚠️ Open a PDF first to generate a Case Digest in Perplexity.');
+    if (opts.preOpenedWebWin && !opts.preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
+      try { opts.preOpenedWebWin.close(); } catch {}
+    }
+    toast('Open a PDF first to generate a Case Digest in Perplexity.');
     return;
   }
 
   const tauriInvoke = getTauriInvoke();
-  const hasDesktopStudio =
-    typeof window.desktopOpenPerplexityStudio === 'function' || !!tauriInvoke;
-  let preOpenedWebWin = null;
-  if (!hasDesktopStudio && typeof window !== 'undefined' && typeof window.open === 'function') {
-    try {
-      preOpenedWebWin = window.open('about:blank', '_blank');
-    } catch {}
-  }
+  const hasDesktopStudio = hasDesktopPerplexityStudio();
+  let preOpenedWebWin = (opts.preOpenedWebWin && !opts.preOpenedWebWin.closed)
+    ? opts.preOpenedWebWin
+    : preOpenPerplexityWebWindow();
 
   const btn = document.getElementById('btn-perplexity-digest');
   const origHtml = btn ? btn.innerHTML : '';
   _isDigestingPerplexity = true;
+  _singleDigestCancelled = false;
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<span>⏳ Preparing…</span>';
+    btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span>Preparing…</span>';
   }
 
   const total = S.totalPages;
@@ -1005,11 +1306,24 @@ export async function openPerplexityDigestForCurrentPdf(opts = {}) {
   const trueId = pdfObj.linked_pdf_id || pdfObj.id;
   const pageTexts = new Array(total);
   const BATCH_SIZE = 10;
+  const countLabel = opts.countLabel || _batchDigestState.countLabel || '';
+
+  applyPerplexityStudioStatus({
+    state: 'extracting',
+    stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Perplexity Studio',
+    message: `Extracting ${total} page${total === 1 ? '' : 's'} of "${pdfObj.name || 'Case'}"…`,
+    countLabel,
+    pdfId: String(trueId || ''),
+    pdfName: String(pdfObj.name || ''),
+  });
 
   try {
-    toast(`⏳ Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Perplexity "Law" Project…`);
+    toast(`Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Perplexity "Law" Project…`);
 
     for (let i = 1; i <= total; i += BATCH_SIZE) {
+      if (_singleDigestCancelled || _batchDigestState.cancelled) {
+        throw new Error('Cancelled by user');
+      }
       if (doc !== S.pdfDoc) throw new Error('PDF changed during extraction');
       const batchPromises = [];
       for (let p = i; p < i + BATCH_SIZE && p <= total; p++) {
@@ -1046,12 +1360,26 @@ export async function openPerplexityDigestForCurrentPdf(opts = {}) {
       if (i + BATCH_SIZE <= total) await new Promise(r => setTimeout(r, 0));
     }
 
+    if (_singleDigestCancelled || _batchDigestState.cancelled) {
+      throw new Error('Cancelled by user');
+    }
+
     const validPages = pageTexts.filter(t => t && t.trim().length > 0);
     if (!validPages.length) {
-      if (preOpenedWebWin && !preOpenedWebWin.closed) {
+      if (preOpenedWebWin && !preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
         try { preOpenedWebWin.close(); } catch {}
       }
-      toast('⚠️ No selectable text found in this PDF (run Scan OCR first).');
+      applyPerplexityStudioStatus({
+        state: 'error',
+        stepLabel: 'No Text Found',
+        message: 'No selectable text found in this PDF (run Scan OCR first).',
+        error: 'No selectable text found in this PDF (run Scan OCR first).',
+        countLabel,
+        pdfId: String(trueId || ''),
+        pdfName: String(pdfObj.name || ''),
+        canRetry: true,
+      });
+      toast('No selectable text found in this PDF (run Scan OCR first).');
       return;
     }
 
@@ -1096,18 +1424,36 @@ export async function openPerplexityDigestForCurrentPdf(opts = {}) {
       digestMode: String(digestModePref),
       autoSendDigest: Boolean(autoSendPref),
     };
+    _lastStudioPayload = studioPayload;
+    _lastPplxUrl = pinnedProjectUrl || 'https://www.perplexity.ai/spaces';
 
     if (typeof window.desktopOpenPerplexityStudio === 'function') {
       const opened = await window.desktopOpenPerplexityStudio(studioPayload);
       if (opened) {
-        toast('⚡ Opened Perplexity "Law" Digest Studio!');
+        applyPerplexityStudioStatus({
+          state: 'streaming',
+          stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Perplexity Studio',
+          message: `Digesting "${pdfObj.name || 'Case'}" in Perplexity Studio…`,
+          countLabel,
+          pdfId: String(trueId || ''),
+          pdfName: String(pdfObj.name || ''),
+        });
+        toast('Opened Perplexity "Law" Digest Studio!');
         return;
       }
     } else if (tauriInvoke) {
       try {
         const opened = await tauriInvoke('desktop_open_perplexity_studio', studioPayload);
         if (opened) {
-          toast('⚡ Opened Perplexity "Law" Digest Studio!');
+          applyPerplexityStudioStatus({
+            state: 'streaming',
+            stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Perplexity Studio',
+            message: `Digesting "${pdfObj.name || 'Case'}" in Perplexity Studio…`,
+            countLabel,
+            pdfId: String(trueId || ''),
+            pdfName: String(pdfObj.name || ''),
+          });
+          toast('Opened Perplexity "Law" Digest Studio!');
           return;
         }
       } catch (ipcErr) {
@@ -1116,24 +1462,63 @@ export async function openPerplexityDigestForCurrentPdf(opts = {}) {
     }
 
     // Web / external browser fallback
-    const fallbackUrl = pinnedProjectUrl || 'https://www.perplexity.ai/spaces';
+    const fallbackUrl = _lastPplxUrl;
     if (preOpenedWebWin && !preOpenedWebWin.closed) {
       preOpenedWebWin.location.href = fallbackUrl;
       preOpenedWebWin.focus?.();
+      _lastPplxWebWin = preOpenedWebWin;
     } else if (typeof window.desktopOpenUrl === 'function') {
       await window.desktopOpenUrl(fallbackUrl);
     } else if (tauriInvoke) {
       await tauriInvoke('desktop_open_url', { url: fallbackUrl }).catch(() => {});
-    } else {
-      window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+    } else if (!hasDesktopStudio) {
+      const w = window.open(fallbackUrl, '_blank');
+      if (w) {
+        _lastPplxWebWin = w;
+        w.focus?.();
+      } else {
+        applyPerplexityStudioStatus({
+          state: 'error',
+          stepLabel: 'Popup Blocked',
+          message: 'Browser blocked the Perplexity tab. Click Focus Tab to open it.',
+          error: 'Browser blocked the Perplexity tab. Click Focus Tab to open it.',
+          countLabel,
+          pdfId: String(trueId || ''),
+          pdfName: String(pdfObj.name || ''),
+          canRetry: false,
+        });
+      }
     }
-    toast('✅ Copied case + instructions! Paste (Ctrl+V) in your Perplexity "Law" Project.');
+    if (_pplxMonitorState.state !== 'error') {
+      applyPerplexityStudioStatus({
+        state: 'awaiting',
+        stepLabel: 'Perplexity Tab',
+        message: 'Opened Perplexity tab — Paste (Ctrl+V) & copy reply back to Case Digest',
+        countLabel,
+        pdfId: String(trueId || ''),
+        pdfName: String(pdfObj.name || ''),
+      });
+    }
+    toast('Copied case + instructions! Paste (Ctrl+V) in your Perplexity "Law" Project.');
   } catch (err) {
-    if (preOpenedWebWin && !preOpenedWebWin.closed) {
+    if (preOpenedWebWin && !preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
       try { preOpenedWebWin.close(); } catch {}
     }
+    if (_singleDigestCancelled || _batchDigestState.cancelled || err?.message === 'Cancelled by user') {
+      return;
+    }
     console.error('[perplexity-digest] Error:', err);
-    toast(`⚠️ Could not start Perplexity Digest: ${err.message || err}`);
+    applyPerplexityStudioStatus({
+      state: 'error',
+      stepLabel: 'Digest Error',
+      message: `Could not start Perplexity Digest: ${err.message || err}`,
+      error: `Could not start Perplexity Digest: ${err.message || err}`,
+      countLabel,
+      pdfId: String(trueId || ''),
+      pdfName: String(pdfObj.name || ''),
+      canRetry: true,
+    });
+    toast(`Could not start Perplexity Digest: ${err.message || err}`);
   } finally {
     _isDigestingPerplexity = false;
     if (btn) {
@@ -1164,7 +1549,7 @@ export function initSmartCopy() {
       const copyBtn = document.createElement('button');
       copyBtn.id = 'sel-copy';
       copyBtn.className = 'sel-btn sel-copy';
-      copyBtn.textContent = '📋 Copy Text';
+      copyBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Text</span>';
       copyBtn.title = 'Copy selected text with clean legal formatting (page numbers removed)';
       copyBtn.addEventListener('mousedown', e => e.preventDefault());
       copyBtn.addEventListener('click', async (e) => {
@@ -1227,7 +1612,7 @@ export function initSmartCopy() {
         if (clean && e.clipboardData) {
           e.clipboardData.setData('text/plain', clean);
           e.preventDefault();
-          toast('✅ Copied formatted text (page numbers removed)');
+          toast('Copied formatted text (page numbers removed)');
         }
       }
     }
@@ -1262,9 +1647,9 @@ export function initSmartCopy() {
       modal?.classList.remove('open');
       const breadcrumb = getFolderBreadcrumb(folderId);
       if (val) {
-        toast(`✅ Saved copy instructions for "${breadcrumb}"`);
+        toast(`Saved copy instructions for "${breadcrumb}"`);
       } else {
-        toast(`🗑 Cleared copy instructions for "${breadcrumb}"`);
+        toast(`Cleared copy instructions for "${breadcrumb}"`);
       }
     });
   }
@@ -1279,7 +1664,7 @@ export function initSmartCopy() {
       if (folderId) {
         saveSubfolderCopyInstruction(folderId, '');
         const breadcrumb = getFolderBreadcrumb(folderId);
-        toast(`🗑 Cleared copy instructions for "${breadcrumb}"`);
+        toast(`Cleared copy instructions for "${breadcrumb}"`);
       }
       modal?.classList.remove('open');
     });
@@ -1304,6 +1689,23 @@ export function initSmartCopy() {
       openPerplexityDigestForCurrentPdf();
     });
   }
+
+  document.getElementById('focusPplxBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    focusOrReopenPerplexityStudio();
+  });
+  document.getElementById('pplxMonitorAlertBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (_pplxMonitorState.canRetry && S.curPDF) {
+      openPerplexityDigestForCurrentPdf();
+    } else {
+      focusOrReopenPerplexityStudio();
+    }
+  });
+  document.getElementById('stopDigestBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    stopActivePerplexityDigest();
+  });
 }
 
 if (typeof window !== 'undefined') {
@@ -1312,9 +1714,15 @@ if (typeof window !== 'undefined') {
   window.openPerplexityDigestForCurrentPdf = openPerplexityDigestForCurrentPdf;
   window.runPerplexityDigestForPdf = runPerplexityDigestForPdf;
   window.runBatchPerplexityDigestForFolders = runBatchPerplexityDigestForFolders;
+  window.focusOrReopenPerplexityStudio = focusOrReopenPerplexityStudio;
+  window.stopActivePerplexityDigest = stopActivePerplexityDigest;
   window.stripPageNumbersAndFooters = stripPageNumbersAndFooters;
   window.formatPageTextContent = formatPageTextContent;
   window.initSmartCopy = initSmartCopy;
+
+  window.__onPerplexityStudioStatus = (payload) => {
+    applyPerplexityStudioStatus(payload);
+  };
 
   window.__onPerplexityPrefsUpdated = (prefs) => {
     if (!prefs || typeof prefs !== 'object') return;
@@ -1344,6 +1752,15 @@ if (typeof window !== 'undefined') {
       msg.text || '',
       msg.digestMode === 'replace' ? 'replace' : 'append'
     );
+    if (ok) {
+      applyPerplexityStudioStatus({
+        state: 'done',
+        stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Perplexity Studio',
+        message: 'Saved into Case Digest',
+        pdfId: msg.pdfId || '',
+        hideStripAfterMs: _batchDigestState.running ? undefined : 4000,
+      });
+    }
     if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
       if (!_batchDigestState.currentPdfId || !msg.pdfId || String(msg.pdfId) === String(_batchDigestState.currentPdfId)) {
         _batchDigestState.resolveCurrentPdf(ok);

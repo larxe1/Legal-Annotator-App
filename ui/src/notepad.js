@@ -37,7 +37,7 @@ function mergeNoteHtml(localHtml, remoteHtml) {
   return (
     localHtml +
     '<hr style="border-color:var(--gold);margin:14px 0;opacity:.5">' +
-    '<p style="color:var(--gold);font-size:11px;font-family:Inter,sans-serif;margin:0 0 6px">⚠️ Notes recovered from another device — please review and merge manually:</p>' +
+    '<p style="color:var(--gold);font-size:11px;font-family:var(--font-ui,system-ui,sans-serif);margin:0 0 6px">Notes recovered from another device — please review and merge manually:</p>' +
     remoteHtml
   );
 }
@@ -220,7 +220,7 @@ function _showSaveErrorBanner(count, lastCode, lastTime) {
     'z-index: 99999',
     'background: #7f1d1d',
     'color: #fee2e2',
-    'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    'font-family: var(--font-ui, system-ui, sans-serif)',
     'font-size: 12px',
     'padding: 8px 16px',
     'display: flex',
@@ -231,7 +231,7 @@ function _showSaveErrorBanner(count, lastCode, lastTime) {
   ].join(';');
 
   banner.innerHTML = `
-    <span style="font-size:16px">⚠️</span>
+    <svg class="icon" aria-hidden="true" style="width:16px;height:16px;flex-shrink:0"><use href="#i-alert"/></svg>
     <span style="flex:1">
       <strong>${count} save error${count > 1 ? 's' : ''} occurred</strong> while you were away
       (last: <code style="background:rgba(0,0,0,.3);padding:1px 4px;border-radius:3px">${lastCode}</code> at ${lastTime}).
@@ -263,7 +263,7 @@ function _showSaveErrorBanner(count, lastCode, lastTime) {
       }
       openHistoryPanel('logs');
     } else {
-      toast('📂 Open a PDF notepad first, then click the 🕐 history button to see the Error Log.');
+      toast('Open a PDF notepad first, then click the History button to see the Error Log.');
     }
   });
 
@@ -324,15 +324,15 @@ function updateLocalSaveLabel(state) {
   const lbl = document.getElementById('np-local-lbl');
   if (!lbl) return;
   if (state === 'saved') {
-    lbl.textContent = '💾 Local ✓';
+    lbl.textContent = 'Local Saved';
     lbl.title = 'Saved to this device\'s local storage';
     lbl.style.color = '#4ade80';
   } else if (state === 'saving') {
-    lbl.textContent = '💾 Saving…';
+    lbl.textContent = 'Local Saving…';
     lbl.title = 'Writing to local storage…';
     lbl.style.color = 'var(--gold, #facc15)';
   } else {
-    lbl.textContent = '💾 Local ✗';
+    lbl.textContent = 'Local Error';
     lbl.title = 'Local save error';
     lbl.style.color = '#f87171';
   }
@@ -347,19 +347,19 @@ function updateSaveStatusLabel(targetPdfId, res) {
   if (!lbl) return;
 
   if (res?.saved && (res?.code === '200_OK' || !res?.code)) {
-    lbl.textContent = '☁️ Cloud ✓';
+    lbl.textContent = 'Cloud Saved';
     lbl.className = 'saved';
     lbl.title = 'Saved to Supabase cloud (Click for Error & Sync Log)';
   } else if (res?.code === 'WARN_SAVED_WITHOUT_DIGEST') {
-    lbl.textContent = '☁️ ⚠️ No Digest';
+    lbl.textContent = 'No Digest';
     lbl.className = 'saving';
     lbl.title = 'Notes saved to cloud, but "digest" column is missing in Supabase. Digest saved locally. Click for Error Log.';
   } else if (res?.code === 'ERR_23503_FK' || res?.localOnly) {
-    lbl.textContent = '☁️ Local Only';
+    lbl.textContent = 'Local Only';
     lbl.className = 'saving';
     lbl.title = 'PDF missing in Supabase library table (23503). Saved safely to local storage. Click for Error Log.';
   } else if (res?.queued) {
-    lbl.textContent = '☁️ Queued…';
+    lbl.textContent = 'Queued…';
     lbl.className = 'saving';
     lbl.title = 'Offline or cloud sync pending. Queued in outbox. Click for Error Log.';
   } else if (res?.error && !res?.saved) {
@@ -790,7 +790,7 @@ export async function openNotepad(pdfId) {
     // Show error in save label so it's visible
     const lbl = $saveLbl();
     if (lbl && _activePdfId === pdfId) {
-      lbl.textContent = '⚠️ Load Err';
+      lbl.textContent = 'Load Err';
       lbl.className = 'err';
       lbl.title = `Cloud load failed: ${e?.message || e}. Using local data. Click to see Error Log.`;
     }
@@ -1051,7 +1051,7 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
     || (S.curPDF ? (S.curPDF.linked_pdf_id || S.curPDF.id) : null)
     || _activePdfId;
   if (!targetPdfId) {
-    toast('⚠️ Open a PDF first so the Case Digest knows which case to save to.');
+    toast('Open a PDF first so the Case Digest knows which case to save to.');
     return false;
   }
 
@@ -1061,7 +1061,7 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
     stripTrailingSourcesHtml(sanitizeRichPasteHtml(cleanedRawHtml, cleanedRawText))
   ).trim();
   if (!formattedHtml) {
-    toast('⚠️ No digest text found to import.');
+    toast('No digest text found to import.');
     return false;
   }
 
@@ -1122,8 +1122,8 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
 
   toast(
     hasExistingDigest && effectiveMode === 'append'
-      ? '✅ Appended Perplexity Digest to the bottom of Case Digest tab!'
-      : '✅ Saved Perplexity Digest into Case Digest tab!'
+      ? 'Appended Perplexity Digest to the bottom of Case Digest tab!'
+      : 'Saved Perplexity Digest into Case Digest tab!'
   );
   return true;
 }
@@ -1232,9 +1232,11 @@ export async function openHistoryPanel(initialTab = 'snapshots') {
       const report = generateDiagnosticReport(pdfId, curPdf?.name || '');
       try {
         await navigator.clipboard.writeText(report);
-        copyBtn.textContent = '✓ Copied Report!';
-        setTimeout(() => { copyBtn.textContent = '📋 Copy Diagnostics'; }, 2500);
-        toast('📋 Diagnostic error report copied to clipboard!');
+        copyBtn.textContent = 'Copied Report!';
+        setTimeout(() => {
+          copyBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy Diagnostics</span>';
+        }, 2500);
+        toast('Diagnostic error report copied to clipboard!');
       } catch {
         toast('Clipboard copy blocked by browser. Please select text manually.');
       }
@@ -2291,26 +2293,26 @@ async function _manualSave() {
     updateSaveStatusLabel(pdfId, res);
     if (res?.saved && !res?.localOnly && !verified) {
       const l = $saveLbl();
-      if (l) { l.textContent = '☁️ ⚠️ Unverified'; l.className = 'err'; l.title = `Cloud read-back failed: ${verifyMsg}. Will retry automatically.`; }
+      if (l) { l.textContent = 'Unverified'; l.className = 'err'; l.title = `Cloud read-back failed: ${verifyMsg}. Will retry automatically.`; }
     }
 
     // Button feedback
     if (btn) {
       if (verified) {
-        btn.textContent = '✓ Verified in cloud';
+        btn.textContent = 'Verified in cloud';
         btn.style.background = '#14532d';
       } else if (res?.saved && !res?.localOnly) {
-        btn.textContent = '⚠️ Not verified';
+        btn.textContent = 'Not verified';
         btn.style.background = '#78350f';
-        toast('⚠️ Saved, but the cloud copy could not be verified. It will retry automatically — check the Error Log if this repeats.');
+        toast('Saved, but the cloud copy could not be verified. It will retry automatically — check the Error Log if this repeats.');
       } else if (res?.localOnly) {
-        btn.textContent = '💾 Local only';
+        btn.textContent = 'Local only';
         btn.style.background = '#78350f';
       } else if (res?.queued) {
-        btn.textContent = '⏳ Queued';
+        btn.textContent = 'Queued';
         btn.style.background = '#78350f';
       } else {
-        btn.textContent = '✗ Failed';
+        btn.textContent = 'Failed';
         btn.style.background = '#7f1d1d';
         // Show error banner if the save actually failed
         if (res?.error && !res?.localOnly) checkAndAlertSaveErrors();
@@ -2322,11 +2324,11 @@ async function _manualSave() {
       `Manual save exception: ${err?.message || String(err)}`, { error: String(err) });
     checkAndAlertSaveErrors();
     if (btn) {
-      btn.textContent = '✗ Failed';
+      btn.textContent = 'Failed';
       btn.style.background = '#7f1d1d';
     }
     if (lbl) {
-      lbl.textContent = `✗ Err`;
+      lbl.textContent = 'Err';
       lbl.className = 'err';
       lbl.title = `Manual save failed: ${err?.message || err}`;
     }
@@ -2334,7 +2336,7 @@ async function _manualSave() {
     // Reset button after 2.5s
     setTimeout(() => {
       if (btn) {
-        btn.textContent = '💾 Save Now';
+        btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-save"/></svg><span>Save Now</span>';
         btn.disabled = false;
         btn.style.opacity = '';
         btn.style.background = '#1e6b3a';
@@ -2603,6 +2605,29 @@ export function initNotepad() {
   });
 
   initNotepadResizer();
+
+  window.addEventListener('la:color-cats-changed', async () => {
+    try {
+      const colorsMod = await import('./colors.js').catch(() => null);
+      const getCat = colorsMod?.getColorCategoryForHex;
+      if (typeof getCat === 'function') {
+        [$notesEditor(), $digestEditor()].forEach(ed => {
+          if (!ed) return;
+          ed.querySelectorAll('[data-color], span[style*="background"]').forEach(el => {
+            const rawColor = el.dataset.color || el.style.backgroundColor || el.style.background;
+            if (!rawColor) return;
+            const cat = getCat(rawColor);
+            if (cat?.name) el.title = cat.name;
+          });
+        });
+      }
+      const openDrop = document.getElementById('editor-hi-dropdown');
+      const hiBtn = document.getElementById('np-highlight-btn');
+      if (openDrop && openDrop.style.display !== 'none' && hiBtn) {
+        buildHighlightDropdown(hiBtn, $currentEditor());
+      }
+    } catch {}
+  });
 }
 
 function initNotepadResizer() {

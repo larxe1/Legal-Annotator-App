@@ -77,6 +77,7 @@ async function _collectData() {
     { data: bookmarks },
     { data: pdfNotes },
     { data: dictionary },
+    appSettingsRes,
   ] = await Promise.all([
     _db.from('subjects').select('*').order('created_at'),
     _db.from('folders').select('*').order('created_at'),
@@ -88,7 +89,16 @@ async function _collectData() {
     _db.from('pdf_bookmarks').select('*').order('page'),
     _db.from('pdf_notes').select('*'),
     _db.from('dictionary').select('*').order('word'),
+    _db.from('app_settings').select('*').then(r => r, () => ({ data: [] })),
   ]);
+
+  const appSettings = Array.isArray(appSettingsRes?.data) ? [...appSettingsRes.data] : [];
+  try {
+    const localTheme = localStorage.getItem('app_ui_theme');
+    if (localTheme && !appSettings.some(row => row && row.key === 'app_ui_theme')) {
+      appSettings.push({ key: 'app_ui_theme', value: localTheme });
+    }
+  } catch {}
 
   return {
     _version: 1,
@@ -103,13 +113,59 @@ async function _collectData() {
     pdf_bookmarks:    bookmarks        || [],
     pdf_notes:        pdfNotes         || [],
     dictionary:       dictionary       || [],
+    app_settings:     appSettings,
   };
+}
+
+/**
+ * Safely restore color_categories and app_settings (and core library rows)
+ * from a backup JSON payload, preserving backward compatibility with older backups
+ * that omit app_settings or color_categories.
+ */
+export async function restoreBackupData(rawBackup) {
+  const data = typeof rawBackup === 'string' ? JSON.parse(rawBackup) : rawBackup;
+  if (!data || typeof data !== 'object') {
+    throw new Error('Invalid backup payload');
+  }
+
+  const upsertTable = async (table, rows, options) => {
+    if (!Array.isArray(rows) || rows.length === 0) return 0;
+    const { error } = options
+      ? await _db.from(table).upsert(rows, options)
+      : await _db.from(table).upsert(rows);
+    if (error) throw error;
+    return rows.length;
+  };
+
+  await upsertTable('subjects', data.subjects);
+  await upsertTable('folders', data.folders);
+  await upsertTable('pdf_files', data.pdf_files);
+  await upsertTable('color_categories', data.color_categories);
+  await upsertTable('annotations', data.annotations);
+  await upsertTable('annotation_notes', data.annotation_notes);
+  await upsertTable('drawings', data.drawings);
+  await upsertTable('pdf_bookmarks', data.pdf_bookmarks);
+  await upsertTable('pdf_notes', data.pdf_notes, { onConflict: 'pdf_id' });
+  await upsertTable('dictionary', data.dictionary, { onConflict: 'word' });
+
+  if (Array.isArray(data.app_settings) && data.app_settings.length > 0) {
+    const validSettings = data.app_settings.filter(r => r && typeof r.key === 'string');
+    if (validSettings.length > 0) {
+      await upsertTable('app_settings', validSettings, { onConflict: 'key' }).catch(() => 0);
+      const themeEntry = validSettings.find(r => r.key === 'app_ui_theme' && typeof r.value === 'string');
+      if (themeEntry) {
+        try { localStorage.setItem('app_ui_theme', themeEntry.value); } catch {}
+      }
+    }
+  }
+
+  return true;
 }
 
 // ── Option 1: Download backup as JSON file ──
 async function downloadBackup() {
   const btn = document.getElementById('backup-dl-btn');
-  if (btn) { btn.textContent = '⏳ Exporting…'; btn.disabled = true; }
+  if (btn) { btn.textContent = 'Exporting…'; btn.disabled = true; }
   try {
     const data = await _collectData();
     const dateStr = new Date().toISOString().slice(0, 10);
@@ -119,26 +175,26 @@ async function downloadBackup() {
     const a    = document.createElement('a');
     a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
-    _toast('✅ Backup downloaded!');
+    _toast('Backup downloaded');
   } catch (e) {
     console.error('[Backup] Download failed:', e);
-    _toast('❌ Backup failed — check console');
+    _toast('Backup failed — check console');
   } finally {
-    if (btn) { btn.textContent = '⬇ Download Backup'; btn.disabled = false; }
+    if (btn) { btn.textContent = 'Download Backup'; btn.disabled = false; }
   }
 }
 
 // ── Option 2: Upload backup JSON to Google Drive ──
 async function driveBackup({ silent = false } = {}) {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-    if (!silent) _toast('📴 Offline — connect to the internet to back up to Google Drive');
+    if (!silent) _toast('Offline — connect to the internet to back up to Google Drive');
     return;
   }
   const token = _driveToken();
   if (!token) return; // not signed in — skip silently
 
   const btn = document.getElementById('backup-drive-btn');
-  if (btn && !silent) { btn.textContent = '⏳ Backing up…'; btn.disabled = true; }
+  if (btn && !silent) { btn.textContent = 'Backing up…'; btn.disabled = true; }
 
   try {
     const data = await _collectData();
@@ -183,13 +239,13 @@ async function driveBackup({ silent = false } = {}) {
     const lbl = document.getElementById('backup-last-lbl');
     if (lbl) lbl.textContent = `Last: ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 
-    if (!silent) _toast('✅ Backed up to Google Drive!');
+    if (!silent) _toast('Backed up to Google Drive');
     console.log('[Backup] Drive backup completed at', new Date().toLocaleTimeString());
   } catch (e) {
     console.error('[Backup] Drive backup failed:', e);
-    if (!silent) _toast('❌ Drive backup failed — check console');
+    if (!silent) _toast('Drive backup failed — check console');
   } finally {
-    if (btn && !silent) { btn.textContent = '☁ Drive Backup'; btn.disabled = false; }
+    if (btn && !silent) { btn.textContent = 'Drive Backup'; btn.disabled = false; }
   }
 }
 

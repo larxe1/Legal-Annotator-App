@@ -3,11 +3,13 @@
 // ═══════════════════════════════════════════════
 import { S } from './state.js';
 import { db, dbLoad, dbLoadAnnCounts, dbLoadAnnotations, dbLoadDrawings } from './db.js';
+import { safeStorageGet, safeStorageSet } from './storage.js';
 
 let _channel = null;
 let _refreshTimer = null;
 let _annTimer = null;
 let _notepadTimer = null;
+let _colorCatTimer = null;
 
 export function broadcastSync(msg) {
   try {
@@ -30,8 +32,51 @@ async function handleLibraryRefresh() {
       await dbLoadAnnCounts();
       const { renderLibrary } = await import('./library.js');
       renderLibrary();
+      import('./colors.js').then(m => m.refreshColorCategoryUI?.()).catch(() => {});
     } catch (err) {
       console.error('[Sync] Library refresh error', err);
+    }
+  }, 100);
+}
+
+async function handleColorCategoriesRefresh(payload) {
+  clearTimeout(_colorCatTimer);
+  _colorCatTimer = setTimeout(async () => {
+    try {
+      let nextCats = null;
+      if (db && db.from) {
+        const { data, error } = await db.from('color_categories').select('*').order('created_at');
+        if (!error && Array.isArray(data)) nextCats = data;
+      }
+
+      if (nextCats) {
+        S.colorCats = nextCats;
+      } else if (payload) {
+        const ev = payload.eventType;
+        const row = payload.new || payload.old;
+        if (ev === 'DELETE' && row?.id) {
+          S.colorCats = (S.colorCats || []).filter(c => c.id !== row.id);
+        } else if ((ev === 'INSERT' || ev === 'UPDATE') && row?.id) {
+          const list = [...(S.colorCats || [])];
+          const idx = list.findIndex(c => c.id === row.id);
+          if (idx >= 0) list[idx] = { ...list[idx], ...row };
+          else list.push(row);
+          S.colorCats = list;
+        }
+      }
+
+      try {
+        const raw = safeStorageGet('local_lib_snapshot');
+        const snap = raw ? JSON.parse(raw) : {};
+        snap.colorCats = S.colorCats || [];
+        snap.saved_at = Date.now();
+        safeStorageSet('local_lib_snapshot', JSON.stringify(snap));
+      } catch {}
+
+      const { refreshColorCategoryUI } = await import('./colors.js');
+      refreshColorCategoryUI?.();
+    } catch (err) {
+      console.error('[Sync] Color categories refresh error', err);
     }
   }, 100);
 }
@@ -128,6 +173,7 @@ export function initRealtimeSync() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'subjects' }, () => handleLibraryRefresh())
         .on('postgres_changes', { event: '*', schema: 'public', table: 'folders' }, () => handleLibraryRefresh())
         .on('postgres_changes', { event: '*', schema: 'public', table: 'pdf_files' }, () => handleLibraryRefresh())
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'color_categories' }, (payload) => handleColorCategoriesRefresh(payload))
         .on('postgres_changes', { event: '*', schema: 'public', table: 'annotations' }, (payload) => {
           const pdfId = payload.new?.pdf_file_id || payload.old?.pdf_file_id;
           handleAnnotationsRefresh(pdfId);

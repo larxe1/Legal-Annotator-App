@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════
 import { S } from './state.js';
 import { toast, autosave, openModal, closeModal, closeOtherPanels } from './ui.js';
+import { normalizeHexColor, getColorCategoryForHex } from './colors.js';
 import {
   dbCreateAnnotation, dbUpdateAnnColor, dbDelAnnotation,
   dbCreateNote, dbUpdateNote, dbDelNote,
@@ -23,6 +24,10 @@ export {
   initTagsPanel, toggleTagsPanel, getActiveQuickTag, setActiveQuickTag
 };
 
+function _escHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
 // ── Create annotation (text or box) ──
 export async function createAnnotation(pageNum, rects, text, mode_) {
   if (!S.curPDF) return;
@@ -34,7 +39,7 @@ export async function createAnnotation(pageNum, rects, text, mode_) {
     page: pageNum,
     rects,
     highlighted_text: text,
-    hex_color: S.activeColor,
+    hex_color: normalizeHexColor(S.activeColor) || S.activeColor || '#c9a84c',
     highlight_mode: mode_,
     notes: [],
     tags: activeTag ? [activeTag] : [],
@@ -124,9 +129,12 @@ export function drawAnnotation(ann) {
     if (!genNotes.length && !caseCount) return;
     
     let html = '';
+    const catInfo = getColorCategoryForHex(ann.hex_color);
+    const dotColor = catInfo.hex_color || ann.hex_color || '#c9a84c';
+    html += `<div style="display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; color:#b0aaa0; margin-bottom:6px;"><span style="width:9px; height:9px; border-radius:50%; background:${_escHtml(dotColor)}; display:inline-block; flex-shrink:0;"></span><span>${_escHtml(catInfo.name)}</span></div>`;
     if (caseCount > 0) {
       const caseLabel = caseCount === 1 ? 'case' : 'cases';
-      html += `<div style="display:flex; align-items:center; gap:6px; font-size:0.9em; font-weight:600; color:#c9a84c; background:rgba(201,168,76,0.12); border:1px solid rgba(201,168,76,0.35); border-radius:6px; padding:4px 10px; margin-bottom:${genNotes.length ? '8px' : '0'};">⚖️ (${caseCount}) ${caseLabel}</div>`;
+      html += `<div style="display:flex; align-items:center; gap:6px; font-size:0.9em; font-weight:600; color:#c9a84c; background:rgba(201,168,76,0.12); border:1px solid rgba(201,168,76,0.35); border-radius:6px; padding:4px 10px; margin-bottom:${genNotes.length ? '8px' : '0'};"><svg class="icon" style="width:14px;height:14px;flex-shrink:0" aria-hidden="true"><use href="#i-scale"/></svg> (${caseCount}) ${caseLabel}</div>`;
     }
 
     const toShow = Math.min(genNotes.length, 3);
@@ -246,22 +254,37 @@ export function closeAnnPanel() {
 
 function renderAnnColors() {
   const c = document.getElementById('ap-colors');
-  c.innerHTML = '<div class="ap-colors-lbl">Highlight Color</div>';
-  for (const cat of S.colorCats) {
+  if (!c) return;
+  const manageBtn = c.querySelector('#btn-panel-manage-colors');
+  if (manageBtn && manageBtn.parentNode === c) manageBtn.remove();
+
+  const selInfo = getColorCategoryForHex(S.selAnn?.hex_color);
+  const selNorm = selInfo.hex_color;
+
+  c.innerHTML = '';
+  const lbl = document.createElement('div');
+  lbl.className = 'ap-colors-lbl';
+  lbl.textContent = S.selAnn ? `Highlight Color — ${selInfo.name}` : 'Highlight Color';
+  c.appendChild(lbl);
+
+  for (const cat of S.colorCats || []) {
+    const norm = normalizeHexColor(cat.hex_color) || cat.hex_color;
     const d = document.createElement('div');
-    d.className = 'apc-dot' + (S.selAnn?.hex_color === cat.hex_color ? ' sel' : '');
-    d.style.background = cat.hex_color;
+    d.className = 'apc-dot' + (selNorm && normalizeHexColor(norm) === selNorm ? ' sel' : '');
+    if (norm) d.dataset.color = norm;
+    d.style.background = norm;
     d.title = cat.name;
+    d.setAttribute('aria-label', cat.name);
     d.addEventListener('click', async () => {
       const targetAnn = S.selAnn;
       if (!targetAnn) return;
       autosave('saving');
       try {
-        targetAnn.hex_color = cat.hex_color;
+        targetAnn.hex_color = norm;
         clearAnnMark(targetAnn.id);
         drawAnnotation(targetAnn);
         renderAnnColors();
-        await dbUpdateAnnColor(targetAnn.id, cat.hex_color);
+        await dbUpdateAnnColor(targetAnn.id, norm);
         autosave('saved');
         toast('Color updated');
       } catch (e) {
@@ -271,6 +294,18 @@ function renderAnnColors() {
     });
     c.appendChild(d);
   }
+
+  if (S.selAnn && selInfo.isLegacy && selNorm) {
+    const legacyDot = document.createElement('div');
+    legacyDot.className = 'apc-dot sel apc-legacy';
+    legacyDot.dataset.color = selNorm;
+    legacyDot.style.background = selNorm;
+    legacyDot.title = selInfo.name;
+    legacyDot.setAttribute('aria-label', selInfo.name);
+    c.appendChild(legacyDot);
+  }
+
+  if (manageBtn) c.appendChild(manageBtn);
 }
 
 function updateTabBadges(ann) {
@@ -318,7 +353,9 @@ function renderNotes(ann) {
     const isCase = activeNoteTab === 'case';
     card.className = 'note-card' + (isCase ? ' case-card' : '');
     
-    const cardTitle = isCase ? `⚖️ Case Summary ${i + 1}` : `📝 Note ${i + 1}`;
+    const cardTitle = isCase
+      ? `<svg class="icon" style="width:13px;height:13px;vertical-align:-2px;margin-right:4px" aria-hidden="true"><use href="#i-scale"/></svg>Case Summary ${i + 1}`
+      : `<svg class="icon" style="width:13px;height:13px;vertical-align:-2px;margin-right:4px" aria-hidden="true"><use href="#i-note"/></svg>Note ${i + 1}`;
     const cleanBody = getNoteBody(note);
     const hasTable = /<table[\s>]/i.test(cleanBody);
 
@@ -326,9 +363,9 @@ function renderNotes(ann) {
       <div class="note-card-header">
         <div class="note-num">${cardTitle}</div>
         <div class="note-actions">
-          ${hasTable ? `<button class="note-act-btn copy-tbl-btn" title="Copy 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.4);">📋 Copy Summary Table</button>` : ''}
-          <button class="note-act-btn edit-btn" title="Edit Note">✏ Edit</button>
-          <button class="note-act-btn del" title="Delete Note">🗑 Delete</button>
+          ${hasTable ? `<button class="note-act-btn copy-tbl-btn" title="Copy 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.4);"><svg class="icon" style="width:12px;height:12px;vertical-align:-2px;margin-right:4px" aria-hidden="true"><use href="#i-copy"/></svg>Copy Summary Table</button>` : ''}
+          <button class="note-act-btn edit-btn" title="Edit Note"><svg class="icon" style="width:12px;height:12px;vertical-align:-2px;margin-right:3px" aria-hidden="true"><use href="#i-pen"/></svg>Edit</button>
+          <button class="note-act-btn del" title="Delete Note"><svg class="icon" style="width:12px;height:12px;vertical-align:-2px;margin-right:3px" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button>
         </div>
       </div>
       <div class="note-body">${cleanBody}</div>
@@ -572,7 +609,7 @@ export function initAnnPanel() {
     if (S.pendingEditorSel) {
       const { editor, range } = S.pendingEditorSel;
       document.getElementById('sel-menu').classList.remove('open');
-      applyEditorHighlight(editor, range, S.activeColor || '#c9a84c');
+      applyEditorHighlight(editor, range, normalizeHexColor(S.activeColor) || S.activeColor || '#c9a84c');
       S.pendingEditorSel = null;
       window.getSelection()?.removeAllRanges();
       return;
@@ -601,6 +638,14 @@ export function initAnnPanel() {
       }
     }
   });
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('la:color-cats-changed', () => {
+      if (S.selAnn && document.getElementById('ann-panel')?.classList.contains('open')) {
+        renderAnnColors();
+      }
+    });
+  }
 
   initAnnPanelResizer();
 }

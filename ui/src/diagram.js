@@ -155,10 +155,10 @@ export async function initDiagramStudio() {
 async function ensureMermaid() {
   if (_mermaidInitialized) return true;
   if (typeof mermaid === 'undefined') {
-    // Load local vendor bundle first (offline-first)
+    // Dynamically inject if not yet loaded
     await new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = './vendor/mermaid.min.js';
+      script.src = 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js';
       script.onload = resolve;
       script.onerror = reject;
       document.head.appendChild(script);
@@ -168,6 +168,9 @@ async function ensureMermaid() {
     });
   }
   if (typeof mermaid !== 'undefined') {
+    const uiFont = ((typeof getComputedStyle === 'function'
+      ? getComputedStyle(document.documentElement).getPropertyValue('--font-ui').trim()
+      : '') || "'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif").replace(/"/g, "'");
     mermaid.initialize({
       startOnLoad: false,
       theme: 'dark',
@@ -181,7 +184,7 @@ async function ensureMermaid() {
         secondaryColor: '#141d30',
         tertiaryColor: '#0a0f1d'
       },
-      fontFamily: 'Inter, sans-serif',
+      fontFamily: uiFont,
       securityLevel: 'loose'
     });
     _mermaidInitialized = true;
