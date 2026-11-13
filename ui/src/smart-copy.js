@@ -1368,10 +1368,7 @@ export async function focusOrReopenGeminiStudio() {
     } catch {}
   }
 
-  const activeFolderId = getActiveSubfolderId();
-  const { subjectId } = getSubjectInfoForFolder(activeFolderId);
-  const pinnedForSubj = subjectId ? await getPinnedGeminiNotebookForSubject(subjectId) : '';
-  const targetUrl = _lastGeminiUrl || pinnedForSubj || 'https://gemini.google.com/app';
+  const targetUrl = 'https://gemini.google.com/app';
   try {
     const win = window.open(targetUrl, '_blank');
     if (win) {
@@ -2138,7 +2135,7 @@ export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
         };
       });
 
-      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Gemini Notebook…`, true, { provider: 'gemini', state: 'extracting', countLabel: stepLabel });
+      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Gemini…`, true, { provider: 'gemini', state: 'extracting', countLabel: stepLabel });
       await openGeminiDigestForCurrentPdf({
         forceAutoSubmit: true,
         forceAutoSend: true,
@@ -2242,7 +2239,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
   });
 
   try {
-    toast(`Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Gemini Notebook…`);
+    toast(`Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Gemini…`);
 
     const extracted = await extractPdfDigestPromptPayload({
       doc,
@@ -2273,7 +2270,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
     await copyToClipboard(fullPromptText);
 
     const { subjectId, subjectName } = getSubjectInfoForFolder(activeFolderId);
-    const pinnedNotebookUrl = subjectId ? await getPinnedGeminiNotebookForSubject(subjectId) : '';
+    const pinnedNotebookUrl = '';
     const { modelLabel, thinkingLevel } = await resolveGeminiModelPrefs();
 
     const autoSubmitPref = opts?.forceAutoSubmit
@@ -2301,7 +2298,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
       autoSendDigest: Boolean(autoSendPref),
     };
     _lastGeminiStudioPayload = studioPayload;
-    _lastGeminiUrl = pinnedNotebookUrl || 'https://gemini.google.com/app';
+    _lastGeminiUrl = 'https://gemini.google.com/app';
 
     if (typeof window.desktopOpenGeminiStudio === 'function') {
       const opened = await window.desktopOpenGeminiStudio(studioPayload);
@@ -2375,9 +2372,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
         pdfName: String(pdfObj.name || ''),
       });
     }
-    toast(pinnedNotebookUrl
-      ? `Copied case + instructions! Paste (Ctrl+V) in your ${subjectName || 'Subject'} Gemini Notebook.`
-      : 'Copied case + instructions! Open your Subject Notebook in Gemini and paste (Ctrl+V).');
+    toast('Copied case + instructions! Paste (Ctrl+V) in Gemini.');
   } catch (err) {
     if (preOpenedWebWin && !preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
       try { preOpenedWebWin.close(); } catch {}

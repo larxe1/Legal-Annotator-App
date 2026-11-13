@@ -1,7 +1,7 @@
 {
-    "version": "1.19.3",
-    "build": 49,
-    "updatedAt": "2026-11-14T07:36:00Z",
-    "notes": "Fix automatic Gemini model & Thinking level switching (Low -> High) in Gemini Web Studio using programmatic Angular SPA DOM events instead of unreliable screen-coordinate clicks.",
+    "version": "1.19.4",
+    "build": 50,
+    "updatedAt": "2026-11-14T07:50:00Z",
+    "notes": "Open Gemini Digest Studio directly on the general Gemini homepage (https://gemini.google.com/app) instead of per-subject Notebooks.",
     "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
