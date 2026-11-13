@@ -163,10 +163,20 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   var _bridgeQueue = [];
   var _bridgeBusy = false;
+  var _menuInteractionActive = false;
   function flushBridgeQueue() {
     if (_bridgeBusy || !_bridgeQueue.length) return;
+    var nextIdx = -1;
+    for (var qi = 0; qi < _bridgeQueue.length; qi++) {
+      if (_menuInteractionActive && _bridgeQueue[qi] && _bridgeQueue[qi].action === 'studio_status') {
+        continue;
+      }
+      nextIdx = qi;
+      break;
+    }
+    if (nextIdx === -1) return;
     _bridgeBusy = true;
-    var payload = _bridgeQueue.shift();
+    var payload = _bridgeQueue.splice(nextIdx, 1)[0];
     var b64 = toUtf8Base64(payload);
     if (b64) {
       try {
@@ -797,44 +807,132 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     } catch (e) {}
   }
 
-  function realPointerClick(el) {
-    if (!el || !el.isConnected) return false;
+  function cleanVisibleUiText(el) {
+    if (!el) return '';
     try {
-      var r = el.getBoundingClientRect();
+      var clone = el.cloneNode(true);
+      var icons = clone.querySelectorAll('mat-icon, .mat-icon, .google-symbols, .material-icons, .material-symbols-outlined, svg, style, script, [aria-hidden="true"]');
+      for (var i = 0; i < icons.length; i++) {
+        if (icons[i].parentNode) icons[i].parentNode.removeChild(icons[i]);
+      }
+      var chunks = [];
+      if (document.createTreeWalker && window.NodeFilter) {
+        var walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT, null, false);
+        var node;
+        while ((node = walker.nextNode())) {
+          var s = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+          if (s) chunks.push(s);
+        }
+      }
+      var raw = chunks.length ? chunks.join(' ') : ((clone.textContent || '') + '');
+      raw = raw
+        .replace(/\b(?:keyboard_arrow_down|keyboard_arrow_up|expand_more|expand_less|chevron_right|chevron_left|arrow_right|arrow_drop_down|arrow_drop_up|arrow_forward|lock_outline)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (raw) return raw;
+    } catch (e) {}
+    return ((el.innerText || el.textContent || '') + '')
+      .replace(/\b(?:keyboard_arrow_down|keyboard_arrow_up|expand_more|expand_less|chevron_right|chevron_left|arrow_right|arrow_drop_down|arrow_drop_up|arrow_forward|lock_outline)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function resolveInteractiveMenuItem(el) {
+    if (!el || !el.closest) return el;
+    return el.closest('button, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="radio"], .mat-mdc-menu-item, .mdc-list-item, [mat-menu-item]') || el;
+  }
+
+  function buildDomPointerOpts(cx, cy, buttonsVal) {
+    return {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX: cx,
+      clientY: cy,
+      screenX: cx,
+      screenY: cy,
+      button: 0,
+      buttons: buttonsVal,
+      pointerId: 1,
+      pointerType: 'mouse',
+      isPrimary: true
+    };
+  }
+
+  function dispatchDomHoverSequence(target, cx, cy) {
+    var downOpts = buildDomPointerOpts(cx, cy, 0);
+    var enterOpts = Object.assign({}, downOpts, { bubbles: false });
+    if (typeof PointerEvent === 'function') target.dispatchEvent(new PointerEvent('pointerover', downOpts));
+    target.dispatchEvent(new MouseEvent('mouseover', downOpts));
+    if (typeof PointerEvent === 'function') target.dispatchEvent(new PointerEvent('pointerenter', enterOpts));
+    target.dispatchEvent(new MouseEvent('mouseenter', enterOpts));
+    if (typeof PointerEvent === 'function') target.dispatchEvent(new PointerEvent('pointermove', downOpts));
+    target.dispatchEvent(new MouseEvent('mousemove', downOpts));
+  }
+
+  function programmaticDomClick(el, labelText) {
+    var target = resolveInteractiveMenuItem(el);
+    if (!target || !target.isConnected) return false;
+    try {
+      var r = target.getBoundingClientRect ? target.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
       var cx = Math.round(r.left + r.width / 2);
       var cy = Math.round(r.top + r.height / 2);
-      var opts = {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        view: window,
-        clientX: cx,
-        clientY: cy,
-        screenX: cx,
-        screenY: cy,
-        button: 0,
-        buttons: 1,
-        pointerId: 1,
-        pointerType: 'mouse',
-        isPrimary: true
-      };
-      el.dispatchEvent(new PointerEvent('pointerover', opts));
-      el.dispatchEvent(new MouseEvent('mouseover', opts));
-      el.dispatchEvent(new PointerEvent('pointerenter', opts));
-      el.dispatchEvent(new MouseEvent('mouseenter', opts));
-      el.dispatchEvent(new PointerEvent('pointermove', opts));
-      el.dispatchEvent(new MouseEvent('mousemove', opts));
-      el.dispatchEvent(new PointerEvent('pointerdown', opts));
-      el.dispatchEvent(new MouseEvent('mousedown', opts));
-      if (typeof el.focus === 'function') el.focus();
-      var upOpts = Object.assign({}, opts, { buttons: 0 });
-      el.dispatchEvent(new PointerEvent('pointerup', upOpts));
-      el.dispatchEvent(new MouseEvent('mouseup', upOpts));
-      el.dispatchEvent(new MouseEvent('click', Object.assign({}, upOpts, { detail: 1 })));
+      if (labelText && (r.width > 0 || r.height > 0)) {
+        showClickCursorAt(cx, cy, labelText);
+      }
+      dispatchDomHoverSequence(target, cx, cy);
+      var downOpts = buildDomPointerOpts(cx, cy, 1);
+      if (typeof PointerEvent === 'function') target.dispatchEvent(new PointerEvent('pointerdown', downOpts));
+      target.dispatchEvent(new MouseEvent('mousedown', downOpts));
+      if (typeof target.focus === 'function') {
+        try { target.focus({ preventScroll: true }); } catch (fe) { target.focus(); }
+      }
+      var upOpts = buildDomPointerOpts(cx, cy, 0);
+      if (typeof PointerEvent === 'function') target.dispatchEvent(new PointerEvent('pointerup', upOpts));
+      target.dispatchEvent(new MouseEvent('mouseup', upOpts));
+      if (typeof target.click === 'function') {
+        target.click();
+      } else {
+        target.dispatchEvent(new MouseEvent('click', Object.assign({}, upOpts, { detail: 1 })));
+      }
       return true;
     } catch (e) {
-      try { el.click(); return true; } catch (e2) { return false; }
+      try { target.click(); return true; } catch (e2) { return false; }
     }
+  }
+
+  function programmaticDomOpenSubmenu(trigEl, labelText) {
+    return programmaticDomClick(trigEl, labelText);
+  }
+
+  function programmaticDomSubmenuKey(trigEl) {
+    var target = resolveInteractiveMenuItem(trigEl);
+    if (!target || !target.isConnected) return false;
+    try {
+      var r = target.getBoundingClientRect ? target.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+      var cx = Math.round(r.left + r.width / 2);
+      var cy = Math.round(r.top + r.height / 2);
+      if (typeof target.focus === 'function') {
+        try { target.focus({ preventScroll: true }); } catch (fe) { target.focus(); }
+      }
+      dispatchDomHoverSequence(target, cx, cy);
+      target.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        code: 'ArrowRight',
+        keyCode: 39,
+        which: 39,
+        bubbles: true,
+        cancelable: true
+      }));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function realPointerClick(el) {
+    return programmaticDomClick(el, '');
   }
 
   function extractModelFamilyTokens(label) {
@@ -871,9 +969,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       if (el.closest('nav, aside, [role="navigation"], model-response, .model-response-text, .markdown')) return false;
       if (el.closest('.cdk-overlay-pane, [role="menu"], [role="listbox"]')) return false;
       var r = el.getBoundingClientRect();
-      if (r.top < 46 || r.width < 28 || r.width > 280 || r.height < 18 || r.height > 60) return false;
+      if (r.top < 46 || r.width < 28 || r.width > 320 || r.height < 18 || r.height > 64) return false;
       if (ir && ir.width > 40) {
-        if (r.top < ir.top - 120 || r.bottom > ir.bottom + 150) return false;
+        if (r.top < ir.top - 160 || r.bottom > ir.bottom + 220) return false;
       } else {
         if (r.top < window.innerHeight * 0.45) return false;
       }
@@ -882,17 +980,24 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
     var scored = [];
     candidates.forEach(function(el) {
-      var txt = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+      var txt = cleanVisibleUiText(el);
       var aria = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('mattooltip') || '') + ' ' + (el.getAttribute('data-test-id') || '')).toLowerCase();
       if (!txt && !aria) return;
-      if (/\b(send|submit|stop|mic|microphone|voice|dictat|attach|upload|add files|tools|canvas|image|video|deep research|help|menu)\b/i.test(txt + ' ' + aria)) return;
+      if (/^(?:send|submit|stop)$/i.test(txt)) return;
+      if (/\b(send message|submit|stop generating|microphone|use microphone|voice|dictat|attach|upload|add files|new chat)\b/i.test(txt + ' ' + aria)) return;
       if (txt.length > 48) return;
 
       var score = 0;
-      if (/bard-mode|model-selector|mode-switch/i.test((el.className || '') + ' ' + aria)) score += 120;
-      if (/\b(hydrogen|argon|carbon|flash|pro|ultra|gemini|2\.5|3\.0|3\.1|3\.5|4\s|thinking|fast|reasoning)\b/i.test(txt)) score += 90;
+      var matchedSelectorMeta = /bard-mode|model-selector|mode-switch/i.test((el.className || '') + ' ' + aria)
+        || !!(el.closest && el.closest('[class*="bard-mode" i], [class*="model-selector" i], [class*="mode-switch" i], [data-test-id*="mode" i], [data-test-id*="model" i]'));
+      if (matchedSelectorMeta) score += 120;
+      var hasModelTok = /\b(hydrogen|argon|carbon|flash|pro|ultra)\b/i.test(txt);
+      var hasLevelTok = /\b(low|medium|high)\b/i.test(txt);
+      if (hasModelTok || hasLevelTok) score += 140;
+      if (hasModelTok && hasLevelTok) score += 100;
+      if (/\b(gemini|2\.5|3\.0|3\.1|3\.5|thinking|fast|reasoning)\b/i.test(txt)) score += 60;
       if (/\b(model|mode|switch model)\b/i.test(aria)) score += 60;
-      if (el.getAttribute('aria-haspopup') === 'menu' || el.getAttribute('aria-haspopup') === 'listbox' || el.getAttribute('aria-expanded') !== null) score += 45;
+      if (el.getAttribute('aria-haspopup') === 'menu' || el.getAttribute('aria-haspopup') === 'listbox' || el.getAttribute('aria-expanded') !== null) score += 50;
       if (ir) {
         var r = el.getBoundingClientRect();
         var dist = Math.abs(r.top - ir.bottom) + Math.abs(r.right - ir.right) * 0.15;
@@ -911,18 +1016,18 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   function getFloatingMenuItems(triggerEl) {
     var rawNodes = Array.from(document.querySelectorAll(
-      '.cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane [role="menuitemradio"], .cdk-overlay-pane [role="menuitemcheckbox"], .cdk-overlay-pane [role="option"], .cdk-overlay-pane [role="radio"], .cdk-overlay-pane button, .cdk-overlay-pane .mat-mdc-menu-item, .cdk-overlay-pane .mdc-list-item, .cdk-overlay-pane [mat-menu-item], .cdk-overlay-pane [tabindex]:not([tabindex="-1"]), [role="menu"] [role="menuitem"], [role="menu"] [role="menuitemradio"], [role="menu"] button, [role="listbox"] [role="option"]'
-    )).filter(function(el) {
-      if (!el.isConnected || el === triggerEl || (triggerEl && triggerEl.contains(el))) return false;
-      if (el.closest('#la-gemini-studio-bar') || el.closest('#la-gemini-model-popover') || el.closest('nav, aside')) return false;
-      var r = el.getBoundingClientRect();
-      return r.width >= 40 && r.height >= 16 && r.top >= 44 && r.bottom <= window.innerHeight + 8;
+      '.cdk-overlay-pane button, .cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane [role="menuitemradio"], .cdk-overlay-pane [role="menuitemcheckbox"], .cdk-overlay-pane [role="option"], .cdk-overlay-pane [role="radio"], .cdk-overlay-pane .mat-mdc-menu-item, .cdk-overlay-pane .mdc-list-item, .cdk-overlay-pane [mat-menu-item], [role="menu"] button, [role="menu"] [role="menuitem"], [role="menu"] [role="menuitemradio"], [role="listbox"] [role="option"]'
+    ));
+    var unique = [];
+    rawNodes.forEach(function(el) {
+      var host = resolveInteractiveMenuItem(el);
+      if (!host || !host.isConnected || host === triggerEl || (triggerEl && triggerEl.contains(host))) return;
+      if (host.closest('#la-gemini-studio-bar') || host.closest('#la-gemini-model-popover') || host.closest('nav, aside')) return;
+      var r = host.getBoundingClientRect();
+      if (r.width < 40 || r.height < 16 || r.top < 44 || r.bottom > window.innerHeight + 8) return;
+      if (unique.indexOf(host) === -1) unique.push(host);
     });
-    return rawNodes.filter(function(el) {
-      return !rawNodes.some(function(other) {
-        return other !== el && el.contains(other);
-      });
-    });
+    return unique;
   }
 
   function findModelMenuItem(triggerEl, targetLabel) {
@@ -933,9 +1038,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     var bestScore = 0;
 
     items.forEach(function(el) {
-      var txt = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+      var txt = cleanVisibleUiText(el);
       if (!txt || txt.length > 140) return;
-      if (/\bthinking\s*level\b/i.test(txt)) return;
+      if (/\bthinking\s*level\b/i.test(txt) || /^(?:low|medium|high)\b/i.test(txt)) return;
       var ltxt = txt.toLowerCase();
       var score = 0;
       if (ltxt === tLower || ltxt.indexOf(tLower) === 0) score += 500;
@@ -944,7 +1049,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
       if (score > bestScore) {
         bestScore = score;
-        best = { el: el, text: txt, score: score };
+        best = { el: resolveInteractiveMenuItem(el), text: txt, score: score };
       }
     });
     return best;
@@ -953,8 +1058,20 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   function findThinkingMenuTrigger(triggerEl) {
     var items = getFloatingMenuItems(triggerEl);
     for (var i = 0; i < items.length; i++) {
-      var txt = ((items[i].innerText || items[i].textContent || '') + '').replace(/\s+/g, ' ').trim();
-      if (/\bthinking\s*level\b/i.test(txt)) return items[i];
+      var txt = cleanVisibleUiText(items[i]);
+      if (/\bthinking\s*level\b/i.test(txt)) return resolveInteractiveMenuItem(items[i]);
+    }
+    var fallback = Array.from(document.querySelectorAll('.cdk-overlay-pane *'));
+    for (var j = 0; j < fallback.length; j++) {
+      var el = fallback[j];
+      if (!el.isConnected || el.closest('#la-gemini-studio-bar') || el.closest('#la-gemini-model-popover')) continue;
+      var r = el.getBoundingClientRect();
+      if (r.width < 40 || r.height < 16 || r.height > 90 || r.top < 44 || r.bottom > window.innerHeight + 8) continue;
+      var host = resolveInteractiveMenuItem(el);
+      var ftxt = cleanVisibleUiText(host);
+      if (ftxt && ftxt.length <= 80 && /\bthinking\s*level\b/i.test(ftxt)) {
+        return host;
+      }
     }
     return null;
   }
@@ -962,22 +1079,30 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   function findThinkingLevelRow(triggerEl, targetLevel) {
     var lvl = (targetLevel || '').trim().toLowerCase();
     if (!lvl || lvl === 'none') return null;
+    var thinkingTrigger = findThinkingMenuTrigger(triggerEl);
 
     function pickBest(candidates) {
       var found = null;
       var foundScore = 0;
+      var seen = [];
       candidates.forEach(function(el) {
-        var txt = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+        var host = resolveInteractiveMenuItem(el);
+        if (!host || !host.isConnected || seen.indexOf(host) !== -1) return;
+        seen.push(host);
+        if (host === triggerEl || host === thinkingTrigger) return;
+        if (host.closest('#la-gemini-studio-bar') || host.closest('#la-gemini-model-popover')) return;
+        var txt = cleanVisibleUiText(host);
         if (!txt || txt.length > 80) return;
         if (/\bthinking\s*level\b/i.test(txt)) return;
+        if (/\b(flash-?lite|hydrogen|argon|carbon|3\.1\s*pro|quick answers|everyday help|detailed research|code & analysis|most complex work)\b/i.test(txt)) return;
         var ltxt = txt.toLowerCase();
         var score = 0;
-        if (ltxt === lvl) score = 500;
-        else if (new RegExp('^' + lvl + '\\b', 'i').test(ltxt)) score = 400;
-        else if (new RegExp('\\b' + lvl + '\\b', 'i').test(ltxt)) score = 250;
+        if (ltxt === lvl) score = 600;
+        else if (new RegExp('^' + lvl + '\\b', 'i').test(ltxt)) score = 500;
+        else if (new RegExp('\\b' + lvl + '\\b', 'i').test(ltxt)) score = 300;
         if (score > foundScore) {
           foundScore = score;
-          found = el;
+          found = host;
         }
       });
       return found;
@@ -985,14 +1110,15 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
     var items = getFloatingMenuItems(triggerEl);
     var match = pickBest(items);
-    if (match) return match;
+    if (match) return resolveInteractiveMenuItem(match);
 
-    var fallbackNodes = Array.from(document.querySelectorAll('.cdk-overlay-pane div, .cdk-overlay-pane li, .cdk-overlay-pane span, .cdk-overlay-pane label')).filter(function(el) {
+    var fallbackNodes = Array.from(document.querySelectorAll('.cdk-overlay-pane div, .cdk-overlay-pane li, .cdk-overlay-pane span, .cdk-overlay-pane label, .cdk-overlay-pane button')).filter(function(el) {
       if (!el.isConnected || el.closest('#la-gemini-studio-bar') || el.closest('#la-gemini-model-popover')) return false;
       var r = el.getBoundingClientRect();
       return r.width >= 40 && r.height >= 16 && r.height <= 90 && r.top >= 44 && r.bottom <= window.innerHeight + 8;
     });
-    return pickBest(fallbackNodes);
+    var fbMatch = pickBest(fallbackNodes);
+    return fbMatch ? resolveInteractiveMenuItem(fbMatch) : null;
   }
 
   function getElementScreenCenter(el) {
@@ -1005,8 +1131,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   }
 
   function nativeOsClickElement(el, labelText) {
-    if (!el || !el.isConnected) return false;
-    var pos = getElementScreenCenter(el);
+    var target = resolveInteractiveMenuItem(el);
+    if (!target || !target.isConnected) return false;
+    var pos = getElementScreenCenter(target);
     showClickCursorAt(pos.cx, pos.cy, labelText);
     sendBridgeMsg({
       action: 'native_click',
@@ -1018,14 +1145,11 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   }
 
   function nativeOsHoverElement(el, labelText) {
-    if (!el || !el.isConnected) return false;
-    var pos = getElementScreenCenter(el);
+    var target = resolveInteractiveMenuItem(el);
+    if (!target || !target.isConnected) return false;
+    var pos = getElementScreenCenter(target);
     showClickCursorAt(pos.cx, pos.cy, labelText);
-    try {
-      el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: pos.cx, clientY: pos.cy }));
-      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: pos.cx, clientY: pos.cy }));
-      el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: pos.cx, clientY: pos.cy }));
-    } catch (e) {}
+    dispatchDomHoverSequence(target, pos.cx, pos.cy);
     sendBridgeMsg({
       action: 'native_hover',
       x: pos.cx,
@@ -1039,10 +1163,16 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     var targetModel = (_state.modelLabel || '4 Hydrogen').trim() || '4 Hydrogen';
     var targetThinking = (_state.thinkingLevel != null ? String(_state.thinkingLevel).trim() : 'High');
     var needThinking = !!targetThinking && targetThinking.toLowerCase() !== 'none';
+    _menuInteractionActive = true;
+    var finished = false;
+    var menuSafetyTimer = setTimeout(function() {
+      _menuInteractionActive = false;
+      flushBridgeQueue();
+    }, 5000);
 
     function getPillText(el) {
       if (!el) return '';
-      var vis = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+      var vis = cleanVisibleUiText(el);
       if (vis) return vis;
       return (el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
     }
@@ -1056,17 +1186,22 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     function dismissOverlayIfOpen() {
-      if (document.querySelector('.cdk-overlay-pane [role="menu"], .cdk-overlay-pane [role="listbox"]')) {
+      if (document.querySelector('.cdk-overlay-pane [role="menu"], .cdk-overlay-pane [role="listbox"], .cdk-overlay-pane button, .cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane [role="menuitemradio"]')) {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
       }
     }
 
     var finish = function(ok) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(menuSafetyTimer);
+      _menuInteractionActive = false;
       var mBtn = document.getElementById('la-gemini-model-btn');
       if (mBtn) {
         mBtn.dataset.verified = ok ? '1' : '0';
       }
       updateBarUI();
+      flushBridgeQueue();
       if (typeof callback === 'function') callback(!!ok);
     };
 
@@ -1091,6 +1226,15 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       runSelectionPass(1);
     }
 
+    function openMenuTriggerWithKeys(pillEl) {
+      if (!pillEl || !pillEl.isConnected) return;
+      try {
+        if (typeof pillEl.focus === 'function') pillEl.focus();
+        pillEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40, bubbles: true, cancelable: true }));
+        pillEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      } catch (e) {}
+    }
+
     function runSelectionPass(passNum) {
       var curPill = findGeminiModelPill(inputEl || findGeminiPromptInput());
       if (!curPill) {
@@ -1105,7 +1249,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
       showStatus('Selecting ' + getModelPillText() + (passNum > 1 ? ' (retry)' : '') + '…', '#93c5fd');
       if (getFloatingMenuItems(curPill).length === 0) {
-        nativeOsClickElement(curPill, 'Opening model menu');
+        programmaticDomClick(curPill, 'Opening model menu');
       }
 
       var openPolls = 0;
@@ -1114,14 +1258,19 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         var livePill = findGeminiModelPill(inputEl || findGeminiPromptInput()) || curPill;
         var openItems = getFloatingMenuItems(livePill);
         if (openItems.length === 0) {
-          if (openPolls === 5) {
+          if (openPolls === 4) {
+            openMenuTriggerWithKeys(livePill);
+            programmaticDomClick(livePill, 'Opening model menu');
+            return;
+          }
+          if (passNum >= 2 && openPolls === 7) {
             nativeOsClickElement(livePill, 'Opening model menu');
             return;
           }
           if (openPolls >= 12) {
             clearInterval(openTimer);
             if (passNum < 2) {
-              setTimeout(function() { runSelectionPass(passNum + 1); }, 300);
+              setTimeout(function() { runSelectionPass(passNum + 1); }, 280);
             } else {
               finish(isStateVerified(livePill));
             }
@@ -1134,16 +1283,16 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         if (!modelOk) {
           var modelItem = findModelMenuItem(livePill, targetModel);
           if (modelItem && modelItem.el) {
-            nativeOsClickElement(modelItem.el, 'Selecting ' + targetModel);
+            programmaticDomClick(modelItem.el, 'Selecting ' + targetModel);
             setTimeout(function() {
               advanceToThinkingStep(passNum);
-            }, 420);
+            }, 320);
             return;
           }
         }
         // Model already matches (e.g. "Hydrogen Low"): do NOT re-click "4 Hydrogen", go straight to Thinking level!
         advanceToThinkingStep(passNum);
-      }, 180);
+      }, 150);
     }
 
     function advanceToThinkingStep(passNum) {
@@ -1169,9 +1318,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       }
 
       var pillReopened = false;
-      var hoverSent = false;
-      var hoverSentAt = 0;
-      var trigClickSent = false;
+      var submenuOpenedAt = 0;
+      var submenuKeySent = false;
+      var submenuNativeHoverSent = false;
       var levelClickSent = false;
       var thinkPolls = 0;
 
@@ -1191,9 +1340,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           clearInterval(thinkTimer);
           setTimeout(function() {
             var freshRow = findThinkingLevelRow(pNow, targetThinking) || lvlRow;
-            nativeOsClickElement(freshRow, 'Thinking: ' + targetThinking);
+            programmaticDomClick(freshRow, 'Thinking: ' + targetThinking);
             waitVerifyPill(passNum);
-          }, 120);
+          }, 90);
           return;
         }
 
@@ -1201,39 +1350,44 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         if (openItems.length === 0) {
           if (!pillReopened && pNow) {
             pillReopened = true;
-            nativeOsClickElement(pNow, 'Opening menu for ' + targetThinking);
+            programmaticDomClick(pNow, 'Opening menu for ' + targetThinking);
             return;
           }
         } else {
           var trig = findThinkingMenuTrigger(pNow);
           if (trig) {
-            if (!hoverSent) {
-              hoverSent = true;
-              hoverSentAt = Date.now();
-              nativeOsHoverElement(trig, 'Opening Thinking level');
+            if (!submenuOpenedAt) {
+              submenuOpenedAt = Date.now();
+              programmaticDomOpenSubmenu(trig, 'Opening Thinking level');
               return;
             }
-            if (!trigClickSent && (Date.now() - hoverSentAt >= 380)) {
-              trigClickSent = true;
-              nativeOsClickElement(trig, 'Clicking Thinking level');
+            if (!submenuKeySent && (Date.now() - submenuOpenedAt >= 280)) {
+              submenuKeySent = true;
+              programmaticDomSubmenuKey(trig);
+              programmaticDomOpenSubmenu(trig, 'Clicking Thinking level');
+              return;
+            }
+            if (passNum >= 2 && !submenuNativeHoverSent && (Date.now() - submenuOpenedAt >= 600)) {
+              submenuNativeHoverSent = true;
+              nativeOsHoverElement(trig, 'Hovering Thinking level');
               return;
             }
           }
         }
 
-        if (thinkPolls >= 16) {
+        if (thinkPolls >= 18) {
           clearInterval(thinkTimer);
           dismissOverlayIfOpen();
           var endPill = findGeminiModelPill(inputEl || findGeminiPromptInput()) || pNow;
           if (endPill && isStateVerified(endPill)) {
             finish(true);
           } else if (passNum < 2) {
-            setTimeout(function() { runSelectionPass(passNum + 1); }, 320);
+            setTimeout(function() { runSelectionPass(passNum + 1); }, 280);
           } else {
             finish(false);
           }
         }
-      }, 200);
+      }, 140);
     }
 
     function waitVerifyPill(passNum) {
@@ -1247,16 +1401,16 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           finish(true);
           return;
         }
-        if (polls >= 7) {
+        if (polls >= 8) {
           clearInterval(vTimer);
           dismissOverlayIfOpen();
           if (passNum < 2) {
-            setTimeout(function() { runSelectionPass(passNum + 1); }, 320);
+            setTimeout(function() { runSelectionPass(passNum + 1); }, 280);
           } else {
             finish(pNow ? isStateVerified(pNow) : false);
           }
         }
-      }, 160);
+      }, 140);
     }
 
     waitForPillAndRun();

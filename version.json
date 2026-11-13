@@ -1,7 +1,7 @@
 {
-    "version": "1.19.2",
-    "build": 48,
-    "updatedAt": "2026-11-13T00:48:30Z",
-    "notes": "Enforce strict Gemini Thinking Level verification & switching (Low -> High via real OS mouse hover/click) and immediately truncate digests at any heading/line tagged (exclude).",
+    "version": "1.19.3",
+    "build": 49,
+    "updatedAt": "2026-11-14T07:36:00Z",
+    "notes": "Fix automatic Gemini model & Thinking level switching (Low -> High) in Gemini Web Studio using programmatic Angular SPA DOM events instead of unreliable screen-coordinate clicks.",
     "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
