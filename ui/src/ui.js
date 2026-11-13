@@ -1104,6 +1104,8 @@ async function _executePaletteItem(item) {
     }
   } else if (cmd === 'perplexity-digest') {
     document.getElementById('btn-perplexity-digest')?.click();
+  } else if (cmd === 'gemini-digest') {
+    document.getElementById('btn-gemini-digest')?.click();
   } else if (cmd === 'open-digest') {
     const npPanel = document.getElementById('notepad-panel');
     if (npPanel && !npPanel.classList.contains('open')) {

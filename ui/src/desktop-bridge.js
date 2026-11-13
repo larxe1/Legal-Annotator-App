@@ -153,6 +153,79 @@ if (invoke) {
     }
   };
 
+  window.desktopGetGeminiPrefs = async () => {
+    try {
+      return await invoke('desktop_get_gemini_prefs');
+    } catch {
+      return null;
+    }
+  };
+
+  window.desktopSaveGeminiPrefs = async (prefs) => {
+    try {
+      return await invoke('desktop_save_gemini_prefs', { prefs });
+    } catch {
+      return false;
+    }
+  };
+
+  window.desktopOpenGeminiStudio = async (opts = {}) => {
+    try {
+      return await invoke('desktop_open_gemini_studio', {
+        pdfId: String(opts.pdfId || ''),
+        pdfName: String(opts.pdfName || 'Current PDF'),
+        subjectId: opts.subjectId != null ? String(opts.subjectId) : '',
+        subjectName: opts.subjectName ? String(opts.subjectName) : '',
+        subfolderName: opts.subfolderName ? String(opts.subfolderName) : '',
+        instructionText: opts.instructionText ? String(opts.instructionText) : '',
+        pdfText: String(opts.pdfText || ''),
+        fullPromptText: String(opts.fullPromptText || ''),
+        pinnedNotebookUrl: opts.pinnedNotebookUrl ? String(opts.pinnedNotebookUrl) : null,
+        modelLabel: opts.modelLabel ? String(opts.modelLabel) : null,
+        thinkingLevel: opts.thinkingLevel != null ? String(opts.thinkingLevel) : null,
+        autoSubmit: typeof opts.autoSubmit === 'boolean' ? opts.autoSubmit : null,
+        digestMode: opts.digestMode ? String(opts.digestMode) : null,
+        autoSendDigest: typeof opts.autoSendDigest === 'boolean' ? opts.autoSendDigest : null,
+      });
+    } catch (err) {
+      console.warn('[Desktop] desktop_open_gemini_studio failed:', err);
+      return false;
+    }
+  };
+
+  window.desktopFocusGeminiStudio = async () => {
+    try {
+      return Boolean(await invoke('desktop_focus_gemini_studio'));
+    } catch (err) {
+      console.warn('[Desktop] desktop_focus_gemini_studio failed:', err);
+      return false;
+    }
+  };
+
+  const VALID_GEMINI_STUDIO_STATES = new Set(['idle', 'extracting', 'submitted', 'streaming', 'done', 'error']);
+  window.__desktopForwardGeminiStatus = (raw) => {
+    if (!raw || typeof raw !== 'object') return;
+    const isErr = raw.action === 'studio_error' || raw.state === 'error';
+    const state = isErr
+      ? 'error'
+      : (VALID_GEMINI_STUDIO_STATES.has(raw.state) ? raw.state : 'idle');
+    const payload = {
+      state,
+      stepLabel: typeof raw.stepLabel === 'string' ? raw.stepLabel : '',
+      message: typeof raw.message === 'string' ? raw.message : '',
+      pdfId: raw.pdfId != null ? String(raw.pdfId) : '',
+      canRetry: typeof raw.canRetry === 'boolean' ? raw.canRetry : isErr,
+    };
+    window.__lastGeminiStudioStatus = payload;
+    if (typeof window.__onGeminiStudioStatus === 'function') {
+      try {
+        window.__onGeminiStudioStatus(payload);
+      } catch (err) {
+        console.warn('[Desktop] __onGeminiStudioStatus handler failed:', err);
+      }
+    }
+  };
+
   window.__DESKTOP_PRINT_STUDIO__ = {
     async getMode() {
       try {

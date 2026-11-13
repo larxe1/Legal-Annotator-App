@@ -388,6 +388,9 @@
         <button class="tb-btn casebar__btn casebar__btn--primary" id="btn-perplexity-digest" title="Extract PDF text + Subfolder Instruction and auto-digest in your Perplexity 'Law' Project">
           <svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>Case Digest (Perplexity)</span>
         </button>
+        <button class="tb-btn casebar__btn casebar__btn--gemini" id="btn-gemini-digest" title="Extract PDF text + Subfolder Instruction and auto-digest in your Subject's Gemini Notebook">
+          <svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>Case Digest (Gemini)</span>
+        </button>
         <button class="tb-btn casebar__btn" id="btn-print-studio" title="Open Legal Print Studio — Customize &amp; Print Notes, Case Digests, Folder Docs &amp; Summary Tables">
           <svg class="icon" aria-hidden="true"><use href="#i-printer"/></svg><span>Print Studio</span>
         </button>
@@ -1493,6 +1496,34 @@
         <div id="settings-gemini-status" style="font-size:11px; color:var(--muted);"></div>
       </div>
 
+      <!-- Gemini Web Studio Case Digest -->
+      <div id="settings-gemini-digest-card" class="gemini-settings-card">
+        <div class="gemini-settings-title">
+          <svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>Gemini Web Studio (Case Digest)</span>
+        </div>
+        <div class="gemini-settings-desc">
+          Default model &amp; thinking level for <code>gemini.google.com</code> Case Digest, plus one pinned Gemini Notebook URL per Subject.
+        </div>
+        <div class="gemini-settings-row">
+          <label class="gemini-settings-field" for="settings-gemini-model">
+            <span class="gemini-settings-label">Model</span>
+            <input type="text" id="settings-gemini-model" placeholder="4 Hydrogen" autocomplete="off">
+          </label>
+          <label class="gemini-settings-field gemini-settings-field--compact" for="settings-gemini-thinking">
+            <span class="gemini-settings-label">Thinking</span>
+            <select id="settings-gemini-thinking">
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
+              <option value="None">None</option>
+            </select>
+          </label>
+          <button class="btn-gold gemini-settings-save" id="settings-btn-save-gemini-digest" type="button">Save</button>
+        </div>
+        <div class="gemini-settings-subhead">Subject Notebook URLs</div>
+        <div id="settings-gemini-notebooks-list" class="gemini-notebooks-list"></div>
+      </div>
+
       <!-- Keyboard Shortcuts -->
       <div style="background:var(--navy); border:1px solid var(--navy-b); border-radius:6px; padding:12px;">
         <div style="font-size:13px; font-weight:600; color:#e8e4db; margin-bottom:4px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg><span>Keyboard Shortcuts</span></div>
@@ -1825,6 +1856,10 @@
         <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="perplexity-digest">
           <span class="palette__item-label">Case Digest (Perplexity)</span>
           <span class="palette__item-hint">Perplexity</span>
+        </button>
+        <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="gemini-digest">
+          <span class="palette__item-label">Case Digest (Gemini)</span>
+          <span class="palette__item-hint">Gemini</span>
         </button>
         <button type="button" class="palette__item" role="option" aria-selected="false" data-cmd="open-digest">
           <span class="palette__item-label">Focus Case Digest Editor</span>

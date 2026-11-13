@@ -1046,7 +1046,7 @@ function stripTrailingSourcesHtml(html = '') {
 }
 
 // ── Import formatted digest strictly into Case Digest tab (leaves Notes tab untouched) ──
-export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText = '', mode = 'append') {
+export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText = '', mode = 'append', sourceLabel = 'Perplexity') {
   const targetPdfId = pdfId
     || (S.curPDF ? (S.curPDF.linked_pdf_id || S.curPDF.id) : null)
     || _activePdfId;
@@ -1120,10 +1120,11 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
   executeSaveForPdf(targetPdfId);
   import('./library.js').then(m => m.renderLibrary?.()).catch(() => {});
 
+  const providerLabel = (sourceLabel && String(sourceLabel).trim()) || 'Case';
   toast(
     hasExistingDigest && effectiveMode === 'append'
-      ? 'Appended Perplexity Digest to the bottom of Case Digest tab!'
-      : 'Saved Perplexity Digest into Case Digest tab!'
+      ? `Appended ${providerLabel} Digest to the bottom of Case Digest tab!`
+      : `Saved ${providerLabel} Digest into Case Digest tab!`
   );
   return true;
 }

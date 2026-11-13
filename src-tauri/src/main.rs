@@ -19,6 +19,7 @@ use std::{
 };
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod gemini_studio;
 mod ocr_studio;
 mod print_studio;
 
@@ -980,7 +981,7 @@ async fn pdfium_pick_local_pdf() -> Result<Option<PickedPdfResponse>, String> {
     }))
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -3291,7 +3292,7 @@ async fn desktop_open_perplexity_studio(
 }
 
 #[cfg(target_os = "windows")]
-fn perform_native_os_mouse_click(screen_x: i32, screen_y: i32) {
+pub(crate) fn perform_native_os_mouse_click(screen_x: i32, screen_y: i32) {
     #[repr(C)]
     struct Point {
         x: i32,
@@ -3327,9 +3328,9 @@ fn perform_native_os_mouse_click(screen_x: i32, screen_y: i32) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn perform_native_os_mouse_click(_screen_x: i32, _screen_y: i32) {}
+pub(crate) fn perform_native_os_mouse_click(_screen_x: i32, _screen_y: i32) {}
 
-fn percent_decode_str(input: &str) -> String {
+pub(crate) fn percent_decode_str(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -4814,6 +4815,10 @@ fn main() {
             desktop_save_perplexity_prefs,
             desktop_open_perplexity_studio,
             desktop_focus_perplexity_studio,
+            gemini_studio::desktop_get_gemini_prefs,
+            gemini_studio::desktop_save_gemini_prefs,
+            gemini_studio::desktop_open_gemini_studio,
+            gemini_studio::desktop_focus_gemini_studio,
             desktop_cache_get_path,
             desktop_cache_save_pdf,
             desktop_cache_read_pdf,

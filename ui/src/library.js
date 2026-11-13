@@ -113,6 +113,25 @@ function ensureLibCtxMenuItems() {
       await runPerplexityDigestForPdf(pdf);
     });
   }
+  if (!document.getElementById('ctx-gemini-digest')) {
+    const gemPdfItem = document.createElement('div');
+    gemPdfItem.className = 'ctx-item ctx-item--gemini';
+    gemPdfItem.id = 'ctx-gemini-digest';
+    setCtxItemLabel(gemPdfItem, 'i-spark', 'Gemini Digest (Auto Case Digest)');
+    const pplxPdfEl = document.getElementById('ctx-perplexity-digest');
+    if (pplxPdfEl && pplxPdfEl.nextSibling) {
+      menu.insertBefore(gemPdfItem, pplxPdfEl.nextSibling);
+    } else {
+      menu.appendChild(gemPdfItem);
+    }
+    gemPdfItem.addEventListener('click', async () => {
+      if (!_ctxTarget || _ctxIsFolder) return;
+      const pdf = Array.isArray(_ctxTarget) ? _ctxTarget[0] : _ctxTarget;
+      hideLibCtxMenu();
+      const { runGeminiDigestForPdf } = await import('./smart-copy.js');
+      await runGeminiDigestForPdf(pdf);
+    });
+  }
   if (!document.getElementById('ctx-folder-perplexity-digest')) {
     const pplxFoldItem = document.createElement('div');
     pplxFoldItem.className = 'ctx-item';
@@ -132,6 +151,25 @@ function ensureLibCtxMenuItems() {
       hideLibCtxMenu();
       const { runBatchPerplexityDigestForFolders } = await import('./smart-copy.js');
       await runBatchPerplexityDigestForFolders(folderTarget);
+    });
+  }
+  if (!document.getElementById('ctx-folder-gemini-digest')) {
+    const gemFoldItem = document.createElement('div');
+    gemFoldItem.className = 'ctx-item ctx-item--gemini';
+    gemFoldItem.id = 'ctx-folder-gemini-digest';
+    setCtxItemLabel(gemFoldItem, 'i-spark', 'Gemini Digest All PDFs in Folder');
+    const exportBtn = document.getElementById('lib-ctx-export-pdf');
+    if (exportBtn) {
+      menu.insertBefore(gemFoldItem, exportBtn);
+    } else {
+      menu.appendChild(gemFoldItem);
+    }
+    gemFoldItem.addEventListener('click', async () => {
+      if (!_ctxTarget || !_ctxIsFolder) return;
+      const folderTarget = _ctxTarget;
+      hideLibCtxMenu();
+      const { runBatchGeminiDigestForFolders } = await import('./smart-copy.js');
+      await runBatchGeminiDigestForFolders(folderTarget);
     });
   }
   const offlinePdfBtn = document.getElementById('lib-ctx-offline');
@@ -275,6 +313,8 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   if (ocrStudioBtn) ocrStudioBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'flex' : 'none';
   const pplxPdfBtn = document.getElementById('ctx-perplexity-digest');
   if (pplxPdfBtn) pplxPdfBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'flex' : 'none';
+  const gemPdfBtn = document.getElementById('ctx-gemini-digest');
+  if (gemPdfBtn) gemPdfBtn.style.display = (!isFolder && !isMultiFolder && !isMultiPdf) ? 'flex' : 'none';
   const pplxFoldBtn = document.getElementById('ctx-folder-perplexity-digest');
   if (pplxFoldBtn) {
     pplxFoldBtn.style.display = (isFolder || isMultiFolder) ? 'flex' : 'none';
@@ -284,6 +324,17 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
       (isMultiFolder && Array.isArray(target))
         ? `Perplexity Digest All PDFs (${target.length} Folders)`
         : 'Perplexity Digest All PDFs in Folder'
+    );
+  }
+  const gemFoldBtn = document.getElementById('ctx-folder-gemini-digest');
+  if (gemFoldBtn) {
+    gemFoldBtn.style.display = (isFolder || isMultiFolder) ? 'flex' : 'none';
+    setCtxItemLabel(
+      gemFoldBtn,
+      'i-spark',
+      (isMultiFolder && Array.isArray(target))
+        ? `Gemini Digest All PDFs (${target.length} Folders)`
+        : 'Gemini Digest All PDFs in Folder'
     );
   }
   document.getElementById('lib-ctx-offline').style.display = hideSinglePdfItems ? 'none' : 'flex';

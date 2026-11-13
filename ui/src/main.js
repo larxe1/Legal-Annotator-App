@@ -790,6 +790,7 @@ RULES:
     refreshCacheStats();
     refreshGeminiKey();
     refreshAutoCloseTabsSetting();
+    import('./smart-copy.js').then(m => m.refreshGeminiDigestSettingsCard?.()).catch(() => {});
   });
 
   document.getElementById('settings-btn-save-gemini')?.addEventListener('click', async () => {

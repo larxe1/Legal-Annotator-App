@@ -1,7 +1,7 @@
 {
-    "version":  "1.18.1",
-    "build":  45,
-    "updatedAt":  "2026-11-12T23:37:49Z",
-    "notes":  "Fix Study Desk class schedule card header, syllabus/note action row layout, and responsive grid spacing across Folio and Casebook skins.",
-    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
+    "version": "1.19.0",
+    "build": 46,
+    "updatedAt": "2026-11-13T00:06:29Z",
+    "notes": "Add Gemini Web Studio Case Digest with per-subject pinned Notebooks, configurable model & thinking level (default 4 Hydrogen / High), batch folder digesting, and dual-provider monitor.",
+    "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

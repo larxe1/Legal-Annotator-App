@@ -770,19 +770,25 @@ export async function copyEntirePdfTextSmart() {
 }
 
 let _isDigestingPerplexity = false;
+let _isDigestingGemini = false;
 let _singleDigestCancelled = false;
 let _lastPplxWebWin = null;
 let _lastPplxUrl = 'https://www.perplexity.ai/spaces';
 let _lastStudioPayload = null;
+let _lastGeminiWebWin = null;
+let _lastGeminiUrl = 'https://gemini.google.com/notebooks';
+let _lastGeminiStudioPayload = null;
 let _bannerAutoHideTimer = null;
 let _batchDigestState = {
   running: false,
   cancelled: false,
+  provider: 'perplexity',
   currentPdfId: null,
   resolveCurrentPdf: null,
   countLabel: '',
 };
 let _pplxMonitorState = {
+  provider: 'perplexity',
   state: 'idle',
   title: 'Perplexity Studio',
   status: 'Ready',
@@ -792,6 +798,403 @@ let _pplxMonitorState = {
   pdfName: '',
   canRetry: false,
 };
+
+/**
+ * Resolves { subjectId, subjectName } for a given folderId by walking S.folders -> S.subjects.
+ */
+export function getSubjectInfoForFolder(folderId) {
+  if (!folderId || !Array.isArray(S.folders)) {
+    return { subjectId: '', subjectName: '' };
+  }
+  let cur = S.folders.find(f => f.id === folderId);
+  let subjId = cur?.subject_id || null;
+  let guard = 0;
+  while (cur && guard++ < 20) {
+    if (cur.subject_id) subjId = cur.subject_id;
+    cur = cur.parent_folder_id ? S.folders.find(f => f.id === cur.parent_folder_id) : null;
+  }
+  let subjectName = '';
+  if (subjId && Array.isArray(S.subjects)) {
+    const subj = S.subjects.find(s => s.id === subjId);
+    if (subj?.name) subjectName = String(subj.name).trim();
+  }
+  return {
+    subjectId: subjId ? String(subjId) : '',
+    subjectName,
+  };
+}
+
+/**
+ * Normalizes a Gemini Notebook URL, stripping trailing chat segments after
+ * https://gemini.google.com/notebook/<uuid>.
+ */
+export function normalizeGeminiNotebookUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  const withProto = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const u = new URL(withProto);
+    if (!/^gemini\.google\.com$/i.test(u.hostname)) return '';
+    const nbMatch = u.pathname.match(/^(\/(?:u\/\d+\/)?notebook\/[^\/?#]+)/i);
+    if (nbMatch) {
+      return `https://gemini.google.com${nbMatch[1]}`;
+    }
+    if (/^\/(?:u\/\d+\/)?notebooks\/?$/i.test(u.pathname)) {
+      return `https://gemini.google.com${u.pathname.replace(/\/+$/, '')}`;
+    }
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    const m = raw.match(/^(https:\/\/gemini\.google\.com\/notebook\/[^\/?#]+)/i);
+    return m ? m[1] : '';
+  }
+}
+
+function readLocalGeminiNotebooksMap() {
+  try {
+    const raw = safeStorageGet('gemini_subject_notebooks', '{}') || '{}';
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const clean = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const norm = normalizeGeminiNotebookUrl(v);
+      if (k && norm) clean[String(k)] = norm;
+    }
+    return clean;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalGeminiNotebooksMap(map) {
+  const clean = {};
+  if (map && typeof map === 'object') {
+    for (const [k, v] of Object.entries(map)) {
+      const norm = normalizeGeminiNotebookUrl(v);
+      if (k && norm) clean[String(k)] = norm;
+    }
+  }
+  safeStorageSet('gemini_subject_notebooks', JSON.stringify(clean));
+  return clean;
+}
+
+async function hydrateGeminiNotebooksMapFromCloud() {
+  let localMap = readLocalGeminiNotebooksMap();
+  try {
+    const cloudRaw = await dbGetSetting('gemini_subject_notebooks');
+    if (cloudRaw) {
+      const cloudObj = typeof cloudRaw === 'string' ? JSON.parse(cloudRaw) : cloudRaw;
+      if (cloudObj && typeof cloudObj === 'object' && !Array.isArray(cloudObj)) {
+        let changed = false;
+        const merged = { ...localMap };
+        for (const [k, v] of Object.entries(cloudObj)) {
+          const norm = normalizeGeminiNotebookUrl(v);
+          if (k && norm && !merged[String(k)]) {
+            merged[String(k)] = norm;
+            changed = true;
+          }
+        }
+        if (changed) localMap = writeLocalGeminiNotebooksMap(merged);
+      }
+    }
+  } catch {}
+  return localMap;
+}
+
+export async function getPinnedGeminiNotebookForSubject(subjectId) {
+  if (!subjectId) return '';
+  const sid = String(subjectId);
+  let map = readLocalGeminiNotebooksMap();
+  if (map[sid]) return map[sid];
+  map = await hydrateGeminiNotebooksMapFromCloud();
+  if (map[sid]) return map[sid];
+  try {
+    const tauriInvoke = getTauriInvoke();
+    const prefs = typeof window.desktopGetGeminiPrefs === 'function'
+      ? await window.desktopGetGeminiPrefs()
+      : (tauriInvoke ? await tauriInvoke('desktop_get_gemini_prefs') : null);
+    const desktopUrl = prefs?.subjectNotebooks?.[sid];
+    const norm = normalizeGeminiNotebookUrl(desktopUrl);
+    if (norm) {
+      map[sid] = norm;
+      writeLocalGeminiNotebooksMap(map);
+      return norm;
+    }
+  } catch {}
+  return '';
+}
+
+function syncGeminiPrefsToDesktop(prefsPatch) {
+  try {
+    if (typeof window.desktopSaveGeminiPrefs === 'function') {
+      window.desktopSaveGeminiPrefs(prefsPatch).catch?.(() => {});
+      return;
+    }
+    const tauriInvoke = getTauriInvoke();
+    if (tauriInvoke) {
+      tauriInvoke('desktop_save_gemini_prefs', { prefs: prefsPatch }).catch(() => {});
+    }
+  } catch {}
+}
+
+export async function setPinnedGeminiNotebookForSubject(subjectId, url) {
+  if (!subjectId) return;
+  const sid = String(subjectId);
+  const norm = normalizeGeminiNotebookUrl(url);
+  const map = await hydrateGeminiNotebooksMapFromCloud();
+  if (norm) {
+    map[sid] = norm;
+  } else {
+    delete map[sid];
+  }
+  const cleanMap = writeLocalGeminiNotebooksMap(map);
+  dbSetSetting('gemini_subject_notebooks', JSON.stringify(cleanMap)).catch(() => {});
+  syncGeminiPrefsToDesktop({ subjectNotebooks: cleanMap });
+}
+
+export function getGeminiModelPrefs() {
+  const rawModel = safeStorageGet('gemini_model_label', '4 Hydrogen');
+  const rawThinking = safeStorageGet('gemini_thinking_level', 'High');
+  const modelLabel = (rawModel && String(rawModel).trim()) || '4 Hydrogen';
+  const thinkingLevel = (rawThinking && String(rawThinking).trim()) || 'High';
+  return { modelLabel, thinkingLevel };
+}
+
+async function resolveGeminiModelPrefs() {
+  let modelLabel = safeStorageGet('gemini_model_label', '');
+  let thinkingLevel = safeStorageGet('gemini_thinking_level', '');
+  if (!modelLabel) {
+    try {
+      const cloudModel = await dbGetSetting('gemini_model_label');
+      if (cloudModel && typeof cloudModel === 'string' && cloudModel.trim()) {
+        modelLabel = cloudModel.trim();
+        safeStorageSet('gemini_model_label', modelLabel);
+      }
+    } catch {}
+  }
+  if (!thinkingLevel) {
+    try {
+      const cloudThinking = await dbGetSetting('gemini_thinking_level');
+      if (cloudThinking && typeof cloudThinking === 'string' && cloudThinking.trim()) {
+        thinkingLevel = cloudThinking.trim();
+        safeStorageSet('gemini_thinking_level', thinkingLevel);
+      }
+    } catch {}
+  }
+  if (!modelLabel || !thinkingLevel) {
+    try {
+      const tauriInvoke = getTauriInvoke();
+      const prefs = typeof window.desktopGetGeminiPrefs === 'function'
+        ? await window.desktopGetGeminiPrefs()
+        : (tauriInvoke ? await tauriInvoke('desktop_get_gemini_prefs') : null);
+      if (!modelLabel && prefs?.modelLabel) {
+        modelLabel = String(prefs.modelLabel).trim();
+        if (modelLabel) safeStorageSet('gemini_model_label', modelLabel);
+      }
+      if (!thinkingLevel && prefs?.thinkingLevel) {
+        thinkingLevel = String(prefs.thinkingLevel).trim();
+        if (thinkingLevel) safeStorageSet('gemini_thinking_level', thinkingLevel);
+      }
+    } catch {}
+  }
+  return {
+    modelLabel: (modelLabel && String(modelLabel).trim()) || '4 Hydrogen',
+    thinkingLevel: (thinkingLevel && String(thinkingLevel).trim()) || 'High',
+  };
+}
+
+export async function saveGeminiModelPrefs({ modelLabel, thinkingLevel } = {}) {
+  const cleanModel = String(modelLabel || '').trim() || '4 Hydrogen';
+  const cleanThinking = String(thinkingLevel || '').trim() || 'High';
+  safeStorageSet('gemini_model_label', cleanModel);
+  safeStorageSet('gemini_thinking_level', cleanThinking);
+  dbSetSetting('gemini_model_label', cleanModel).catch(() => {});
+  dbSetSetting('gemini_thinking_level', cleanThinking).catch(() => {});
+  syncGeminiPrefsToDesktop({ modelLabel: cleanModel, thinkingLevel: cleanThinking });
+  return { modelLabel: cleanModel, thinkingLevel: cleanThinking };
+}
+
+export async function refreshGeminiDigestSettingsCard() {
+  const modelInp = document.getElementById('settings-gemini-model');
+  const thinkingSel = document.getElementById('settings-gemini-thinking');
+  const listEl = document.getElementById('settings-gemini-notebooks-list');
+  if (!modelInp && !thinkingSel && !listEl) return;
+
+  const [{ modelLabel, thinkingLevel }, notebooksMap] = await Promise.all([
+    resolveGeminiModelPrefs(),
+    hydrateGeminiNotebooksMapFromCloud(),
+  ]);
+
+  if (modelInp) modelInp.value = modelLabel;
+  if (thinkingSel) {
+    const validOptions = Array.from(thinkingSel.options || []).map(o => o.value);
+    thinkingSel.value = validOptions.includes(thinkingLevel) ? thinkingLevel : 'High';
+  }
+
+  if (listEl) {
+    listEl.innerHTML = '';
+    const subjects = Array.isArray(S.subjects) ? S.subjects : [];
+    if (!subjects.length) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'settings-gemini-empty';
+      emptyEl.style.cssText = 'font-size:11px; color:var(--muted); padding:4px 0;';
+      emptyEl.textContent = 'No subjects created yet.';
+      listEl.appendChild(emptyEl);
+      return;
+    }
+
+    for (const subj of subjects) {
+      if (!subj || !subj.id) continue;
+      const sid = String(subj.id);
+      const row = document.createElement('div');
+      row.className = 'gemini-notebook-row';
+
+      const lbl = document.createElement('span');
+      lbl.className = 'gemini-notebook-row__name';
+      lbl.textContent = subj.name || 'Untitled Subject';
+      lbl.title = subj.name || '';
+
+      const inp = document.createElement('input');
+      inp.type = 'url';
+      inp.className = 'gemini-notebook-row__input';
+      inp.dataset.subjectId = sid;
+      inp.placeholder = 'https://gemini.google.com/notebook/…';
+      inp.value = notebooksMap[sid] || '';
+
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.className = 'btn-sec gemini-notebook-row__clear';
+      clearBtn.title = `Clear pinned Notebook for ${subj.name || 'Subject'}`;
+      clearBtn.setAttribute('aria-label', `Clear pinned Notebook for ${subj.name || 'Subject'}`);
+      clearBtn.textContent = '✕';
+      clearBtn.addEventListener('click', () => {
+        inp.value = '';
+        inp.focus();
+      });
+
+      row.append(lbl, inp, clearBtn);
+      listEl.appendChild(row);
+    }
+  }
+}
+
+async function saveGeminiDigestSettingsFromCard() {
+  const modelInp = document.getElementById('settings-gemini-model');
+  const thinkingSel = document.getElementById('settings-gemini-thinking');
+  const listEl = document.getElementById('settings-gemini-notebooks-list');
+
+  const modelLabel = (modelInp?.value || '').trim() || '4 Hydrogen';
+  const thinkingLevel = (thinkingSel?.value || '').trim() || 'High';
+
+  const nextMap = { ...readLocalGeminiNotebooksMap() };
+  if (listEl) {
+    const inputs = listEl.querySelectorAll('input[data-subject-id]');
+    for (const inp of inputs) {
+      const sid = inp.dataset.subjectId;
+      if (!sid) continue;
+      const raw = (inp.value || '').trim();
+      if (!raw) {
+        delete nextMap[sid];
+        continue;
+      }
+      const norm = normalizeGeminiNotebookUrl(raw);
+      if (!norm) {
+        toast('Notebook URLs must point to https://gemini.google.com/notebook/...');
+        inp.focus();
+        return;
+      }
+      nextMap[sid] = norm;
+    }
+  }
+
+  const cleanMap = writeLocalGeminiNotebooksMap(nextMap);
+  await saveGeminiModelPrefs({ modelLabel, thinkingLevel });
+  dbSetSetting('gemini_subject_notebooks', JSON.stringify(cleanMap)).catch(() => {});
+  syncGeminiPrefsToDesktop({
+    modelLabel,
+    thinkingLevel,
+    subjectNotebooks: cleanMap,
+  });
+  toast('✓ Gemini Case Digest settings saved');
+  await refreshGeminiDigestSettingsCard();
+}
+
+/**
+ * Shared PDF text extraction helper (10-page batch + ocr.js fallback +
+ * stripPageNumbersAndFooters + buildFullCopyInstruction) used by both
+ * Perplexity and Gemini Case Digest flows.
+ */
+async function extractPdfDigestPromptPayload({ doc, total, pdfObj, isCancelled }) {
+  const trueId = pdfObj.linked_pdf_id || pdfObj.id;
+  const pageTexts = new Array(total);
+  const BATCH_SIZE = 10;
+
+  for (let i = 1; i <= total; i += BATCH_SIZE) {
+    if (isCancelled?.()) {
+      throw new Error('Cancelled by user');
+    }
+    if (doc !== S.pdfDoc) throw new Error('PDF changed during extraction');
+    const batchPromises = [];
+    for (let p = i; p < i + BATCH_SIZE && p <= total; p++) {
+      const pageNum = p;
+      batchPromises.push((async () => {
+        try {
+          const page = await doc.getPage(pageNum);
+          const tc = await page.getTextContent();
+          const viewport = page.getViewport({ scale: 1.0 });
+          let pageText = '';
+          if (tc && tc.items && tc.items.length > 0) {
+            pageText = formatPageTextContent(tc, viewport, pageNum);
+          }
+          if (!pageText || !pageText.trim()) {
+            if (trueId) {
+              try {
+                const ocrMod = await import('./ocr.js').catch(() => null);
+                if (ocrMod && typeof ocrMod.getOcrPageText === 'function') {
+                  const ocrText = await ocrMod.getOcrPageText(trueId, pageNum);
+                  if (ocrText && ocrText.trim()) {
+                    pageText = stripPageNumbersAndFooters(ocrText, pageNum);
+                  }
+                }
+              } catch {}
+            }
+          }
+          pageTexts[pageNum - 1] = pageText ? pageText.trim() : '';
+        } catch {
+          pageTexts[pageNum - 1] = '';
+        }
+      })());
+    }
+    await Promise.all(batchPromises);
+    if (i + BATCH_SIZE <= total) await new Promise(r => setTimeout(r, 0));
+  }
+
+  if (isCancelled?.()) {
+    throw new Error('Cancelled by user');
+  }
+
+  const validPages = pageTexts.filter(t => t && t.trim().length > 0);
+  if (!validPages.length) {
+    return { ok: false, reason: 'no_text', trueId };
+  }
+
+  let pdfText = validPages.join('\n\n').trim();
+  pdfText = stripPageNumbersAndFooters(pdfText);
+
+  const activeFolderId = getActiveSubfolderId();
+  const subfolderName = activeFolderId ? getFolderBreadcrumb(activeFolderId) : '';
+  const instructionText = buildFullCopyInstruction(activeFolderId);
+  const fullPromptText = `${instructionText}\n\n${pdfText}`;
+
+  return {
+    ok: true,
+    trueId,
+    pdfText,
+    activeFolderId,
+    subfolderName,
+    instructionText,
+    fullPromptText,
+  };
+}
 
 function getTauriInvoke() {
   if (typeof window === 'undefined') return null;
@@ -809,22 +1212,41 @@ function hasDesktopPerplexityStudio() {
     (typeof window.desktopOpenPerplexityStudio === 'function' || !!getTauriInvoke());
 }
 
-function preOpenPerplexityWebWindow() {
-  if (hasDesktopPerplexityStudio()) return null;
+function hasDesktopGeminiStudio() {
+  return typeof window !== 'undefined' &&
+    (typeof window.desktopOpenGeminiStudio === 'function' || !!getTauriInvoke());
+}
+
+function preOpenWebWindowForProvider(provider) {
+  const isGemini = provider === 'gemini';
+  if (isGemini ? hasDesktopGeminiStudio() : hasDesktopPerplexityStudio()) return null;
   if (typeof window === 'undefined' || typeof window.open !== 'function') return null;
   try {
     const win = window.open('about:blank', '_blank');
     if (win) {
-      _lastPplxWebWin = win;
+      if (isGemini) {
+        _lastGeminiWebWin = win;
+      } else {
+        _lastPplxWebWin = win;
+      }
+      const label = isGemini ? 'Gemini' : 'Perplexity';
       try {
-        win.document.title = 'Opening Perplexity Case Digest…';
-        win.document.body.innerHTML = '<div style="font-family:system-ui,-apple-system,sans-serif;padding:32px;color:#1b1f23;background:#f8f7f3;min-height:100vh;margin:0;"><h2 style="margin:0 0 8px;font-size:18px;">Preparing Perplexity Case Digest…</h2><p style="margin:0;color:#555;font-size:14px;">Extracting PDF text and subfolder instructions. This tab will redirect to Perplexity automatically.</p></div>';
+        win.document.title = `Opening ${label} Case Digest…`;
+        win.document.body.innerHTML = `<div style="font-family:system-ui,-apple-system,sans-serif;padding:32px;color:#1b1f23;background:#f8f7f3;min-height:100vh;margin:0;"><h2 style="margin:0 0 8px;font-size:18px;">Preparing ${label} Case Digest…</h2><p style="margin:0;color:#555;font-size:14px;">Extracting PDF text and subfolder instructions. This tab will redirect to ${label} automatically.</p></div>`;
       } catch {}
     }
     return win;
   } catch {
     return null;
   }
+}
+
+function preOpenPerplexityWebWindow() {
+  return preOpenWebWindowForProvider('perplexity');
+}
+
+function preOpenGeminiWebWindow() {
+  return preOpenWebWindowForProvider('gemini');
 }
 
 export async function focusOrReopenPerplexityStudio() {
@@ -893,18 +1315,104 @@ export async function focusOrReopenPerplexityStudio() {
   return false;
 }
 
+export async function focusOrReopenGeminiStudio() {
+  if (hasDesktopGeminiStudio()) {
+    try {
+      if (typeof window.desktopFocusGeminiStudio === 'function') {
+        const focused = await window.desktopFocusGeminiStudio();
+        if (focused) return true;
+      } else {
+        const tauriInvoke = getTauriInvoke();
+        if (tauriInvoke) {
+          const focused = await tauriInvoke('desktop_focus_gemini_studio');
+          if (focused) return true;
+        }
+      }
+    } catch (err) {
+      console.warn('[gemini-digest] focus desktop studio failed:', err);
+    }
+
+    if (_lastGeminiStudioPayload) {
+      try {
+        if (typeof window.desktopOpenGeminiStudio === 'function') {
+          const reopened = await window.desktopOpenGeminiStudio(_lastGeminiStudioPayload);
+          if (reopened) {
+            toast('Reopened Gemini Digest Studio');
+            return true;
+          }
+        } else {
+          const tauriInvoke = getTauriInvoke();
+          if (tauriInvoke) {
+            const reopened = await tauriInvoke('desktop_open_gemini_studio', _lastGeminiStudioPayload);
+            if (reopened) {
+              toast('Reopened Gemini Digest Studio');
+              return true;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[gemini-digest] reopen desktop studio failed:', err);
+      }
+    }
+    if (S.curPDF) {
+      await openGeminiDigestForCurrentPdf();
+      return true;
+    }
+    return false;
+  }
+
+  if (_lastGeminiWebWin && !_lastGeminiWebWin.closed) {
+    try {
+      _lastGeminiWebWin.focus();
+      return true;
+    } catch {}
+  }
+
+  const activeFolderId = getActiveSubfolderId();
+  const { subjectId } = getSubjectInfoForFolder(activeFolderId);
+  const pinnedForSubj = subjectId ? await getPinnedGeminiNotebookForSubject(subjectId) : '';
+  const targetUrl = _lastGeminiUrl || pinnedForSubj || 'https://gemini.google.com/notebooks';
+  try {
+    const win = window.open(targetUrl, '_blank');
+    if (win) {
+      _lastGeminiWebWin = win;
+      win.focus?.();
+      return true;
+    }
+  } catch {}
+  toast('Could not focus Gemini tab — please allow popups for this site.');
+  return false;
+}
+
 export function stopActivePerplexityDigest() {
   _singleDigestCancelled = true;
-  if (_batchDigestState.running) {
+  if (_batchDigestState.running && _batchDigestState.provider !== 'gemini') {
     _batchDigestState.cancelled = true;
     if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
       _batchDigestState.resolveCurrentPdf(false);
     }
   }
-  applyPerplexityStudioStatus({
+  applyDigestMonitorStatus('perplexity', {
     state: 'idle',
     stepLabel: 'Stopped',
     message: 'Case Digest stopped by user.',
+    error: '',
+    hideStripAfterMs: 2500,
+  });
+}
+
+export function stopActiveGeminiDigest() {
+  _singleDigestCancelled = true;
+  if (_batchDigestState.running && _batchDigestState.provider === 'gemini') {
+    _batchDigestState.cancelled = true;
+    if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
+      _batchDigestState.resolveCurrentPdf(false);
+    }
+  }
+  applyDigestMonitorStatus('gemini', {
+    state: 'idle',
+    stepLabel: 'Stopped',
+    message: 'Gemini Case Digest stopped by user.',
     error: '',
     hideStripAfterMs: 2500,
   });
@@ -923,13 +1431,15 @@ function renderPplxMonitorStrip() {
   const strip = document.getElementById('pplxMonitorStrip');
   if (!strip) return;
 
-  const { state, title, status, error, countLabel } = _pplxMonitorState;
+  const { provider, state, title, status, error, countLabel } = _pplxMonitorState;
+  const activeProvider = provider === 'gemini' ? 'gemini' : 'perplexity';
   const dotState = normalizeMonitorDotState(state);
   const isActive = dotState === 'extracting' || dotState === 'awaiting';
   const showStrip = isActive || dotState === 'error' || (dotState === 'done' && Boolean(status));
 
   strip.hidden = !showStrip;
   strip.dataset.state = dotState;
+  strip.dataset.provider = activeProvider;
 
   const dot = document.getElementById('pplxMonitorDot');
   if (dot) dot.dataset.state = dotState;
@@ -947,14 +1457,15 @@ function renderPplxMonitorStrip() {
 
   const stopBtn = document.getElementById('stopDigestBtn');
   if (stopBtn) {
-    stopBtn.disabled = !isActive && !_batchDigestState.running && !_isDigestingPerplexity;
+    stopBtn.disabled = !isActive && !_batchDigestState.running && !_isDigestingPerplexity && !_isDigestingGemini;
   }
 
   const focusBtn = document.getElementById('focusPplxBtn');
   if (focusBtn) {
     const labelSpan = focusBtn.querySelector('span');
     if (labelSpan) {
-      labelSpan.textContent = hasDesktopPerplexityStudio() ? 'Focus / Reopen' : 'Focus Tab';
+      const hasDesktop = activeProvider === 'gemini' ? hasDesktopGeminiStudio() : hasDesktopPerplexityStudio();
+      labelSpan.textContent = hasDesktop ? 'Focus / Reopen' : 'Focus Tab';
     }
   }
 
@@ -976,9 +1487,10 @@ function renderPplxMonitorStrip() {
 function renderFloatingMonitorBanner() {
   clearTimeout(_bannerAutoHideTimer);
   const existing = document.getElementById('la-batch-pplx-banner');
-  const { state, title, status, error, countLabel } = _pplxMonitorState;
+  const { provider, state, title, status, error, countLabel } = _pplxMonitorState;
+  const activeProvider = provider === 'gemini' ? 'gemini' : 'perplexity';
   const dotState = normalizeMonitorDotState(state);
-  const isRunning = dotState === 'extracting' || dotState === 'awaiting' || _batchDigestState.running || _isDigestingPerplexity;
+  const isRunning = dotState === 'extracting' || dotState === 'awaiting' || _batchDigestState.running || _isDigestingPerplexity || _isDigestingGemini;
   const isError = dotState === 'error';
   const showBanner = isRunning || isError || Boolean(status && state !== 'idle');
 
@@ -995,11 +1507,16 @@ function renderFloatingMonitorBanner() {
     document.body.appendChild(banner);
   }
   banner.dataset.state = dotState;
+  banner.dataset.provider = activeProvider;
   banner.style.fontFamily = 'var(--font-ui)';
 
   const badgeText = countLabel ? `${title} (${countLabel})` : title;
-  const displayMsg = isError ? (error || status || 'Perplexity Studio encountered an issue.') : (status || 'Working…');
-  const focusLabel = hasDesktopPerplexityStudio() ? 'Focus / Reopen' : 'Focus Tab';
+  const defaultErrMsg = activeProvider === 'gemini'
+    ? 'Gemini Studio encountered an issue.'
+    : 'Perplexity Studio encountered an issue.';
+  const displayMsg = isError ? (error || status || defaultErrMsg) : (status || 'Working…');
+  const hasDesktop = activeProvider === 'gemini' ? hasDesktopGeminiStudio() : hasDesktopPerplexityStudio();
+  const focusLabel = hasDesktop ? 'Focus / Reopen' : 'Focus Tab';
   const stopLabel = _batchDigestState.running ? 'Stop Batch' : (isRunning ? 'Stop' : 'Dismiss');
 
   banner.innerHTML = `
@@ -1032,7 +1549,11 @@ function renderFloatingMonitorBanner() {
     const span = focusBtn.querySelector('span');
     if (span) span.textContent = focusLabel;
     focusBtn.addEventListener('click', () => {
-      focusOrReopenPerplexityStudio();
+      if (activeProvider === 'gemini') {
+        focusOrReopenGeminiStudio();
+      } else {
+        focusOrReopenPerplexityStudio();
+      }
     });
   }
   const stopBtn = banner.querySelector('#la-batch-pplx-stop');
@@ -1041,7 +1562,11 @@ function renderFloatingMonitorBanner() {
     if (span) span.textContent = stopLabel;
     stopBtn.addEventListener('click', () => {
       if (isRunning) {
-        stopActivePerplexityDigest();
+        if (activeProvider === 'gemini') {
+          stopActiveGeminiDigest();
+        } else {
+          stopActivePerplexityDigest();
+        }
       } else {
         _pplxMonitorState = { ..._pplxMonitorState, state: 'idle', status: '', error: '' };
         renderPplxMonitorStrip();
@@ -1051,18 +1576,24 @@ function renderFloatingMonitorBanner() {
   }
 }
 
-function applyPerplexityStudioStatus(payload = {}) {
+function applyDigestMonitorStatus(provider = 'perplexity', payload = {}) {
   if (!payload || typeof payload !== 'object') return;
+  const activeProvider = provider === 'gemini' ? 'gemini' : 'perplexity';
+  const defaultTitle = activeProvider === 'gemini' ? 'Gemini Studio' : 'Perplexity Studio';
+  const defaultErr = activeProvider === 'gemini'
+    ? 'Gemini Studio requires attention.'
+    : 'Perplexity Studio requires attention.';
   const rawState = payload.state || payload.status || (payload.error ? 'error' : 'idle');
   const dotState = normalizeMonitorDotState(rawState);
   const countLabel = payload.count != null
     ? String(payload.count)
     : (payload.countLabel || _batchDigestState.countLabel || '');
-  const stageTitle = payload.stepLabel || payload.stage || payload.title || (_batchDigestState.running ? 'Batch Digest' : 'Perplexity Studio');
+  const stageTitle = payload.stepLabel || payload.stage || payload.title || (_batchDigestState.running ? 'Batch Digest' : defaultTitle);
   const msg = payload.message || payload.error || payload.detail || (dotState === 'idle' ? '' : stageTitle);
-  const errMsg = dotState === 'error' ? (payload.error || payload.message || 'Perplexity Studio requires attention.') : '';
+  const errMsg = dotState === 'error' ? (payload.error || payload.message || defaultErr) : '';
 
   _pplxMonitorState = {
+    provider: activeProvider,
     state: dotState,
     title: stageTitle,
     status: msg,
@@ -1079,7 +1610,7 @@ function applyPerplexityStudioStatus(payload = {}) {
   if (payload.hideStripAfterMs && !isNaN(payload.hideStripAfterMs)) {
     const delay = Number(payload.hideStripAfterMs);
     _bannerAutoHideTimer = setTimeout(() => {
-      if (!_batchDigestState.running && !_isDigestingPerplexity && _pplxMonitorState.state !== 'error') {
+      if (!_batchDigestState.running && !_isDigestingPerplexity && !_isDigestingGemini && _pplxMonitorState.state !== 'error') {
         _pplxMonitorState = { ..._pplxMonitorState, state: 'idle', status: '', error: '' };
         renderPplxMonitorStrip();
         renderFloatingMonitorBanner();
@@ -1088,16 +1619,21 @@ function applyPerplexityStudioStatus(payload = {}) {
   }
 }
 
+function applyPerplexityStudioStatus(payload = {}) {
+  applyDigestMonitorStatus('perplexity', payload);
+}
+
 function updateBatchDigestBanner(text = '', showStop = true, extra = {}) {
+  const activeProvider = extra.provider || _batchDigestState.provider || 'perplexity';
   if (!text) {
     if (!showStop) {
-      _pplxMonitorState = { ..._pplxMonitorState, state: 'idle', status: '', error: '', countLabel: '' };
+      _pplxMonitorState = { ..._pplxMonitorState, provider: activeProvider, state: 'idle', status: '', error: '', countLabel: '' };
       renderPplxMonitorStrip();
       renderFloatingMonitorBanner();
     }
     return;
   }
-  applyPerplexityStudioStatus({
+  applyDigestMonitorStatus(activeProvider, {
     state: extra.state || (showStop ? 'streaming' : 'done'),
     stepLabel: extra.stepLabel || 'Batch Digest',
     message: text,
@@ -1122,12 +1658,36 @@ async function ensurePdfOpenedAndLoaded(pdfItem) {
   return Boolean(S.curPDF && S.curPDF.id === pdfItem.id && S.pdfDoc);
 }
 
+function collectPdfQueueForFolders(foldersOrFolder) {
+  const folders = (Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder]).filter(Boolean);
+  if (!folders.length) return { folders: [], pdfQueue: [] };
+  const folderIds = new Set();
+  const collectFolderIds = (fid) => {
+    if (!fid || folderIds.has(fid)) return;
+    folderIds.add(fid);
+    if (Array.isArray(S.folders)) {
+      S.folders
+        .filter(sf => sf.parent_folder_id === fid)
+        .forEach(sf => collectFolderIds(sf.id));
+    }
+  };
+  folders.forEach(f => collectFolderIds(f.id));
+  const pdfQueue = Array.isArray(S.pdfs)
+    ? S.pdfs.filter(p => folderIds.has(p.folder_id))
+    : [];
+  return { folders, pdfQueue };
+}
+
 /**
  * Right-click handler for a single PDF in the Library sidebar:
  * Opens the PDF if needed and launches Perplexity Digest Studio for it.
  */
 export async function runPerplexityDigestForPdf(pdfItem) {
   if (!pdfItem) return;
+  if (_isDigestingGemini || (_batchDigestState.running && _batchDigestState.provider === 'gemini')) {
+    toast('A Gemini Case Digest is currently running. Stop it before starting Perplexity.');
+    return;
+  }
   const preOpenedWebWin = preOpenPerplexityWebWindow();
   const ready = await ensurePdfOpenedAndLoaded(pdfItem);
   if (!ready) {
@@ -1148,27 +1708,21 @@ export async function runPerplexityDigestForPdf(pdfItem) {
  */
 export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
   if (_batchDigestState.running) {
-    toast('A Batch Perplexity Digest is already running.');
+    toast(_batchDigestState.provider === 'gemini'
+      ? 'A Batch Gemini Digest is already running. Stop it first.'
+      : 'A Batch Perplexity Digest is already running.');
     return;
   }
-  const folders = (Array.isArray(foldersOrFolder) ? foldersOrFolder : [foldersOrFolder]).filter(Boolean);
+  if (_isDigestingGemini) {
+    toast('A Gemini Case Digest is currently running. Stop it first.');
+    return;
+  }
+  if (_isDigestingPerplexity) {
+    toast('A Perplexity Case Digest is already in progress.');
+    return;
+  }
+  const { folders, pdfQueue } = collectPdfQueueForFolders(foldersOrFolder);
   if (!folders.length) return;
-
-  const folderIds = new Set();
-  const collectFolderIds = (fid) => {
-    if (!fid || folderIds.has(fid)) return;
-    folderIds.add(fid);
-    if (Array.isArray(S.folders)) {
-      S.folders
-        .filter(sf => sf.parent_folder_id === fid)
-        .forEach(sf => collectFolderIds(sf.id));
-    }
-  };
-  folders.forEach(f => collectFolderIds(f.id));
-
-  const pdfQueue = Array.isArray(S.pdfs)
-    ? S.pdfs.filter(p => folderIds.has(p.folder_id))
-    : [];
 
   if (!pdfQueue.length) {
     toast('No PDFs found inside this folder/subfolder to digest.');
@@ -1178,6 +1732,7 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
   const sharedWebWin = preOpenPerplexityWebWindow();
   _batchDigestState.running = true;
   _batchDigestState.cancelled = false;
+  _batchDigestState.provider = 'perplexity';
   _batchDigestState.currentPdfId = null;
   _batchDigestState.resolveCurrentPdf = null;
   _batchDigestState.countLabel = `0 / ${pdfQueue.length}`;
@@ -1194,7 +1749,7 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
       const stepLabel = `${i + 1} / ${pdfQueue.length}`;
       _batchDigestState.countLabel = stepLabel;
 
-      updateBatchDigestBanner(`Loading "${pdfItem.name}"…`, true, { state: 'extracting', countLabel: stepLabel });
+      updateBatchDigestBanner(`Loading "${pdfItem.name}"…`, true, { provider: 'perplexity', state: 'extracting', countLabel: stepLabel });
       const loaded = await ensurePdfOpenedAndLoaded(pdfItem);
       if (!loaded || _batchDigestState.cancelled) {
         toast(`Skipping "${pdfItem.name}" (could not load PDF).`);
@@ -1219,7 +1774,7 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
         };
       });
 
-      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Perplexity "Law"…`, true, { state: 'extracting', countLabel: stepLabel });
+      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Perplexity "Law"…`, true, { provider: 'perplexity', state: 'extracting', countLabel: stepLabel });
       await openPerplexityDigestForCurrentPdf({
         forceAutoSubmit: true,
         forceAutoSend: true,
@@ -1230,7 +1785,7 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
 
       if (_batchDigestState.cancelled) break;
 
-      updateBatchDigestBanner(`Waiting for Perplexity to finish "${pdfItem.name}"…`, true, { state: 'awaiting', countLabel: stepLabel });
+      updateBatchDigestBanner(`Waiting for Perplexity to finish "${pdfItem.name}"…`, true, { provider: 'perplexity', state: 'awaiting', countLabel: stepLabel });
       const savedOk = await digestSavedPromise;
       if (_batchDigestState.cancelled) break;
 
@@ -1245,7 +1800,7 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
           updateBatchDigestBanner(
             `Saved "${pdfItem.name}"! Starting next case (${i + 2}/${pdfQueue.length}) in ${cd}s…`,
             true,
-            { state: 'awaiting', countLabel: stepLabel }
+            { provider: 'perplexity', state: 'awaiting', countLabel: stepLabel }
           );
           await new Promise(r => setTimeout(r, 1000));
         }
@@ -1256,7 +1811,7 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
       updateBatchDigestBanner(
         `Batch Complete! Saved Case Digests for ${completedCount} of ${pdfQueue.length} PDFs.`,
         false,
-        { state: 'done', countLabel: `${completedCount} / ${pdfQueue.length}`, hideStripAfterMs: 5000 }
+        { provider: 'perplexity', state: 'done', countLabel: `${completedCount} / ${pdfQueue.length}`, hideStripAfterMs: 5000 }
       );
       toast(`Batch Perplexity Digest complete! (${completedCount}/${pdfQueue.length} cases digested)`);
     }
@@ -1277,6 +1832,13 @@ export async function runBatchPerplexityDigestForFolders(foldersOrFolder) {
  */
 export async function openPerplexityDigestForCurrentPdf(opts = {}) {
   if (_isDigestingPerplexity) return;
+  if (_isDigestingGemini || (_batchDigestState.running && _batchDigestState.provider === 'gemini')) {
+    if (opts.preOpenedWebWin && !opts.preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
+      try { opts.preOpenedWebWin.close(); } catch {}
+    }
+    toast('A Gemini Case Digest is currently running. Stop it before starting Perplexity.');
+    return;
+  }
   if (!S.pdfDoc || !S.totalPages || S.totalPages <= 0 || !S.curPDF) {
     if (opts.preOpenedWebWin && !opts.preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
       try { opts.preOpenedWebWin.close(); } catch {}
@@ -1304,8 +1866,6 @@ export async function openPerplexityDigestForCurrentPdf(opts = {}) {
   const doc = S.pdfDoc;
   const pdfObj = S.curPDF;
   const trueId = pdfObj.linked_pdf_id || pdfObj.id;
-  const pageTexts = new Array(total);
-  const BATCH_SIZE = 10;
   const countLabel = opts.countLabel || _batchDigestState.countLabel || '';
 
   applyPerplexityStudioStatus({
@@ -1320,52 +1880,14 @@ export async function openPerplexityDigestForCurrentPdf(opts = {}) {
   try {
     toast(`Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Perplexity "Law" Project…`);
 
-    for (let i = 1; i <= total; i += BATCH_SIZE) {
-      if (_singleDigestCancelled || _batchDigestState.cancelled) {
-        throw new Error('Cancelled by user');
-      }
-      if (doc !== S.pdfDoc) throw new Error('PDF changed during extraction');
-      const batchPromises = [];
-      for (let p = i; p < i + BATCH_SIZE && p <= total; p++) {
-        const pageNum = p;
-        batchPromises.push((async () => {
-          try {
-            const page = await doc.getPage(pageNum);
-            const tc = await page.getTextContent();
-            const viewport = page.getViewport({ scale: 1.0 });
-            let pageText = '';
-            if (tc && tc.items && tc.items.length > 0) {
-              pageText = formatPageTextContent(tc, viewport, pageNum);
-            }
-            if (!pageText || !pageText.trim()) {
-              if (trueId) {
-                try {
-                  const ocrMod = await import('./ocr.js').catch(() => null);
-                  if (ocrMod && typeof ocrMod.getOcrPageText === 'function') {
-                    const ocrText = await ocrMod.getOcrPageText(trueId, pageNum);
-                    if (ocrText && ocrText.trim()) {
-                      pageText = stripPageNumbersAndFooters(ocrText, pageNum);
-                    }
-                  }
-                } catch {}
-              }
-            }
-            pageTexts[pageNum - 1] = pageText ? pageText.trim() : '';
-          } catch {
-            pageTexts[pageNum - 1] = '';
-          }
-        })());
-      }
-      await Promise.all(batchPromises);
-      if (i + BATCH_SIZE <= total) await new Promise(r => setTimeout(r, 0));
-    }
+    const extracted = await extractPdfDigestPromptPayload({
+      doc,
+      total,
+      pdfObj,
+      isCancelled: () => _singleDigestCancelled || _batchDigestState.cancelled,
+    });
 
-    if (_singleDigestCancelled || _batchDigestState.cancelled) {
-      throw new Error('Cancelled by user');
-    }
-
-    const validPages = pageTexts.filter(t => t && t.trim().length > 0);
-    if (!validPages.length) {
+    if (!extracted.ok) {
       if (preOpenedWebWin && !preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
         try { preOpenedWebWin.close(); } catch {}
       }
@@ -1383,14 +1905,7 @@ export async function openPerplexityDigestForCurrentPdf(opts = {}) {
       return;
     }
 
-    let pdfText = validPages.join('\n\n').trim();
-    pdfText = stripPageNumbersAndFooters(pdfText);
-
-    const activeFolderId = getActiveSubfolderId();
-    const subfolderName = activeFolderId ? getFolderBreadcrumb(activeFolderId) : '';
-    const instructionText = buildFullCopyInstruction(activeFolderId);
-    const fullPromptText = `${instructionText}\n\n${pdfText}`;
-
+    const { pdfText, subfolderName, instructionText, fullPromptText } = extracted;
     await copyToClipboard(fullPromptText);
 
     let pinnedProjectUrl = safeStorageGet('pplx_pinned_project_url', '') || '';
@@ -1528,6 +2043,369 @@ export async function openPerplexityDigestForCurrentPdf(opts = {}) {
   }
 }
 
+/**
+ * Right-click handler for a single PDF in the Library sidebar:
+ * Opens the PDF if needed and launches Gemini Digest Studio for it.
+ */
+export async function runGeminiDigestForPdf(pdfItem) {
+  if (!pdfItem) return;
+  if (_isDigestingPerplexity || (_batchDigestState.running && _batchDigestState.provider !== 'gemini')) {
+    toast('A Perplexity Case Digest is currently running. Stop it before starting Gemini.');
+    return;
+  }
+  const preOpenedWebWin = preOpenGeminiWebWindow();
+  const ready = await ensurePdfOpenedAndLoaded(pdfItem);
+  if (!ready) {
+    if (preOpenedWebWin && !preOpenedWebWin.closed) {
+      try { preOpenedWebWin.close(); } catch {}
+    }
+    toast(`Could not load "${pdfItem.name}" for Gemini Digest.`);
+    return;
+  }
+  await openGeminiDigestForCurrentPdf({ preOpenedWebWin });
+}
+
+/**
+ * Right-click handler for a Folder/Subfolder in the Library sidebar:
+ * Automatically processes every PDF in the folder one-by-one in the Subject's
+ * Gemini Notebook, waits for each digest to finish and save into Case Digest,
+ * and moves to the next PDF automatically.
+ */
+export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
+  if (_batchDigestState.running) {
+    toast(_batchDigestState.provider === 'gemini'
+      ? 'A Batch Gemini Digest is already running.'
+      : 'A Batch Perplexity Digest is already running. Stop it first.');
+    return;
+  }
+  if (_isDigestingPerplexity) {
+    toast('A Perplexity Case Digest is currently running. Stop it first.');
+    return;
+  }
+  if (_isDigestingGemini) {
+    toast('A Gemini Case Digest is already in progress.');
+    return;
+  }
+  const { folders, pdfQueue } = collectPdfQueueForFolders(foldersOrFolder);
+  if (!folders.length) return;
+
+  if (!pdfQueue.length) {
+    toast('No PDFs found inside this folder/subfolder to digest.');
+    return;
+  }
+
+  const sharedWebWin = preOpenGeminiWebWindow();
+  _batchDigestState.running = true;
+  _batchDigestState.cancelled = false;
+  _batchDigestState.provider = 'gemini';
+  _batchDigestState.currentPdfId = null;
+  _batchDigestState.resolveCurrentPdf = null;
+  _batchDigestState.countLabel = `0 / ${pdfQueue.length}`;
+
+  let completedCount = 0;
+  const folderTitle = folders.map(f => f.name).join(', ');
+  toast(`Starting Batch Gemini Digest for ${pdfQueue.length} PDF${pdfQueue.length === 1 ? '' : 's'} in "${folderTitle}"…`);
+
+  try {
+    for (let i = 0; i < pdfQueue.length; i++) {
+      if (_batchDigestState.cancelled) break;
+      const pdfItem = pdfQueue[i];
+      const trueId = String(pdfItem.linked_pdf_id || pdfItem.id || '');
+      const stepLabel = `${i + 1} / ${pdfQueue.length}`;
+      _batchDigestState.countLabel = stepLabel;
+
+      updateBatchDigestBanner(`Loading "${pdfItem.name}"…`, true, { provider: 'gemini', state: 'extracting', countLabel: stepLabel });
+      const loaded = await ensurePdfOpenedAndLoaded(pdfItem);
+      if (!loaded || _batchDigestState.cancelled) {
+        toast(`Skipping "${pdfItem.name}" (could not load PDF).`);
+        continue;
+      }
+
+      const digestSavedPromise = new Promise((resolve) => {
+        _batchDigestState.currentPdfId = trueId;
+        const timeoutId = setTimeout(() => {
+          if (_batchDigestState.resolveCurrentPdf) {
+            _batchDigestState.resolveCurrentPdf = null;
+          }
+          resolve(false);
+        }, 6 * 60 * 1000);
+
+        _batchDigestState.resolveCurrentPdf = (ok) => {
+          clearTimeout(timeoutId);
+          _batchDigestState.resolveCurrentPdf = null;
+          _batchDigestState.currentPdfId = null;
+          resolve(Boolean(ok));
+        };
+      });
+
+      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Gemini Notebook…`, true, { provider: 'gemini', state: 'extracting', countLabel: stepLabel });
+      await openGeminiDigestForCurrentPdf({
+        forceAutoSubmit: true,
+        forceAutoSend: true,
+        preOpenedWebWin: sharedWebWin && !sharedWebWin.closed ? sharedWebWin : undefined,
+        keepWebWinOnEmpty: true,
+        countLabel: stepLabel,
+      });
+
+      if (_batchDigestState.cancelled) break;
+
+      updateBatchDigestBanner(`Waiting for Gemini to finish "${pdfItem.name}"…`, true, { provider: 'gemini', state: 'awaiting', countLabel: stepLabel });
+      const savedOk = await digestSavedPromise;
+      if (_batchDigestState.cancelled) break;
+
+      if (savedOk) {
+        completedCount++;
+      }
+
+      if (i + 1 < pdfQueue.length && !_batchDigestState.cancelled) {
+        for (let cd = 5; cd >= 1; cd--) {
+          if (_batchDigestState.cancelled) break;
+          updateBatchDigestBanner(
+            `Saved "${pdfItem.name}"! Starting next case (${i + 2}/${pdfQueue.length}) in ${cd}s…`,
+            true,
+            { provider: 'gemini', state: 'awaiting', countLabel: stepLabel }
+          );
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+    }
+
+    if (!_batchDigestState.cancelled) {
+      updateBatchDigestBanner(
+        `Batch Complete! Saved Gemini Case Digests for ${completedCount} of ${pdfQueue.length} PDFs.`,
+        false,
+        { provider: 'gemini', state: 'done', countLabel: `${completedCount} / ${pdfQueue.length}`, hideStripAfterMs: 5000 }
+      );
+      toast(`Batch Gemini Digest complete! (${completedCount}/${pdfQueue.length} cases digested)`);
+    }
+  } finally {
+    if (sharedWebWin && !sharedWebWin.closed && completedCount === 0 && _batchDigestState.cancelled) {
+      try { sharedWebWin.close(); } catch {}
+    }
+    _batchDigestState.running = false;
+    _batchDigestState.currentPdfId = null;
+    _batchDigestState.resolveCurrentPdf = null;
+    _batchDigestState.countLabel = '';
+  }
+}
+
+/**
+ * Extracts entire PDF text + Subfolder Instruction, copies to clipboard, resolves
+ * the Subject's pinned Gemini Notebook URL, and opens the Gemini Digest Studio
+ * window (or falls back to opening Gemini in the browser).
+ */
+export async function openGeminiDigestForCurrentPdf(opts = {}) {
+  if (_isDigestingGemini) return;
+  if (_isDigestingPerplexity || (_batchDigestState.running && _batchDigestState.provider !== 'gemini')) {
+    if (opts.preOpenedWebWin && !opts.preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
+      try { opts.preOpenedWebWin.close(); } catch {}
+    }
+    toast('A Perplexity Case Digest is currently running. Stop it before starting Gemini.');
+    return;
+  }
+  if (!S.pdfDoc || !S.totalPages || S.totalPages <= 0 || !S.curPDF) {
+    if (opts.preOpenedWebWin && !opts.preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
+      try { opts.preOpenedWebWin.close(); } catch {}
+    }
+    toast('Open a PDF first to generate a Case Digest in Gemini.');
+    return;
+  }
+
+  const tauriInvoke = getTauriInvoke();
+  const hasDesktopStudio = hasDesktopGeminiStudio();
+  let preOpenedWebWin = (opts.preOpenedWebWin && !opts.preOpenedWebWin.closed)
+    ? opts.preOpenedWebWin
+    : preOpenGeminiWebWindow();
+
+  const btn = document.getElementById('btn-gemini-digest');
+  const origHtml = btn ? btn.innerHTML : '';
+  _isDigestingGemini = true;
+  _singleDigestCancelled = false;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span>Preparing…</span>';
+  }
+
+  const total = S.totalPages;
+  const doc = S.pdfDoc;
+  const pdfObj = S.curPDF;
+  const trueId = pdfObj.linked_pdf_id || pdfObj.id;
+  const countLabel = opts.countLabel || _batchDigestState.countLabel || '';
+
+  applyDigestMonitorStatus('gemini', {
+    state: 'extracting',
+    stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Gemini Studio',
+    message: `Extracting ${total} page${total === 1 ? '' : 's'} of "${pdfObj.name || 'Case'}"…`,
+    countLabel,
+    pdfId: String(trueId || ''),
+    pdfName: String(pdfObj.name || ''),
+  });
+
+  try {
+    toast(`Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Gemini Notebook…`);
+
+    const extracted = await extractPdfDigestPromptPayload({
+      doc,
+      total,
+      pdfObj,
+      isCancelled: () => _singleDigestCancelled || _batchDigestState.cancelled,
+    });
+
+    if (!extracted.ok) {
+      if (preOpenedWebWin && !preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
+        try { preOpenedWebWin.close(); } catch {}
+      }
+      applyDigestMonitorStatus('gemini', {
+        state: 'error',
+        stepLabel: 'No Text Found',
+        message: 'No selectable text found in this PDF (run Scan OCR first).',
+        error: 'No selectable text found in this PDF (run Scan OCR first).',
+        countLabel,
+        pdfId: String(trueId || ''),
+        pdfName: String(pdfObj.name || ''),
+        canRetry: true,
+      });
+      toast('No selectable text found in this PDF (run Scan OCR first).');
+      return;
+    }
+
+    const { pdfText, activeFolderId, subfolderName, instructionText, fullPromptText } = extracted;
+    await copyToClipboard(fullPromptText);
+
+    const { subjectId, subjectName } = getSubjectInfoForFolder(activeFolderId);
+    const pinnedNotebookUrl = subjectId ? await getPinnedGeminiNotebookForSubject(subjectId) : '';
+    const { modelLabel, thinkingLevel } = await resolveGeminiModelPrefs();
+
+    const autoSubmitPref = opts?.forceAutoSubmit
+      ? true
+      : safeStorageGet('gemini_auto_submit', 'true') !== 'false';
+    const digestModePref = safeStorageGet('gemini_digest_mode', 'append') === 'replace' ? 'replace' : 'append';
+    const autoSendPref = opts?.forceAutoSend
+      ? true
+      : safeStorageGet('gemini_auto_send', 'true') !== 'false';
+
+    const studioPayload = {
+      pdfId: String(trueId || ''),
+      pdfName: String(pdfObj.name || 'Case.pdf'),
+      subjectId: String(subjectId || ''),
+      subjectName: String(subjectName || ''),
+      subfolderName: subfolderName ? String(subfolderName) : '',
+      instructionText: instructionText ? String(instructionText) : '',
+      pdfText: String(pdfText || ''),
+      fullPromptText: String(fullPromptText || ''),
+      pinnedNotebookUrl: pinnedNotebookUrl ? String(pinnedNotebookUrl) : null,
+      modelLabel: String(modelLabel || '4 Hydrogen'),
+      thinkingLevel: String(thinkingLevel || 'High'),
+      autoSubmit: Boolean(autoSubmitPref),
+      digestMode: String(digestModePref),
+      autoSendDigest: Boolean(autoSendPref),
+    };
+    _lastGeminiStudioPayload = studioPayload;
+    _lastGeminiUrl = pinnedNotebookUrl || 'https://gemini.google.com/notebooks';
+
+    if (typeof window.desktopOpenGeminiStudio === 'function') {
+      const opened = await window.desktopOpenGeminiStudio(studioPayload);
+      if (opened) {
+        applyDigestMonitorStatus('gemini', {
+          state: 'streaming',
+          stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Gemini Studio',
+          message: `Digesting "${pdfObj.name || 'Case'}" in Gemini Studio…`,
+          countLabel,
+          pdfId: String(trueId || ''),
+          pdfName: String(pdfObj.name || ''),
+        });
+        toast(subjectName ? `Opened Gemini Digest Studio (${subjectName})!` : 'Opened Gemini Digest Studio!');
+        return;
+      }
+    } else if (tauriInvoke) {
+      try {
+        const opened = await tauriInvoke('desktop_open_gemini_studio', studioPayload);
+        if (opened) {
+          applyDigestMonitorStatus('gemini', {
+            state: 'streaming',
+            stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Gemini Studio',
+            message: `Digesting "${pdfObj.name || 'Case'}" in Gemini Studio…`,
+            countLabel,
+            pdfId: String(trueId || ''),
+            pdfName: String(pdfObj.name || ''),
+          });
+          toast(subjectName ? `Opened Gemini Digest Studio (${subjectName})!` : 'Opened Gemini Digest Studio!');
+          return;
+        }
+      } catch (ipcErr) {
+        console.warn('[gemini-digest] direct Tauri invoke failed:', ipcErr);
+      }
+    }
+
+    // Web / external browser fallback
+    const fallbackUrl = _lastGeminiUrl;
+    if (preOpenedWebWin && !preOpenedWebWin.closed) {
+      preOpenedWebWin.location.href = fallbackUrl;
+      preOpenedWebWin.focus?.();
+      _lastGeminiWebWin = preOpenedWebWin;
+    } else if (typeof window.desktopOpenUrl === 'function') {
+      await window.desktopOpenUrl(fallbackUrl);
+    } else if (tauriInvoke) {
+      await tauriInvoke('desktop_open_url', { url: fallbackUrl }).catch(() => {});
+    } else if (!hasDesktopStudio) {
+      const w = window.open(fallbackUrl, '_blank');
+      if (w) {
+        _lastGeminiWebWin = w;
+        w.focus?.();
+      } else {
+        applyDigestMonitorStatus('gemini', {
+          state: 'error',
+          stepLabel: 'Popup Blocked',
+          message: 'Browser blocked the Gemini tab. Click Focus Tab to open it.',
+          error: 'Browser blocked the Gemini tab. Click Focus Tab to open it.',
+          countLabel,
+          pdfId: String(trueId || ''),
+          pdfName: String(pdfObj.name || ''),
+          canRetry: false,
+        });
+      }
+    }
+    if (_pplxMonitorState.state !== 'error') {
+      applyDigestMonitorStatus('gemini', {
+        state: 'awaiting',
+        stepLabel: 'Gemini Tab',
+        message: 'Opened Gemini tab — Paste (Ctrl+V) & copy reply back to Case Digest',
+        countLabel,
+        pdfId: String(trueId || ''),
+        pdfName: String(pdfObj.name || ''),
+      });
+    }
+    toast(pinnedNotebookUrl
+      ? `Copied case + instructions! Paste (Ctrl+V) in your ${subjectName || 'Subject'} Gemini Notebook.`
+      : 'Copied case + instructions! Open your Subject Notebook in Gemini and paste (Ctrl+V).');
+  } catch (err) {
+    if (preOpenedWebWin && !preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
+      try { preOpenedWebWin.close(); } catch {}
+    }
+    if (_singleDigestCancelled || _batchDigestState.cancelled || err?.message === 'Cancelled by user') {
+      return;
+    }
+    console.error('[gemini-digest] Error:', err);
+    applyDigestMonitorStatus('gemini', {
+      state: 'error',
+      stepLabel: 'Digest Error',
+      message: `Could not start Gemini Digest: ${err.message || err}`,
+      error: `Could not start Gemini Digest: ${err.message || err}`,
+      countLabel,
+      pdfId: String(trueId || ''),
+      pdfName: String(pdfObj.name || ''),
+      canRetry: true,
+    });
+    toast(`Could not start Gemini Digest: ${err.message || err}`);
+  } finally {
+    _isDigestingGemini = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  }
+}
+
 let _smartCopyInitialized = false;
 
 /**
@@ -1535,6 +2413,7 @@ let _smartCopyInitialized = false;
  * 1. Adds "📋 Copy Text" (#sel-copy) button to #sel-menu
  * 2. Intercepts Ctrl+C copy events on .txt-layer to format text automatically
  * 3. Wires #btn-copy-pdf-text to copyEntirePdfTextSmart
+ * 4. Wires #btn-perplexity-digest, #btn-gemini-digest, monitor strip & Gemini Settings
  */
 export function initSmartCopy() {
   if (_smartCopyInitialized) return;
@@ -1690,21 +2569,52 @@ export function initSmartCopy() {
     });
   }
 
+  const btnGemini = document.getElementById('btn-gemini-digest');
+  if (btnGemini) {
+    btnGemini.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openGeminiDigestForCurrentPdf();
+    });
+  }
+
+  const btnSaveGeminiSettings = document.getElementById('settings-btn-save-gemini-digest');
+  if (btnSaveGeminiSettings) {
+    btnSaveGeminiSettings.addEventListener('click', (e) => {
+      e.stopPropagation();
+      saveGeminiDigestSettingsFromCard();
+    });
+  }
+
   document.getElementById('focusPplxBtn')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    focusOrReopenPerplexityStudio();
+    if (_pplxMonitorState.provider === 'gemini') {
+      focusOrReopenGeminiStudio();
+    } else {
+      focusOrReopenPerplexityStudio();
+    }
   });
   document.getElementById('pplxMonitorAlertBtn')?.addEventListener('click', (e) => {
     e.stopPropagation();
+    const isGemini = _pplxMonitorState.provider === 'gemini';
     if (_pplxMonitorState.canRetry && S.curPDF) {
-      openPerplexityDigestForCurrentPdf();
+      if (isGemini) {
+        openGeminiDigestForCurrentPdf();
+      } else {
+        openPerplexityDigestForCurrentPdf();
+      }
+    } else if (isGemini) {
+      focusOrReopenGeminiStudio();
     } else {
       focusOrReopenPerplexityStudio();
     }
   });
   document.getElementById('stopDigestBtn')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    stopActivePerplexityDigest();
+    if (_pplxMonitorState.provider === 'gemini') {
+      stopActiveGeminiDigest();
+    } else {
+      stopActivePerplexityDigest();
+    }
   });
 }
 
@@ -1716,6 +2626,18 @@ if (typeof window !== 'undefined') {
   window.runBatchPerplexityDigestForFolders = runBatchPerplexityDigestForFolders;
   window.focusOrReopenPerplexityStudio = focusOrReopenPerplexityStudio;
   window.stopActivePerplexityDigest = stopActivePerplexityDigest;
+  window.openGeminiDigestForCurrentPdf = openGeminiDigestForCurrentPdf;
+  window.runGeminiDigestForPdf = runGeminiDigestForPdf;
+  window.runBatchGeminiDigestForFolders = runBatchGeminiDigestForFolders;
+  window.focusOrReopenGeminiStudio = focusOrReopenGeminiStudio;
+  window.stopActiveGeminiDigest = stopActiveGeminiDigest;
+  window.getSubjectInfoForFolder = getSubjectInfoForFolder;
+  window.normalizeGeminiNotebookUrl = normalizeGeminiNotebookUrl;
+  window.getPinnedGeminiNotebookForSubject = getPinnedGeminiNotebookForSubject;
+  window.setPinnedGeminiNotebookForSubject = setPinnedGeminiNotebookForSubject;
+  window.getGeminiModelPrefs = getGeminiModelPrefs;
+  window.saveGeminiModelPrefs = saveGeminiModelPrefs;
+  window.refreshGeminiDigestSettingsCard = refreshGeminiDigestSettingsCard;
   window.stripPageNumbersAndFooters = stripPageNumbersAndFooters;
   window.formatPageTextContent = formatPageTextContent;
   window.initSmartCopy = initSmartCopy;
@@ -1756,6 +2678,95 @@ if (typeof window !== 'undefined') {
       applyPerplexityStudioStatus({
         state: 'done',
         stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Perplexity Studio',
+        message: 'Saved into Case Digest',
+        pdfId: msg.pdfId || '',
+        hideStripAfterMs: _batchDigestState.running ? undefined : 4000,
+      });
+    }
+    if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
+      if (!_batchDigestState.currentPdfId || !msg.pdfId || String(msg.pdfId) === String(_batchDigestState.currentPdfId)) {
+        _batchDigestState.resolveCurrentPdf(ok);
+      }
+    }
+  };
+
+  window.__onGeminiStudioStatus = (payload) => {
+    applyDigestMonitorStatus('gemini', payload);
+  };
+
+  window.__onGeminiPrefsUpdated = (prefs) => {
+    if (!prefs || typeof prefs !== 'object') return;
+    let notebooksUpdated = false;
+    const map = readLocalGeminiNotebooksMap();
+
+    if (prefs.subjectNotebooks && typeof prefs.subjectNotebooks === 'object' && !Array.isArray(prefs.subjectNotebooks)) {
+      for (const [sid, url] of Object.entries(prefs.subjectNotebooks)) {
+        if (!sid) continue;
+        const norm = normalizeGeminiNotebookUrl(url);
+        if (norm) {
+          map[String(sid)] = norm;
+        } else {
+          delete map[String(sid)];
+        }
+      }
+      notebooksUpdated = true;
+    }
+
+    if (prefs.subjectId && typeof prefs.pinnedNotebookUrl === 'string') {
+      const sid = String(prefs.subjectId);
+      const norm = normalizeGeminiNotebookUrl(prefs.pinnedNotebookUrl);
+      if (norm) {
+        map[sid] = norm;
+      } else {
+        delete map[sid];
+      }
+      notebooksUpdated = true;
+    }
+
+    if (notebooksUpdated) {
+      const cleanMap = writeLocalGeminiNotebooksMap(map);
+      dbSetSetting('gemini_subject_notebooks', JSON.stringify(cleanMap)).catch(() => {});
+    }
+
+    if (typeof prefs.modelLabel === 'string' && prefs.modelLabel.trim()) {
+      const cleanModel = prefs.modelLabel.trim();
+      safeStorageSet('gemini_model_label', cleanModel);
+      dbSetSetting('gemini_model_label', cleanModel).catch(() => {});
+    }
+    if (typeof prefs.thinkingLevel === 'string' && prefs.thinkingLevel.trim()) {
+      const cleanThinking = prefs.thinkingLevel.trim();
+      safeStorageSet('gemini_thinking_level', cleanThinking);
+      dbSetSetting('gemini_thinking_level', cleanThinking).catch(() => {});
+    }
+    if (typeof prefs.autoSubmit === 'boolean') {
+      safeStorageSet('gemini_auto_submit', prefs.autoSubmit ? 'true' : 'false');
+    }
+    if (prefs.digestMode === 'replace' || prefs.digestMode === 'append') {
+      safeStorageSet('gemini_digest_mode', prefs.digestMode);
+    }
+    if (typeof prefs.autoSendDigest === 'boolean') {
+      safeStorageSet('gemini_auto_send', prefs.autoSendDigest ? 'true' : 'false');
+    }
+
+    if (document.getElementById('mo-settings')?.classList.contains('open')) {
+      refreshGeminiDigestSettingsCard().catch(() => {});
+    }
+  };
+
+  window.__onGeminiDigestReceived = async (msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    const { importDigestIntoCaseDigestTab } = await import('./notepad.js');
+    const ok = await importDigestIntoCaseDigestTab(
+      msg.pdfId || '',
+      msg.html || '',
+      msg.text || '',
+      msg.digestMode === 'replace' ? 'replace' : 'append',
+      'Gemini'
+    );
+    if (ok) {
+      applyDigestMonitorStatus('gemini', {
+        state: 'done',
+        stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Gemini Studio',
         message: 'Saved into Case Digest',
         pdfId: msg.pdfId || '',
         hideStripAfterMs: _batchDigestState.running ? undefined : 4000,
