@@ -910,14 +910,18 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   }
 
   function getFloatingMenuItems(triggerEl) {
-    var nodes = Array.from(document.querySelectorAll(
-      '.cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane [role="menuitemradio"], .cdk-overlay-pane [role="option"], .cdk-overlay-pane button, .cdk-overlay-pane .mat-mdc-menu-item, [role="menu"] [role="menuitem"], [role="menu"] [role="menuitemradio"], [role="menu"] button, [role="listbox"] [role="option"]'
-    ));
-    return nodes.filter(function(el) {
+    var rawNodes = Array.from(document.querySelectorAll(
+      '.cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane [role="menuitemradio"], .cdk-overlay-pane [role="menuitemcheckbox"], .cdk-overlay-pane [role="option"], .cdk-overlay-pane [role="radio"], .cdk-overlay-pane button, .cdk-overlay-pane .mat-mdc-menu-item, .cdk-overlay-pane .mdc-list-item, .cdk-overlay-pane [mat-menu-item], .cdk-overlay-pane [tabindex]:not([tabindex="-1"]), [role="menu"] [role="menuitem"], [role="menu"] [role="menuitemradio"], [role="menu"] button, [role="listbox"] [role="option"]'
+    )).filter(function(el) {
       if (!el.isConnected || el === triggerEl || (triggerEl && triggerEl.contains(el))) return false;
       if (el.closest('#la-gemini-studio-bar') || el.closest('#la-gemini-model-popover') || el.closest('nav, aside')) return false;
       var r = el.getBoundingClientRect();
-      return r.width >= 40 && r.height >= 16 && r.top >= 44;
+      return r.width >= 40 && r.height >= 16 && r.top >= 44 && r.bottom <= window.innerHeight + 8;
+    });
+    return rawNodes.filter(function(el) {
+      return !rawNodes.some(function(other) {
+        return other !== el && el.contains(other);
+      });
     });
   }
 
@@ -958,46 +962,104 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   function findThinkingLevelRow(triggerEl, targetLevel) {
     var lvl = (targetLevel || '').trim().toLowerCase();
     if (!lvl || lvl === 'none') return null;
+
+    function pickBest(candidates) {
+      var found = null;
+      var foundScore = 0;
+      candidates.forEach(function(el) {
+        var txt = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+        if (!txt || txt.length > 80) return;
+        if (/\bthinking\s*level\b/i.test(txt)) return;
+        var ltxt = txt.toLowerCase();
+        var score = 0;
+        if (ltxt === lvl) score = 500;
+        else if (new RegExp('^' + lvl + '\\b', 'i').test(ltxt)) score = 400;
+        else if (new RegExp('\\b' + lvl + '\\b', 'i').test(ltxt)) score = 250;
+        if (score > foundScore) {
+          foundScore = score;
+          found = el;
+        }
+      });
+      return found;
+    }
+
     var items = getFloatingMenuItems(triggerEl);
-    var best = null;
-    var bestScore = 0;
-    items.forEach(function(el) {
-      var txt = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
-      if (!txt || txt.length > 80) return;
-      if (/\bthinking\s*level\b/i.test(txt)) return;
-      var ltxt = txt.toLowerCase();
-      var score = 0;
-      if (ltxt === lvl) score = 500;
-      else if (new RegExp('^' + lvl + '\\b', 'i').test(ltxt)) score = 400;
-      else if (new RegExp('\\b' + lvl + '\\b', 'i').test(ltxt)) score = 250;
-      if (score > bestScore) {
-        bestScore = score;
-        best = el;
-      }
+    var match = pickBest(items);
+    if (match) return match;
+
+    var fallbackNodes = Array.from(document.querySelectorAll('.cdk-overlay-pane div, .cdk-overlay-pane li, .cdk-overlay-pane span, .cdk-overlay-pane label')).filter(function(el) {
+      if (!el.isConnected || el.closest('#la-gemini-studio-bar') || el.closest('#la-gemini-model-popover')) return false;
+      var r = el.getBoundingClientRect();
+      return r.width >= 40 && r.height >= 16 && r.height <= 90 && r.top >= 44 && r.bottom <= window.innerHeight + 8;
     });
-    return best;
+    return pickBest(fallbackNodes);
   }
 
-  function clickElementWithNativeFallback(el, labelText) {
-    if (!el || !el.isConnected) return;
+  function getElementScreenCenter(el) {
     try { el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
     var r = el.getBoundingClientRect();
-    var cx = Math.round(r.left + Math.min(r.width / 2, 90));
-    var cy = Math.round(r.top + r.height / 2);
-    showClickCursorAt(cx, cy, labelText);
-    realPointerClick(el);
+    return {
+      cx: Math.round(r.left + r.width / 2),
+      cy: Math.round(r.top + r.height / 2)
+    };
+  }
+
+  function nativeOsClickElement(el, labelText) {
+    if (!el || !el.isConnected) return false;
+    var pos = getElementScreenCenter(el);
+    showClickCursorAt(pos.cx, pos.cy, labelText);
     sendBridgeMsg({
       action: 'native_click',
-      x: cx,
-      y: cy,
+      x: pos.cx,
+      y: pos.cy,
       dpr: window.devicePixelRatio || 1
     });
+    return true;
+  }
+
+  function nativeOsHoverElement(el, labelText) {
+    if (!el || !el.isConnected) return false;
+    var pos = getElementScreenCenter(el);
+    showClickCursorAt(pos.cx, pos.cy, labelText);
+    try {
+      el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: pos.cx, clientY: pos.cy }));
+      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: pos.cx, clientY: pos.cy }));
+      el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: pos.cx, clientY: pos.cy }));
+    } catch (e) {}
+    sendBridgeMsg({
+      action: 'native_hover',
+      x: pos.cx,
+      y: pos.cy,
+      dpr: window.devicePixelRatio || 1
+    });
+    return true;
   }
 
   function ensureGeminiModelSelected(inputEl, callback, forceOpenMenu) {
     var targetModel = (_state.modelLabel || '4 Hydrogen').trim() || '4 Hydrogen';
     var targetThinking = (_state.thinkingLevel != null ? String(_state.thinkingLevel).trim() : 'High');
     var needThinking = !!targetThinking && targetThinking.toLowerCase() !== 'none';
+
+    function getPillText(el) {
+      if (!el) return '';
+      var vis = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+      if (vis) return vis;
+      return (el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function isStateVerified(el) {
+      if (!el || !el.isConnected) return false;
+      var txt = getPillText(el);
+      if (!matchesModelLabelText(txt, targetModel)) return false;
+      if (needThinking && !matchesThinkingLevelText(txt, targetThinking)) return false;
+      return true;
+    }
+
+    function dismissOverlayIfOpen() {
+      if (document.querySelector('.cdk-overlay-pane [role="menu"], .cdk-overlay-pane [role="listbox"]')) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+      }
+    }
 
     var finish = function(ok) {
       var mBtn = document.getElementById('la-gemini-model-btn');
@@ -1008,116 +1070,196 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       if (typeof callback === 'function') callback(!!ok);
     };
 
-    var attempts = 0;
-    function tryStart() {
-      attempts++;
+    var pillWaitAttempts = 0;
+    function waitForPillAndRun() {
+      pillWaitAttempts++;
       var pill = findGeminiModelPill(inputEl || findGeminiPromptInput());
       if (!pill) {
-        if (attempts < 7) {
-          setTimeout(tryStart, 220);
+        if (pillWaitAttempts < 8) {
+          setTimeout(waitForPillAndRun, 220);
           return;
         }
         finish(false);
         return;
       }
 
-      var pillTxt = ((pill.innerText || pill.textContent || '') + ' ' + (pill.getAttribute('aria-label') || '')).replace(/\s+/g, ' ').trim();
-      var modelAlreadyOk = matchesModelLabelText(pillTxt, targetModel);
-      var thinkingAlreadyOk = matchesThinkingLevelText(pillTxt, targetThinking);
-
-      if (modelAlreadyOk && thinkingAlreadyOk && !forceOpenMenu) {
+      if (!forceOpenMenu && isStateVerified(pill)) {
         finish(true);
         return;
       }
 
-      showStatus('Selecting ' + getModelPillText() + '…', '#93c5fd');
-      clickElementWithNativeFallback(pill, 'Opening model menu');
-
-      var menuPolls = 0;
-      var menuTimer = setInterval(function() {
-        menuPolls++;
-        var modelItem = findModelMenuItem(pill, targetModel);
-        if (!modelItem && menuPolls === 4) {
-          realPointerClick(pill);
-          return;
-        }
-        if (modelItem && modelItem.el) {
-          clearInterval(menuTimer);
-          clickElementWithNativeFallback(modelItem.el, 'Selecting ' + targetModel);
-
-          if (!needThinking) {
-            setTimeout(function() {
-              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-              finish(true);
-            }, 320);
-            return;
-          }
-
-          // Step 2: Thinking level submenu (re-open pill if model click closed the menu)
-          setTimeout(function() {
-            var curPill = findGeminiModelPill(inputEl || findGeminiPromptInput()) || pill;
-            var curPillTxt = ((curPill.innerText || curPill.textContent || '') + '').replace(/\s+/g, ' ').trim();
-            if (matchesModelLabelText(curPillTxt, targetModel) && matchesThinkingLevelText(curPillTxt, targetThinking)) {
-              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-              finish(true);
-              return;
-            }
-
-            var directLevel = findThinkingLevelRow(curPill, targetThinking);
-            if (directLevel) {
-              clickElementWithNativeFallback(directLevel, 'Thinking: ' + targetThinking);
-              setTimeout(function() { finish(true); }, 300);
-              return;
-            }
-
-            var thinkTrig = findThinkingMenuTrigger(curPill);
-            if (!thinkTrig) {
-              // Menu likely closed after model click — re-open pill!
-              clickElementWithNativeFallback(curPill, 'Re-opening for Thinking level');
-            }
-
-            var thinkPolls = 0;
-            var thinkTimer = setInterval(function() {
-              thinkPolls++;
-              var lvlRow = findThinkingLevelRow(curPill, targetThinking);
-              if (lvlRow) {
-                clearInterval(thinkTimer);
-                clickElementWithNativeFallback(lvlRow, 'Thinking: ' + targetThinking);
-                setTimeout(function() {
-                  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-                  finish(true);
-                }, 320);
-                return;
-              }
-              var trig = findThinkingMenuTrigger(curPill);
-              if (trig && thinkPolls <= 4) {
-                try {
-                  trig.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-                  trig.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-                } catch (e) {}
-                clickElementWithNativeFallback(trig, 'Opening Thinking level');
-                return;
-              }
-              if (thinkPolls >= 10) {
-                clearInterval(thinkTimer);
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-                var finalTxt = ((curPill.innerText || curPill.textContent || '') + '').replace(/\s+/g, ' ').trim();
-                finish(matchesModelLabelText(finalTxt, targetModel));
-              }
-            }, 220);
-          }, 340);
-          return;
-        }
-
-        if (menuPolls >= 12) {
-          clearInterval(menuTimer);
-          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-          finish(false);
-        }
-      }, 170);
+      runSelectionPass(1);
     }
 
-    tryStart();
+    function runSelectionPass(passNum) {
+      var curPill = findGeminiModelPill(inputEl || findGeminiPromptInput());
+      if (!curPill) {
+        finish(false);
+        return;
+      }
+      if (!(forceOpenMenu && passNum === 1) && isStateVerified(curPill)) {
+        dismissOverlayIfOpen();
+        finish(true);
+        return;
+      }
+
+      showStatus('Selecting ' + getModelPillText() + (passNum > 1 ? ' (retry)' : '') + '…', '#93c5fd');
+      if (getFloatingMenuItems(curPill).length === 0) {
+        nativeOsClickElement(curPill, 'Opening model menu');
+      }
+
+      var openPolls = 0;
+      var openTimer = setInterval(function() {
+        openPolls++;
+        var livePill = findGeminiModelPill(inputEl || findGeminiPromptInput()) || curPill;
+        var openItems = getFloatingMenuItems(livePill);
+        if (openItems.length === 0) {
+          if (openPolls === 5) {
+            nativeOsClickElement(livePill, 'Opening model menu');
+            return;
+          }
+          if (openPolls >= 12) {
+            clearInterval(openTimer);
+            if (passNum < 2) {
+              setTimeout(function() { runSelectionPass(passNum + 1); }, 300);
+            } else {
+              finish(isStateVerified(livePill));
+            }
+          }
+          return;
+        }
+
+        clearInterval(openTimer);
+        var modelOk = matchesModelLabelText(getPillText(livePill), targetModel);
+        if (!modelOk) {
+          var modelItem = findModelMenuItem(livePill, targetModel);
+          if (modelItem && modelItem.el) {
+            nativeOsClickElement(modelItem.el, 'Selecting ' + targetModel);
+            setTimeout(function() {
+              advanceToThinkingStep(passNum);
+            }, 420);
+            return;
+          }
+        }
+        // Model already matches (e.g. "Hydrogen Low"): do NOT re-click "4 Hydrogen", go straight to Thinking level!
+        advanceToThinkingStep(passNum);
+      }, 180);
+    }
+
+    function advanceToThinkingStep(passNum) {
+      var livePill = findGeminiModelPill(inputEl || findGeminiPromptInput());
+      if (!needThinking) {
+        setTimeout(function() {
+          dismissOverlayIfOpen();
+          var finalPill = findGeminiModelPill(inputEl || findGeminiPromptInput()) || livePill;
+          var ok = isStateVerified(finalPill);
+          if (!ok && passNum < 2) {
+            runSelectionPass(passNum + 1);
+          } else {
+            finish(ok);
+          }
+        }, 280);
+        return;
+      }
+
+      if (livePill && isStateVerified(livePill)) {
+        dismissOverlayIfOpen();
+        finish(true);
+        return;
+      }
+
+      var pillReopened = false;
+      var hoverSent = false;
+      var hoverSentAt = 0;
+      var trigClickSent = false;
+      var levelClickSent = false;
+      var thinkPolls = 0;
+
+      var thinkTimer = setInterval(function() {
+        thinkPolls++;
+        var pNow = findGeminiModelPill(inputEl || findGeminiPromptInput()) || livePill;
+        if (pNow && isStateVerified(pNow)) {
+          clearInterval(thinkTimer);
+          dismissOverlayIfOpen();
+          finish(true);
+          return;
+        }
+
+        var lvlRow = findThinkingLevelRow(pNow, targetThinking);
+        if (lvlRow && !levelClickSent) {
+          levelClickSent = true;
+          clearInterval(thinkTimer);
+          setTimeout(function() {
+            var freshRow = findThinkingLevelRow(pNow, targetThinking) || lvlRow;
+            nativeOsClickElement(freshRow, 'Thinking: ' + targetThinking);
+            waitVerifyPill(passNum);
+          }, 120);
+          return;
+        }
+
+        var openItems = getFloatingMenuItems(pNow);
+        if (openItems.length === 0) {
+          if (!pillReopened && pNow) {
+            pillReopened = true;
+            nativeOsClickElement(pNow, 'Opening menu for ' + targetThinking);
+            return;
+          }
+        } else {
+          var trig = findThinkingMenuTrigger(pNow);
+          if (trig) {
+            if (!hoverSent) {
+              hoverSent = true;
+              hoverSentAt = Date.now();
+              nativeOsHoverElement(trig, 'Opening Thinking level');
+              return;
+            }
+            if (!trigClickSent && (Date.now() - hoverSentAt >= 380)) {
+              trigClickSent = true;
+              nativeOsClickElement(trig, 'Clicking Thinking level');
+              return;
+            }
+          }
+        }
+
+        if (thinkPolls >= 16) {
+          clearInterval(thinkTimer);
+          dismissOverlayIfOpen();
+          var endPill = findGeminiModelPill(inputEl || findGeminiPromptInput()) || pNow;
+          if (endPill && isStateVerified(endPill)) {
+            finish(true);
+          } else if (passNum < 2) {
+            setTimeout(function() { runSelectionPass(passNum + 1); }, 320);
+          } else {
+            finish(false);
+          }
+        }
+      }, 200);
+    }
+
+    function waitVerifyPill(passNum) {
+      var polls = 0;
+      var vTimer = setInterval(function() {
+        polls++;
+        var pNow = findGeminiModelPill(inputEl || findGeminiPromptInput());
+        if (pNow && isStateVerified(pNow)) {
+          clearInterval(vTimer);
+          dismissOverlayIfOpen();
+          finish(true);
+          return;
+        }
+        if (polls >= 7) {
+          clearInterval(vTimer);
+          dismissOverlayIfOpen();
+          if (passNum < 2) {
+            setTimeout(function() { runSelectionPass(passNum + 1); }, 320);
+          } else {
+            finish(pNow ? isStateVerified(pNow) : false);
+          }
+        }
+      }, 160);
+    }
+
+    waitForPillAndRun();
   }
 
   function setGeminiInputText(inputEl, text) {
@@ -1307,22 +1449,31 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       var el = allEls[i];
       if (!el.isConnected && !rootEl.contains(el)) continue;
       var t = (el.innerText || el.textContent || '').trim();
-      if (/^(?:sources?|references?)\s*:?$/i.test(t)) {
-        var topChild = el;
-        while (topChild.parentElement && topChild.parentElement !== rootEl) {
-          var parentTxt = (topChild.parentElement.innerText || topChild.parentElement.textContent || '').trim();
-          if (/^(?:sources?|references?)\b/i.test(parentTxt)) {
-            topChild = topChild.parentElement;
-          } else {
-            break;
+      var firstLine = (t.split(/\r?\n/)[0] || '').trim();
+      var isExcludeTag = firstLine.length > 0 && firstLine.length <= 260 && /\(\s*exclude\s*\)/i.test(firstLine);
+      if (isExcludeTag || /^(?:sources?|references?)\s*:?$/i.test(t)) {
+        var topChild = isExcludeTag ? (el.closest('h1, h2, h3, h4, h5, h6, li, p') || el) : el;
+        if (!isExcludeTag) {
+          while (topChild.parentElement && topChild.parentElement !== rootEl) {
+            var parentTxt = (topChild.parentElement.innerText || topChild.parentElement.textContent || '').trim();
+            if (/^(?:sources?|references?)\b/i.test(parentTxt)) {
+              topChild = topChild.parentElement;
+            } else {
+              break;
+            }
           }
         }
         var cur = topChild;
-        while (cur) {
+        while (cur && cur.parentElement && cur !== rootEl) {
           var nxt = cur.nextSibling;
-          cur.remove();
-          cur = nxt;
+          while (nxt) {
+            var rem = nxt;
+            nxt = nxt.nextSibling;
+            rem.remove();
+          }
+          cur = cur.parentElement;
         }
+        topChild.remove();
         break;
       }
     }
@@ -1413,6 +1564,14 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   function stripTrailingSourcesTextInStudio(rawText) {
     if (!rawText || typeof rawText !== 'string') return '';
     var cleaned = rawText.trim();
+    var lines = cleaned.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var lt = lines[li].trim();
+      if (lt.length > 0 && lt.length <= 260 && /\(\s*exclude\s*\)/i.test(lt)) {
+        cleaned = lines.slice(0, li).join('\n').trim();
+        break;
+      }
+    }
     cleaned = cleaned.replace(/\n+\s*(?:#{1,6}\s*|\*{1,2}\s*|[•\-*]\s*)?Sources?\s*\*{0,2}\s*:?\s*\n+[\s\S]*$/i, '');
     return cleaned.trim();
   }
@@ -1614,13 +1773,16 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       }
     } catch (e) {}
 
-    ensureGeminiModelSelected(inputEl, function() {
+    ensureGeminiModelSelected(inputEl, function(modelVerified) {
       var activeInput = findGeminiPromptInput() || inputEl;
       if (!activeInput || !activeInput.isConnected) {
         _isPasting = false;
         setTimeout(function() { processActiveJob(); }, 400);
         return;
       }
+
+      var targetThinkingLbl = (_state.thinkingLevel != null ? String(_state.thinkingLevel).trim() : 'High');
+      var requireThinkingSwitch = !modelVerified && !!targetThinkingLbl && targetThinkingLbl.toLowerCase() !== 'none';
 
       try {
         realPointerClick(activeInput);
@@ -1642,7 +1804,10 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           setTimeout(function() {
             _isPasting = false;
             armAutoSendWatcher();
-            if (_state.autoSubmit) {
+            if (requireThinkingSwitch) {
+              showStatus('Pasted — switch Gemini Thinking to "' + targetThinkingLbl + '" before clicking Send!', '#f87171');
+              emitStudioStatus('error', 'Set Thinking to ' + targetThinkingLbl, 'Case pasted, but Gemini is not on "' + targetThinkingLbl + '" — switch Thinking level in Studio bottom bar and click Send.', true, true);
+            } else if (_state.autoSubmit) {
               triggerGeminiSubmit(targetInput);
               _awaitingLastChangeAt = Date.now();
               _awaitingStoppedAt = 0;
@@ -2319,16 +2484,22 @@ pub async fn desktop_open_gemini_studio(
                                     );
                                 }
                             });
-                        } else if action == "native_click" {
+                        } else if action == "native_click" || action == "native_hover" {
+                            let is_click = action == "native_click";
                             let css_x = msg_val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let css_y = msg_val.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let js_dpr = msg_val.get("dpr").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let app_click = app_for_nav.clone();
                             std::thread::spawn(move || {
+                                static GEMINI_MOUSE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+                                let _guard = GEMINI_MOUSE_LOCK
+                                    .get_or_init(|| Mutex::new(()))
+                                    .lock();
                                 if let Some(gw) = app_click.get_webview_window("gemini-studio") {
                                     let _ = gw.show();
                                     let _ = gw.unminimize();
                                     let _ = gw.set_focus();
+                                    std::thread::sleep(std::time::Duration::from_millis(25));
                                     if let Ok(inner_pos) = gw.inner_position() {
                                         let win_scale = gw.scale_factor().unwrap_or(1.0);
                                         let scale = if js_dpr > 0.2 { js_dpr } else { win_scale };
@@ -2336,7 +2507,11 @@ pub async fn desktop_open_gemini_studio(
                                             inner_pos.x + (css_x * scale).round() as i32;
                                         let screen_y =
                                             inner_pos.y + (css_y * scale).round() as i32;
-                                        crate::perform_native_os_mouse_click(screen_x, screen_y);
+                                        if is_click {
+                                            crate::perform_native_os_mouse_click(screen_x, screen_y);
+                                        } else {
+                                            crate::perform_native_os_mouse_move(screen_x, screen_y);
+                                        }
                                     }
                                 }
                             });

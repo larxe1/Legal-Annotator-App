@@ -863,7 +863,16 @@ export function switchNotepadTab(tab) {
 
 function stripTrailingSourcesText(text = '') {
   if (!text) return '';
-  return String(text)
+  let cleaned = String(text);
+  const lines = cleaned.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const lineTxt = lines[i].trim();
+    if (lineTxt.length > 0 && lineTxt.length <= 260 && /\(\s*exclude\s*\)/i.test(lineTxt)) {
+      cleaned = lines.slice(0, i).join('\n');
+      break;
+    }
+  }
+  return cleaned
     .replace(/\n\s*(?:#{1,6}\s*|\*\*)?(?:Sources?|References?)\*?\*?\s*:?\s*\n[\s\S]*$/i, '')
     .replace(/\n\s*(?:Sources?|References?)\s*:\s*[^\n]+(?:\[lawphil\.net\]|\[chanrobles\.com\]|\[elibrary\.judiciary\.gov\.ph\]|G\.R\.\s*No\.)[\s\S]*$/i, '')
     .trim();
@@ -1001,6 +1010,12 @@ function stripTrailingSourcesHtml(html = '') {
       const el = allEls[i];
       if (!el.isConnected) continue;
       const txt = (el.textContent || '').trim();
+      const firstLine = (txt.split(/\r?\n/)[0] || '').trim();
+      if (firstLine.length > 0 && firstLine.length <= 260 && /\(\s*exclude\s*\)/i.test(firstLine)) {
+        const block = el.closest('h1, h2, h3, h4, h5, h6, li, p') || el;
+        removeNodeAndFollowing(block);
+        break;
+      }
       if (/^(?:sources?|references?)\s*:?\s*$/i.test(txt)) {
         const block = el.closest('h1, h2, h3, h4, h5, h6, p, li') || el;
         const blockTxt = (block.textContent || '').trim();

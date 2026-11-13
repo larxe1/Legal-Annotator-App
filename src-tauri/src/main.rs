@@ -2296,28 +2296,37 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
 
   function stripSourcesFromClone(rootEl) {
     if (!rootEl) return;
-    // Remove any heading/paragraph/strong whose text is "Sources" or "Source:" and everything after it
+    // Cut immediately at any heading/bullet containing an explicit "(exclude)" tag, or standalone "Sources"/"References"
     var allEls = Array.from(rootEl.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div, li, strong, b'));
     for (var i = 0; i < allEls.length; i++) {
       var el = allEls[i];
       if (!el.isConnected && !rootEl.contains(el)) continue;
       var t = (el.innerText || el.textContent || '').trim();
-      if (/^(?:sources?|references?)\s*:?$/i.test(t)) {
-        var topChild = el;
-        while (topChild.parentElement && topChild.parentElement !== rootEl) {
-          var parentTxt = (topChild.parentElement.innerText || topChild.parentElement.textContent || '').trim();
-          if (/^(?:sources?|references?)\b/i.test(parentTxt)) {
-            topChild = topChild.parentElement;
-          } else {
-            break;
+      var firstLine = (t.split(/\r?\n/)[0] || '').trim();
+      var isExcludeTag = firstLine.length > 0 && firstLine.length <= 260 && /\(\s*exclude\s*\)/i.test(firstLine);
+      if (isExcludeTag || /^(?:sources?|references?)\s*:?$/i.test(t)) {
+        var topChild = isExcludeTag ? (el.closest('h1, h2, h3, h4, h5, h6, li, p') || el) : el;
+        if (!isExcludeTag) {
+          while (topChild.parentElement && topChild.parentElement !== rootEl) {
+            var parentTxt = (topChild.parentElement.innerText || topChild.parentElement.textContent || '').trim();
+            if (/^(?:sources?|references?)\b/i.test(parentTxt)) {
+              topChild = topChild.parentElement;
+            } else {
+              break;
+            }
           }
         }
         var cur = topChild;
-        while (cur) {
+        while (cur && cur.parentElement && cur !== rootEl) {
           var nxt = cur.nextSibling;
-          cur.remove();
-          cur = nxt;
+          while (nxt) {
+            var rem = nxt;
+            nxt = nxt.nextSibling;
+            rem.remove();
+          }
+          cur = cur.parentElement;
         }
+        topChild.remove();
         break;
       }
     }
@@ -2436,6 +2445,14 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
   function stripTrailingSourcesTextInStudio(rawText) {
     if (!rawText || typeof rawText !== 'string') return '';
     var cleaned = rawText.trim();
+    var lines = cleaned.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var lt = lines[li].trim();
+      if (lt.length > 0 && lt.length <= 260 && /\(\s*exclude\s*\)/i.test(lt)) {
+        cleaned = lines.slice(0, li).join('\n').trim();
+        break;
+      }
+    }
     cleaned = cleaned.replace(/\n+\s*(?:#{1,6}\s*|\*{1,2}\s*|[•\-*]\s*)?Sources?\s*\*{0,2}\s*:?\s*\n+[\s\S]*$/i, '');
     cleaned = cleaned.replace(/\n+\s*(?:[•\-*]\s*)?[^\n]*\bG\.?\s*R\.?\s*No\.[^\n]*\[lawphil[^\n]*$/i, '');
     cleaned = cleaned.replace(/\n+\s*(?:[•\-*]\s*)?[^\n]*\[lawphil\.net\]\.?\s*$/i, '');
@@ -3329,6 +3346,38 @@ pub(crate) fn perform_native_os_mouse_click(screen_x: i32, screen_y: i32) {
 
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn perform_native_os_mouse_click(_screen_x: i32, _screen_y: i32) {}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn perform_native_os_mouse_move(screen_x: i32, screen_y: i32) {
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetCursorPos(lp_point: *mut Point) -> i32;
+        fn SetCursorPos(x: i32, y: i32) -> i32;
+    }
+    unsafe {
+        let mut start = Point {
+            x: screen_x,
+            y: screen_y,
+        };
+        let _ = GetCursorPos(&mut start);
+        let steps = 5;
+        for i in 1..=steps {
+            let nx = start.x + ((screen_x - start.x) * i) / steps;
+            let ny = start.y + ((screen_y - start.y) * i) / steps;
+            SetCursorPos(nx, ny);
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
+        SetCursorPos(screen_x, screen_y);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn perform_native_os_mouse_move(_screen_x: i32, _screen_y: i32) {}
 
 pub(crate) fn percent_decode_str(input: &str) -> String {
     let bytes = input.as_bytes();
