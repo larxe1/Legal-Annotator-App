@@ -776,7 +776,7 @@ let _lastPplxWebWin = null;
 let _lastPplxUrl = 'https://www.perplexity.ai/spaces';
 let _lastStudioPayload = null;
 let _lastGeminiWebWin = null;
-let _lastGeminiUrl = 'https://gemini.google.com/notebooks';
+let _lastGeminiUrl = 'https://gemini.google.com/app';
 let _lastGeminiStudioPayload = null;
 let _bannerAutoHideTimer = null;
 let _batchDigestState = {
@@ -1371,7 +1371,7 @@ export async function focusOrReopenGeminiStudio() {
   const activeFolderId = getActiveSubfolderId();
   const { subjectId } = getSubjectInfoForFolder(activeFolderId);
   const pinnedForSubj = subjectId ? await getPinnedGeminiNotebookForSubject(subjectId) : '';
-  const targetUrl = _lastGeminiUrl || pinnedForSubj || 'https://gemini.google.com/notebooks';
+  const targetUrl = _lastGeminiUrl || pinnedForSubj || 'https://gemini.google.com/app';
   try {
     const win = window.open(targetUrl, '_blank');
     if (win) {
@@ -2301,7 +2301,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
       autoSendDigest: Boolean(autoSendPref),
     };
     _lastGeminiStudioPayload = studioPayload;
-    _lastGeminiUrl = pinnedNotebookUrl || 'https://gemini.google.com/notebooks';
+    _lastGeminiUrl = pinnedNotebookUrl || 'https://gemini.google.com/app';
 
     if (typeof window.desktopOpenGeminiStudio === 'function') {
       const opened = await window.desktopOpenGeminiStudio(studioPayload);

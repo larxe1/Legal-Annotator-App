@@ -227,14 +227,14 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   function isNotebookUrl(u) {
     if (!u || typeof u !== 'string') return false;
-    return /gemini\.google\.com\/notebook\/[A-Za-z0-9_\-]+/i.test(u);
+    return /gemini\.google\.com\/(?:u\/\d+\/)?notebook\/[A-Za-z0-9_\-]+/i.test(u);
   }
 
   function normalizeNotebookUrl(u) {
     if (!u || typeof u !== 'string') return '';
-    var m = u.match(/^https?:\/\/gemini\.google\.com\/notebook\/([A-Za-z0-9_\-]+)/i);
+    var m = u.match(/^https?:\/\/gemini\.google\.com((?:\/u\/\d+)?\/notebook\/[A-Za-z0-9_\-]+)/i);
     if (m && m[1]) {
-      return 'https://gemini.google.com/notebook/' + m[1];
+      return 'https://gemini.google.com' + m[1];
     }
     return '';
   }
@@ -243,9 +243,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     if (!u || typeof u !== 'string') return false;
     try {
       var parsed = new URL(u);
-      return /^\/notebooks\/?$/i.test(parsed.pathname);
+      return /^(?:\/u\/\d+)?\/(?:app|notebooks)?\/?$/i.test(parsed.pathname);
     } catch (e) {
-      return /gemini\.google\.com\/notebooks\/?(?:$|[?#])/i.test(u);
+      return /gemini\.google\.com\/(?:u\/\d+\/)?(?:app|notebooks)?\/?(?:$|[?#])/i.test(u);
     }
   }
 
@@ -353,6 +353,87 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     pop.style.display = 'block';
   }
 
+  function mkEl(tag, opts, children) {
+    var node = document.createElement(tag);
+    if (opts) {
+      if (opts.id) node.id = opts.id;
+      if (opts.className) node.className = opts.className;
+      if (opts.style) node.style.cssText = opts.style;
+      if (opts.title) node.title = opts.title;
+      if (opts.text != null) node.textContent = opts.text;
+      if (opts.type) node.type = opts.type;
+      if (opts.placeholder) node.placeholder = opts.placeholder;
+      if (opts.value != null) node.value = opts.value;
+      if (opts.attrs) {
+        for (var k in opts.attrs) {
+          if (Object.prototype.hasOwnProperty.call(opts.attrs, k)) {
+            node.setAttribute(k, opts.attrs[k]);
+          }
+        }
+      }
+    }
+    if (children && children.length) {
+      for (var i = 0; i < children.length; i++) {
+        var c = children[i];
+        if (!c) continue;
+        if (typeof c === 'string') {
+          node.appendChild(document.createTextNode(c));
+        } else {
+          node.appendChild(c);
+        }
+      }
+    }
+    return node;
+  }
+
+  function mkSvg(w, h, shapes) {
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('width', String(w));
+    svg.setAttribute('height', String(h));
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    for (var i = 0; i < shapes.length; i++) {
+      var sp = shapes[i];
+      var el = document.createElementNS(ns, sp[0]);
+      for (var k in sp[1]) {
+        if (Object.prototype.hasOwnProperty.call(sp[1], k)) {
+          el.setAttribute(k, sp[1][k]);
+        }
+      }
+      svg.appendChild(el);
+    }
+    return svg;
+  }
+
+  function makeSvgSpark() {
+    return mkSvg(13, 13, [
+      ['path', { d: 'M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z' }]
+    ]);
+  }
+
+  function makeSvgScale() {
+    return mkSvg(13, 13, [
+      ['path', { d: 'M12 3v18' }],
+      ['path', { d: 'M5 7h14' }],
+      ['path', { d: 'M5 7l-3 7h6l-3-7z' }],
+      ['path', { d: 'M19 7l-3 7h6l-3-7z' }],
+      ['path', { d: 'M8 21h8' }]
+    ]);
+  }
+
+  function makeSvgCopy() {
+    return mkSvg(12, 12, [
+      ['rect', { x: '9', y: '9', width: '13', height: '13', rx: '2' }],
+      ['path', { d: 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1' }]
+    ]);
+  }
+
   function ensureStudioBar() {
     if (!document.body) return;
     document.documentElement.style.scrollPaddingTop = '48px';
@@ -363,63 +444,129 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       return;
     }
 
-    var bar = document.createElement('div');
-    bar.id = 'la-gemini-studio-bar';
-    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:44px;background:linear-gradient(90deg,#0f172a 0%,#172542 100%);border-bottom:1.5px solid #60a5fa;z-index:2147483647;display:flex;align-items:center;gap:7px;padding:0 12px;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;font-size:12px;color:#e8e4db;box-shadow:0 4px 16px rgba(0,0,0,0.45);user-select:none;overflow-x:auto;';
-
     var btnStyle = 'padding:5px 8px;border-radius:5px;border:1px solid #334155;background:#1e293b;color:#e2e8f0;font-size:11.5px;font-weight:500;cursor:pointer;white-space:nowrap;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;transition:all 0.15s;display:inline-flex;align-items:center;gap:4px;';
     var goldBtnStyle = 'padding:5px 12px;border-radius:5px;border:1px solid #c9a84c;background:linear-gradient(180deg,#d4b254 0%,#b89334 100%);color:#0f172a;font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;box-shadow:0 2px 8px rgba(201,168,76,0.3);display:inline-flex;align-items:center;gap:5px;';
+    var modelBtnStyle = 'padding:5px 9px;border-radius:5px;border:1px solid rgba(96,165,250,0.55);background:rgba(59,130,246,0.16);color:#bfdbfe;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;display:inline-flex;align-items:center;gap:5px;';
 
-    var svgSpark = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>';
-    var svgScale = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7h6l-3-7z"/><path d="M19 7l-3 7h6l-3-7z"/><path d="M8 21h8"/></svg>';
-    var svgCopy = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-
-    bar.innerHTML =
-      '<span style="color:#60a5fa;font-weight:700;font-size:12.5px;white-space:nowrap;letter-spacing:0.02em;display:inline-flex;align-items:center;gap:5px;">' + svgSpark + 'Gemini Digest Studio</span>' +
-      '<span id="la-gemini-pdf-lbl" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(255,255,255,0.06);padding:3px 8px;border-radius:4px;font-size:11px;color:#cbd5e1;">Current PDF</span>' +
-      '<button id="la-gemini-pin-btn" style="' + btnStyle + '">Pin Subject</button>' +
-      '<button id="la-gemini-model-btn" style="padding:5px 9px;border-radius:5px;border:1px solid rgba(96,165,250,0.55);background:rgba(59,130,246,0.16);color:#bfdbfe;font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:&quot;Public Sans&quot;,&quot;Segoe UI&quot;,system-ui,sans-serif;display:inline-flex;align-items:center;gap:5px;" title="Configure Gemini Model & Thinking Level">4 Hydrogen · High ▾</button>' +
-      '<button id="la-gemini-autosubmit-btn" style="' + btnStyle + '" title="Toggle whether pasting a case automatically presses Submit">☑ Auto-Submit: ON</button>' +
-      '<button id="la-gemini-autosend-btn" style="' + btnStyle + '" title="Toggle whether the finished digest is automatically sent to the Case Digest tab">☑ Auto-Send: ON</button>' +
-      '<button id="la-gemini-mode-btn" style="' + btnStyle + '" title="Choose whether sending to Case Digest appends at the bottom or replaces existing digest">Digest: Append</button>' +
-      '<button id="la-gemini-paste-btn" style="' + btnStyle + '" title="Select Model/Thinking and paste Subfolder Instruction + PDF Text into Gemini">' + svgCopy + 'Paste Case</button>' +
-      '<span id="la-gemini-status" style="font-size:11px;color:#93c5fd;white-space:nowrap;margin-left:auto;margin-right:4px;"></span>' +
-      '<button id="la-gemini-send-btn" style="' + goldBtnStyle + '" title="Send Gemini\'s latest response directly into the Case Digest tab in Legal Annotator">' + svgScale + 'Send to Case Digest</button>';
+    var bar = mkEl('div', {
+      id: 'la-gemini-studio-bar',
+      style: 'position:fixed;top:0;left:0;right:0;height:44px;background:linear-gradient(90deg,#0f172a 0%,#172542 100%);border-bottom:1.5px solid #60a5fa;z-index:2147483647;display:flex;align-items:center;gap:7px;padding:0 12px;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;font-size:12px;color:#e8e4db;box-shadow:0 4px 16px rgba(0,0,0,0.45);user-select:none;overflow-x:auto;'
+    }, [
+      mkEl('span', {
+        style: 'color:#60a5fa;font-weight:700;font-size:12.5px;white-space:nowrap;letter-spacing:0.02em;display:inline-flex;align-items:center;gap:5px;'
+      }, [makeSvgSpark(), 'Gemini Digest Studio']),
+      mkEl('span', {
+        id: 'la-gemini-pdf-lbl',
+        style: 'max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(255,255,255,0.06);padding:3px 8px;border-radius:4px;font-size:11px;color:#cbd5e1;',
+        text: 'Current PDF'
+      }),
+      mkEl('button', {
+        id: 'la-gemini-pin-btn',
+        type: 'button',
+        style: btnStyle,
+        text: 'Pin Subject'
+      }),
+      mkEl('button', {
+        id: 'la-gemini-model-btn',
+        type: 'button',
+        style: modelBtnStyle,
+        title: 'Configure Gemini Model & Thinking Level',
+        text: '4 Hydrogen · High ▾'
+      }),
+      mkEl('button', {
+        id: 'la-gemini-autosubmit-btn',
+        type: 'button',
+        style: btnStyle,
+        title: 'Toggle whether pasting a case automatically presses Submit',
+        text: '☑ Auto-Submit: ON'
+      }),
+      mkEl('button', {
+        id: 'la-gemini-autosend-btn',
+        type: 'button',
+        style: btnStyle,
+        title: 'Toggle whether the finished digest is automatically sent to the Case Digest tab',
+        text: '☑ Auto-Send: ON'
+      }),
+      mkEl('button', {
+        id: 'la-gemini-mode-btn',
+        type: 'button',
+        style: btnStyle,
+        title: 'Choose whether sending to Case Digest appends at the bottom or replaces existing digest',
+        text: 'Digest: Append'
+      }),
+      mkEl('button', {
+        id: 'la-gemini-paste-btn',
+        type: 'button',
+        style: btnStyle,
+        title: 'Select Model/Thinking and paste Subfolder Instruction + PDF Text into Gemini'
+      }, [makeSvgCopy(), 'Paste Case']),
+      mkEl('span', {
+        id: 'la-gemini-status',
+        style: 'font-size:11px;color:#93c5fd;white-space:nowrap;margin-left:auto;margin-right:4px;'
+      }),
+      mkEl('button', {
+        id: 'la-gemini-send-btn',
+        type: 'button',
+        style: goldBtnStyle,
+        title: 'Send Gemini\'s latest response directly into the Case Digest tab in Legal Annotator'
+      }, [makeSvgScale(), mkEl('span', { id: 'la-gemini-send-lbl', text: 'Send to Case Digest' })])
+    ]);
 
     document.body.appendChild(bar);
 
-    // Inline Model & Thinking Configuration Popover
-    var pop = document.createElement('div');
-    pop.id = 'la-gemini-model-popover';
-    pop.style.cssText = 'display:none;position:fixed;top:48px;left:220px;z-index:2147483647;width:330px;background:#0f172a;border:1px solid #60a5fa;border-radius:8px;padding:12px;box-shadow:0 12px 30px rgba(0,0,0,0.65);font-family:"Public Sans","Segoe UI",system-ui,sans-serif;font-size:12px;color:#e2e8f0;';
+    // Inline Model & Thinking Configuration Popover (TrustedHTML-safe pure DOM)
     var presetModels = ['4 Hydrogen', '3.5 Flash-Lite', '3.1 Pro', '4 Argon', '4 Carbon'];
-    var presetHtml = presetModels.map(function(m) {
-      return '<button type="button" class="la-gemini-model-preset" data-model="' + m + '" style="padding:3px 7px;border-radius:4px;border:1px solid #334155;background:#1e293b;color:#cbd5e1;font-size:11px;cursor:pointer;">' + m + '</button>';
-    }).join('');
-    pop.innerHTML =
-      '<div style="font-weight:700;color:#93c5fd;margin-bottom:8px;">Gemini Model &amp; Thinking Level</div>' +
-      '<label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:4px;">Model Label</label>' +
-      '<input id="la-gemini-cfg-model" type="text" placeholder="4 Hydrogen" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:5px;border:1px solid #334155;background:#1e293b;color:#f8fafc;font-size:12px;margin-bottom:6px;" />' +
-      '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;">' + presetHtml + '</div>' +
-      '<label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:4px;">Thinking Level</label>' +
-      '<select id="la-gemini-cfg-thinking" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:5px;border:1px solid #334155;background:#1e293b;color:#f8fafc;font-size:12px;margin-bottom:10px;">' +
-        '<option value="High">High</option>' +
-        '<option value="Medium">Medium</option>' +
-        '<option value="Low">Low</option>' +
-        '<option value="None">None</option>' +
-      '</select>' +
-      '<div style="display:flex;justify-content:flex-end;gap:6px;">' +
-        '<button type="button" id="la-gemini-cfg-cancel" style="' + btnStyle + '">Cancel</button>' +
-        '<button type="button" id="la-gemini-cfg-apply" style="padding:5px 10px;border-radius:5px;border:1px solid #60a5fa;background:#2563eb;color:#ffffff;font-size:11.5px;font-weight:600;cursor:pointer;">Apply &amp; Select</button>' +
-      '</div>';
+    var presetChips = presetModels.map(function(m) {
+      return mkEl('button', {
+        type: 'button',
+        className: 'la-gemini-model-preset',
+        style: 'padding:3px 7px;border-radius:4px;border:1px solid #334155;background:#1e293b;color:#cbd5e1;font-size:11px;cursor:pointer;',
+        text: m,
+        attrs: { 'data-model': m }
+      });
+    });
+
+    var thinkingOptions = ['High', 'Medium', 'Low', 'None'].map(function(lvl) {
+      return mkEl('option', { value: lvl, text: lvl });
+    });
+
+    var pop = mkEl('div', {
+      id: 'la-gemini-model-popover',
+      style: 'display:none;position:fixed;top:48px;left:220px;z-index:2147483647;width:330px;background:#0f172a;border:1px solid #60a5fa;border-radius:8px;padding:12px;box-shadow:0 12px 30px rgba(0,0,0,0.65);font-family:"Public Sans","Segoe UI",system-ui,sans-serif;font-size:12px;color:#e2e8f0;'
+    }, [
+      mkEl('div', { style: 'font-weight:700;color:#93c5fd;margin-bottom:8px;', text: 'Gemini Model & Thinking Level' }),
+      mkEl('label', { style: 'display:block;font-size:11px;color:#94a3b8;margin-bottom:4px;', text: 'Model Label' }),
+      mkEl('input', {
+        id: 'la-gemini-cfg-model',
+        type: 'text',
+        placeholder: '4 Hydrogen',
+        style: 'width:100%;box-sizing:border-box;padding:6px 8px;border-radius:5px;border:1px solid #334155;background:#1e293b;color:#f8fafc;font-size:12px;margin-bottom:6px;'
+      }),
+      mkEl('div', { style: 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;' }, presetChips),
+      mkEl('label', { style: 'display:block;font-size:11px;color:#94a3b8;margin-bottom:4px;', text: 'Thinking Level' }),
+      mkEl('select', {
+        id: 'la-gemini-cfg-thinking',
+        style: 'width:100%;box-sizing:border-box;padding:6px 8px;border-radius:5px;border:1px solid #334155;background:#1e293b;color:#f8fafc;font-size:12px;margin-bottom:10px;'
+      }, thinkingOptions),
+      mkEl('div', { style: 'display:flex;justify-content:flex-end;gap:6px;' }, [
+        mkEl('button', { type: 'button', id: 'la-gemini-cfg-cancel', style: btnStyle, text: 'Cancel' }),
+        mkEl('button', {
+          type: 'button',
+          id: 'la-gemini-cfg-apply',
+          style: 'padding:5px 10px;border-radius:5px;border:1px solid #60a5fa;background:#2563eb;color:#ffffff;font-size:11.5px;font-weight:600;cursor:pointer;',
+          text: 'Apply & Select'
+        })
+      ])
+    ]);
     document.body.appendChild(pop);
 
     // Floating quick-send FAB positioned above Gemini's fixed bottom "Ask Gemini" bar
-    var fab = document.createElement('button');
-    fab.id = 'la-gemini-fab-send';
-    fab.style.cssText = 'position:fixed;bottom:88px;right:20px;z-index:2147483646;padding:9px 15px;border-radius:999px;border:1.5px solid #c9a84c;background:#0f172a;color:#f3d37a;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,0.55);display:flex;align-items:center;gap:6px;';
-    fab.innerHTML = svgScale + '<span>Send to Case Digest</span>';
-    fab.title = 'Send latest Gemini answer directly into the Case Digest tab';
+    var fab = mkEl('button', {
+      id: 'la-gemini-fab-send',
+      type: 'button',
+      style: 'position:fixed;bottom:88px;right:20px;z-index:2147483646;padding:9px 15px;border-radius:999px;border:1.5px solid #c9a84c;background:#0f172a;color:#f3d37a;font-family:"Public Sans","Segoe UI",system-ui,sans-serif;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,0.55);display:flex;align-items:center;gap:6px;',
+      title: 'Send latest Gemini answer directly into the Case Digest tab'
+    }, [makeSvgScale(), mkEl('span', { id: 'la-gemini-fab-lbl', text: 'Send to Case Digest' })]);
     fab.addEventListener('click', function() { extractAndSendDigest(); });
     document.body.appendChild(fab);
 
@@ -624,12 +771,18 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     try {
       var ring = document.getElementById('la-gemini-click-cursor');
       if (!ring) {
-        ring = document.createElement('div');
-        ring.id = 'la-gemini-click-cursor';
-        ring.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;transition:left 0.14s ease,top 0.14s ease,opacity 0.2s ease;display:flex;align-items:center;gap:6px;transform:translate(-12px,-12px);';
-        ring.innerHTML =
-          '<div style="width:24px;height:24px;border-radius:50%;border:2.5px solid #60a5fa;background:rgba(96,165,250,0.28);box-shadow:0 0 14px rgba(96,165,250,0.85);"></div>' +
-          '<span id="la-gemini-click-cursor-lbl" style="background:#0f172a;border:1px solid #60a5fa;color:#dbeafe;font-size:11px;font-weight:700;padding:2px 7px;border-radius:999px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.6);"></span>';
+        ring = mkEl('div', {
+          id: 'la-gemini-click-cursor',
+          style: 'position:fixed;z-index:2147483647;pointer-events:none;transition:left 0.14s ease,top 0.14s ease,opacity 0.2s ease;display:flex;align-items:center;gap:6px;transform:translate(-12px,-12px);'
+        }, [
+          mkEl('div', {
+            style: 'width:24px;height:24px;border-radius:50%;border:2.5px solid #60a5fa;background:rgba(96,165,250,0.28);box-shadow:0 0 14px rgba(96,165,250,0.85);'
+          }),
+          mkEl('span', {
+            id: 'la-gemini-click-cursor-lbl',
+            style: 'background:#0f172a;border:1px solid #60a5fa;color:#dbeafe;font-size:11px;font-weight:700;padding:2px 7px;border-radius:999px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.6);'
+          })
+        ]);
         document.body.appendChild(ring);
       }
       ring.style.left = Math.round(x) + 'px';
@@ -969,9 +1122,39 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   function setGeminiInputText(inputEl, text) {
     if (!inputEl) return false;
+    var expectedMin = Math.min(8, String(text || '').trim().length);
+    function hasInputText() {
+      var raw = (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT')
+        ? (inputEl.value || '')
+        : (inputEl.innerText || inputEl.textContent || '');
+      return raw.replace(/\u200B/g, '').trim().length >= expectedMin && expectedMin > 0;
+    }
+
     inputEl.focus();
 
+    if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+      try {
+        var proto = window.HTMLTextAreaElement && inputEl.tagName === 'TEXTAREA'
+          ? window.HTMLTextAreaElement.prototype
+          : Object.getPrototypeOf(inputEl);
+        var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        var setter = desc && desc.set;
+        if (setter) setter.call(inputEl, text);
+        else inputEl.value = text;
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+        if (hasInputText()) return true;
+      } catch (e) {}
+    }
+
     try {
+      if (window.getSelection && document.createRange) {
+        var sel = window.getSelection();
+        var range = document.createRange();
+        range.selectNodeContents(inputEl);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
       var dt = new DataTransfer();
       dt.setData('text/plain', text);
       var pasteEvt = new ClipboardEvent('paste', {
@@ -979,38 +1162,47 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         bubbles: true,
         cancelable: true
       });
-      var cancelled = !inputEl.dispatchEvent(pasteEvt);
-      if (cancelled) return true;
+      inputEl.dispatchEvent(pasteEvt);
+      if (hasInputText()) return true;
     } catch (e) {}
 
-    if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
-      try {
-        var proto = window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(inputEl);
-        var desc = Object.getOwnPropertyDescriptor(proto, 'value');
-        var setter = desc && desc.set;
-        if (setter) setter.call(inputEl, text);
-        else inputEl.value = text;
-        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      } catch (e) {}
-    }
-
     try {
+      inputEl.focus();
+      if (window.getSelection && document.createRange) {
+        var sel2 = window.getSelection();
+        var range2 = document.createRange();
+        range2.selectNodeContents(inputEl);
+        sel2.removeAllRanges();
+        sel2.addRange(range2);
+      }
       document.execCommand('selectAll', false, null);
       document.execCommand('insertText', false, text);
-      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-      if (((inputEl.innerText || inputEl.textContent || '').trim().length) > 0) {
-        return true;
+      try {
+        inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      } catch (ie) {
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
       }
+      if (hasInputText()) return true;
     } catch (e) {}
 
-    // Fallback for Quill / rich-textarea if execCommand didn't populate
+    // Pure-DOM Quill / rich-textarea fallback (no innerHTML so Trusted Types stay happy)
     try {
-      inputEl.textContent = text;
-      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      while (inputEl.firstChild) inputEl.removeChild(inputEl.firstChild);
+      var lines = String(text || '').split(/\r?\n/);
+      for (var li = 0; li < lines.length; li++) {
+        var p = document.createElement('p');
+        if (lines[li]) p.textContent = lines[li];
+        else p.appendChild(document.createElement('br'));
+        inputEl.appendChild(p);
+      }
+      if (inputEl.classList) inputEl.classList.remove('ql-blank');
+      try {
+        inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      } catch (ie2) {
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
+      return hasInputText();
     } catch (e2) {}
     return false;
   }
@@ -1024,16 +1216,20 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       'button[data-test-id*="send" i]:not([disabled])',
       'button[mattooltip*="Send" i]:not([disabled])'
     ];
-    for (var i = 0; i < btnSelectors.length; i++) {
-      var btns = Array.from(container.querySelectorAll(btnSelectors[i])).concat(Array.from(document.querySelectorAll(btnSelectors[i])));
-      for (var j = 0; j < btns.length; j++) {
-        var btn = btns[j];
-        if (!btn || btn.disabled) continue;
-        if (btn.closest('#la-gemini-studio-bar') || btn.closest('#la-gemini-fab-send') || btn.closest('#la-gemini-model-popover')) continue;
-        var r = btn.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
-          realPointerClick(btn);
-          return true;
+    var roots = container !== document ? [container, document] : [document];
+    for (var ri = 0; ri < roots.length; ri++) {
+      var root = roots[ri];
+      for (var i = 0; i < btnSelectors.length; i++) {
+        var btns = Array.from(root.querySelectorAll(btnSelectors[i]));
+        for (var j = 0; j < btns.length; j++) {
+          var btn = btns[j];
+          if (!btn || btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+          if (btn.closest('#la-gemini-studio-bar') || btn.closest('#la-gemini-fab-send') || btn.closest('#la-gemini-model-popover')) continue;
+          var r = btn.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) {
+            realPointerClick(btn);
+            return true;
+          }
         }
       }
     }
@@ -1431,38 +1627,59 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         activeInput.focus();
       } catch (e) {}
 
-      setGeminiInputText(activeInput, fullText);
-
-      setTimeout(function() {
-        if (!activeInput.isConnected) {
-          _isPasting = false;
-          setTimeout(function() { processActiveJob(); }, 400);
-          return;
-        }
-
-        if (_state.jobId) {
-          sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
-        }
-
+      function finalizePasteAndSubmit(targetInput) {
         setTimeout(function() {
-          _isPasting = false;
-          armAutoSendWatcher();
-          if (_state.autoSubmit) {
-            triggerGeminiSubmit(activeInput);
-            _awaitingLastChangeAt = Date.now();
-            _awaitingStoppedAt = 0;
-            if (_state.autoSendDigest !== false) {
-              showStatus('Submitted (' + getModelPillText() + ')! Waiting to auto-send to Case Digest…', '#4ade80');
-            } else {
-              showStatus('Submitted (' + getModelPillText() + ')! Click "Send to Case Digest" when done.', '#4ade80');
-            }
-            emitStudioStatus('submitted', 'Prompt submitted', 'Submitted (' + getModelPillText() + ') — waiting for Gemini response…', false, true);
-          } else {
-            showStatus('Pasted (' + getModelPillText() + ')! Review prompt and press Enter to submit.', '#4ade80');
-            emitStudioStatus('idle', 'Ready in Studio', 'Pasted (' + getModelPillText() + ') — press Enter in Studio to submit.', false, true);
+          if (!targetInput || !targetInput.isConnected) {
+            _isPasting = false;
+            setTimeout(function() { processActiveJob(); }, 400);
+            return;
           }
-        }, 380);
-      }, 280);
+
+          if (_state.jobId) {
+            sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
+          }
+
+          setTimeout(function() {
+            _isPasting = false;
+            armAutoSendWatcher();
+            if (_state.autoSubmit) {
+              triggerGeminiSubmit(targetInput);
+              _awaitingLastChangeAt = Date.now();
+              _awaitingStoppedAt = 0;
+              if (_state.autoSendDigest !== false) {
+                showStatus('Submitted (' + getModelPillText() + ')! Waiting to auto-send to Case Digest…', '#4ade80');
+              } else {
+                showStatus('Submitted (' + getModelPillText() + ')! Click "Send to Case Digest" when done.', '#4ade80');
+              }
+              emitStudioStatus('submitted', 'Prompt submitted', 'Submitted (' + getModelPillText() + ') — waiting for Gemini response…', false, true);
+            } else {
+              showStatus('Pasted (' + getModelPillText() + ')! Review prompt and press Enter to submit.', '#4ade80');
+              emitStudioStatus('idle', 'Ready in Studio', 'Pasted (' + getModelPillText() + ') — press Enter in Studio to submit.', false, true);
+            }
+          }, 380);
+        }, 280);
+      }
+
+      if (setGeminiInputText(activeInput, fullText)) {
+        finalizePasteAndSubmit(activeInput);
+      } else {
+        setTimeout(function() {
+          var retryInput = findGeminiPromptInput() || activeInput;
+          try {
+            if (retryInput) {
+              realPointerClick(retryInput);
+              retryInput.focus();
+            }
+          } catch (e) {}
+          if (retryInput && setGeminiInputText(retryInput, fullText)) {
+            finalizePasteAndSubmit(retryInput);
+          } else {
+            _isPasting = false;
+            showStatus('Click inside Ask Gemini and press Ctrl+V (or click Paste Case).', '#fbbf24');
+            emitStudioStatus('error', 'Paste needs focus', 'Could not paste automatically — click inside Ask Gemini and press Ctrl+V (case is already copied).', true);
+          }
+        }, 220);
+      }
     }, false);
 
     return true;
@@ -1523,17 +1740,21 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       var modeWord = _state.digestMode === 'replace' ? 'Replaced in' : 'Appended to';
       showStatus(modeWord + ' Case Digest tab! Ready for next case.', '#4ade80');
       emitStudioStatus('done', 'Digest saved', modeWord + ' Case Digest tab!', false, true);
-      var sendBtn = document.getElementById('la-gemini-send-btn');
-      var fabBtn = document.getElementById('la-gemini-fab-send');
-      if (sendBtn) {
-        var orig = sendBtn.innerHTML;
-        sendBtn.innerHTML = '✓ Sent to Case Digest!';
-        setTimeout(function() { sendBtn.innerHTML = orig; }, 2400);
+      var sendLbl = document.getElementById('la-gemini-send-lbl');
+      var fabLbl = document.getElementById('la-gemini-fab-lbl');
+      if (sendLbl) {
+        sendLbl.textContent = '✓ Sent to Case Digest!';
+        setTimeout(function() {
+          var el = document.getElementById('la-gemini-send-lbl');
+          if (el) el.textContent = 'Send to Case Digest';
+        }, 2400);
       }
-      if (fabBtn) {
-        var origFab = fabBtn.innerHTML;
-        fabBtn.innerHTML = '<span>✓ Sent to Case Digest!</span>';
-        setTimeout(function() { fabBtn.innerHTML = origFab; }, 2400);
+      if (fabLbl) {
+        fabLbl.textContent = '✓ Sent to Case Digest!';
+        setTimeout(function() {
+          var el = document.getElementById('la-gemini-fab-lbl');
+          if (el) el.textContent = 'Send to Case Digest';
+        }, 2400);
       }
       // Return to pinned normalized Notebook URL after 900ms for batch/next case readiness
       setTimeout(function() {
@@ -1642,7 +1863,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         if (sessionStorage.getItem('la_gemini_nav_once_job_id') !== String(_state.jobId)) {
           sessionStorage.setItem('la_gemini_nav_once_job_id', String(_state.jobId));
           _notebookTransitionReadyAt = Date.now() + 900;
-          window.location.href = 'https://gemini.google.com/notebooks';
+          window.location.href = 'https://gemini.google.com/app';
           return;
         }
       } else if (targetPinned && window.location.href.replace(/\/+$/, '') !== targetPinned) {
@@ -1658,35 +1879,43 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   var _lastHref = window.location.href;
   setInterval(function() {
-    ensureStudioBar();
-    checkAutoSendProgress();
-    if (!_studioBlockerReported && !sessionStorage.getItem('la_gemini_handled_job_id')) {
-      if (detectStudioPageBlocker()) _studioBlockerReported = true;
-    }
-    if (window.location.href !== _lastHref) {
-      var prevHref = _lastHref;
-      _lastHref = window.location.href;
-      _studioBlockerReported = false;
-      updateBarUI();
-      if (isNotebookUrl(_lastHref)) {
-        if (!isNotebookUrl(prevHref)) {
-          _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 850);
-        }
-        processActiveJob();
+    try {
+      ensureStudioBar();
+      checkAutoSendProgress();
+      if (!_studioBlockerReported && !sessionStorage.getItem('la_gemini_handled_job_id')) {
+        if (detectStudioPageBlocker()) _studioBlockerReported = true;
       }
+      if (window.location.href !== _lastHref) {
+        var prevHref = _lastHref;
+        _lastHref = window.location.href;
+        _studioBlockerReported = false;
+        updateBarUI();
+        if (isNotebookUrl(_lastHref)) {
+          if (!isNotebookUrl(prevHref)) {
+            _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 850);
+          }
+          processActiveJob();
+        }
+      }
+    } catch (e) {
+      try { console.warn('[GeminiStudio] interval tick error:', e); } catch (_e) {}
     }
   }, 800);
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() {
+  function bootGeminiStudio() {
+    try {
       ensureStudioBar();
       emitStudioStatus('extracting', 'Studio ready', 'Gemini Studio loaded.', false);
       processActiveJob();
-    });
+    } catch (e) {
+      try { console.warn('[GeminiStudio] boot error:', e); } catch (_e) {}
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootGeminiStudio);
   } else {
-    ensureStudioBar();
-    emitStudioStatus('extracting', 'Studio ready', 'Gemini Studio loaded.', false);
-    processActiveJob();
+    bootGeminiStudio();
   }
 })();
 "#;
@@ -1952,10 +2181,10 @@ pub async fn desktop_open_gemini_studio(
         return Ok(true);
     }
 
-    let start_url_str = if eff_pinned.starts_with("https://gemini.google.com/notebook/") {
+    let start_url_str = if eff_pinned.contains("/notebook/") && eff_pinned.starts_with("https://gemini.google.com/") {
         eff_pinned.clone()
     } else {
-        "https://gemini.google.com/notebooks".to_string()
+        "https://gemini.google.com/app".to_string()
     };
 
     let parsed_url = tauri::Url::parse(&start_url_str).map_err(|e| e.to_string())?;
