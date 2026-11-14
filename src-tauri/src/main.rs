@@ -1845,7 +1845,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     updateBarUI();
   }
 
-  var _spaceTransitionReadyAt = Date.now() + 3000;
+  var _spaceTransitionReadyAt = Date.now() + 1000;
 
   function returnToLawSpaceHome() {
     var spaceLinks = Array.from(document.querySelectorAll('a[href*="/spaces/"], a[href*="/collections/"]')).filter(function(a) {
@@ -1865,12 +1865,12 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         saveStateCache();
         updateBarUI();
       }
-      _spaceTransitionReadyAt = Date.now() + 3000;
+      _spaceTransitionReadyAt = Date.now() + 1000;
       lawLink.click();
       return true;
     }
     if (isSpaceOrCollectionUrl(_state.pinnedProjectUrl)) {
-      _spaceTransitionReadyAt = Date.now() + 3000;
+      _spaceTransitionReadyAt = Date.now() + 1000;
       window.location.href = _state.pinnedProjectUrl;
       return true;
     }
@@ -2826,7 +2826,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         activeInput.focus();
       } catch (e) {}
 
-      showStatus('🤖 Prompt ready — waiting 3s before pasting case…', '#fbbf24');
+      showStatus('🤖 Prompt ready — waiting 1s before pasting case…', '#fbbf24');
 
       setTimeout(function() {
         var targetEl = findPromptInput() || activeInput;
@@ -2842,7 +2842,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         } catch (e) {}
 
         setInputText(targetEl, fullText);
-        showStatus('📋 Pasted — waiting 3s before sending…', '#fbbf24');
+        showStatus('📋 Pasted — waiting 1s before sending…', '#fbbf24');
 
         setTimeout(function() {
           // Verify the input element didn't unmount mid-paste during a Space page transition
@@ -2894,9 +2894,9 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
               showStatus('✅ Pasted with Claude Sonnet! Review prompt and press Enter to submit.', '#4ade80');
               emitStudioStatus('idle', 'Ready in Studio', 'Pasted with Claude Sonnet — press Enter in Studio to submit.', false, true);
             }
-          }, 1500);
-        }, 1500);
-      }, 3000);
+          }, 500);
+        }, 500);
+      }, 1000);
     }, false);
 
     return true;
@@ -3011,7 +3011,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     var attempts = 0;
     _jobTimer = setInterval(function() {
       if (Date.now() < _spaceTransitionReadyAt) {
-        showStatus('⏳ Waiting 3s for Perplexity session & skills to initialize…', '#fbbf24');
+        showStatus('⏳ Waiting 1s for Perplexity session & skills to initialize…', '#fbbf24');
         return;
       }
       attempts++;
@@ -3052,7 +3052,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       sessionStorage.removeItem('la_pplx_awaiting_autosend_job_id');
       sessionStorage.removeItem('la_pplx_claude_verified_job');
       _isPasting = false;
-      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 3000);
+      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1000);
     }
     saveStateCache();
     ensureStudioBar();
@@ -3083,7 +3083,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (window.location.href !== _lastHref) {
       _lastHref = window.location.href;
       _studioBlockerReported = false;
-      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 3000);
+      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1000);
       updateBarUI();
       if (isSpaceOrCollectionUrl(_lastHref)) {
         processActiveJob();
@@ -3095,13 +3095,13 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     document.addEventListener('DOMContentLoaded', function() {
       ensureStudioBar();
       emitStudioStatus('extracting', 'Studio ready', 'Perplexity Studio loaded.', false);
-      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 3000);
+      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1000);
       processActiveJob();
     });
   } else {
     ensureStudioBar();
     emitStudioStatus('extracting', 'Studio ready', 'Perplexity Studio loaded.', false);
-    _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 3000);
+    _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1000);
     processActiveJob();
   }
 })();
@@ -3471,8 +3471,10 @@ async fn desktop_open_perplexity_studio(
     Ok(true)
 }
 
+/// Moves the Windows OS cursor along an eased, gently arced trajectory and emits
+/// `MOUSEEVENTF_MOVE` events so WebView/page listeners observe natural pointer motion.
 #[cfg(target_os = "windows")]
-pub(crate) fn perform_native_os_mouse_click(screen_x: i32, screen_y: i32) {
+unsafe fn perform_smooth_os_cursor_glide(screen_x: i32, screen_y: i32) {
     #[repr(C)]
     struct Point {
         x: i32,
@@ -3484,25 +3486,48 @@ pub(crate) fn perform_native_os_mouse_click(screen_x: i32, screen_y: i32) {
         fn SetCursorPos(x: i32, y: i32) -> i32;
         fn mouse_event(dw_flags: u32, dx: u32, dy: u32, dw_data: u32, dw_extra_info: usize);
     }
+    const MOUSEEVENTF_MOVE: u32 = 0x0001;
+    let mut start = Point {
+        x: screen_x,
+        y: screen_y,
+    };
+    let _ = GetCursorPos(&mut start);
+    let dx = (screen_x - start.x) as f64;
+    let dy = (screen_y - start.y) as f64;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist > 2.0 {
+        let steps = 18;
+        let nx_norm = -dy / dist;
+        let ny_norm = dx / dist;
+        let arc_mag = (dist * 0.06).clamp(3.0, 14.0);
+        for i in 1..=steps {
+            let u = (i as f64) / (steps as f64);
+            let ease = u * u * (3.0 - 2.0 * u);
+            let arc = 4.0 * u * (1.0 - u) * arc_mag;
+            let cx = (start.x as f64 + dx * ease + nx_norm * arc).round() as i32;
+            let cy = (start.y as f64 + dy * ease + ny_norm * arc).round() as i32;
+            SetCursorPos(cx, cy);
+            mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, 0);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    SetCursorPos(screen_x, screen_y);
+    mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, 0);
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn perform_native_os_mouse_click(screen_x: i32, screen_y: i32) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn mouse_event(dw_flags: u32, dx: u32, dy: u32, dw_data: u32, dw_extra_info: usize);
+    }
     const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
     const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
     unsafe {
-        let mut start = Point {
-            x: screen_x,
-            y: screen_y,
-        };
-        let _ = GetCursorPos(&mut start);
-        let steps = 5;
-        for i in 1..=steps {
-            let nx = start.x + ((screen_x - start.x) * i) / steps;
-            let ny = start.y + ((screen_y - start.y) * i) / steps;
-            SetCursorPos(nx, ny);
-            std::thread::sleep(std::time::Duration::from_millis(8));
-        }
-        SetCursorPos(screen_x, screen_y);
-        std::thread::sleep(std::time::Duration::from_millis(35));
+        perform_smooth_os_cursor_glide(screen_x, screen_y);
+        std::thread::sleep(std::time::Duration::from_millis(55));
         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-        std::thread::sleep(std::time::Duration::from_millis(25));
+        std::thread::sleep(std::time::Duration::from_millis(45));
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
     }
 }
@@ -3512,30 +3537,15 @@ pub(crate) fn perform_native_os_mouse_click(_screen_x: i32, _screen_y: i32) {}
 
 #[cfg(target_os = "windows")]
 pub(crate) fn perform_native_os_mouse_move(screen_x: i32, screen_y: i32) {
-    #[repr(C)]
-    struct Point {
-        x: i32,
-        y: i32,
-    }
     #[link(name = "user32")]
     extern "system" {
-        fn GetCursorPos(lp_point: *mut Point) -> i32;
-        fn SetCursorPos(x: i32, y: i32) -> i32;
+        fn mouse_event(dw_flags: u32, dx: u32, dy: u32, dw_data: u32, dw_extra_info: usize);
     }
+    const MOUSEEVENTF_MOVE: u32 = 0x0001;
     unsafe {
-        let mut start = Point {
-            x: screen_x,
-            y: screen_y,
-        };
-        let _ = GetCursorPos(&mut start);
-        let steps = 5;
-        for i in 1..=steps {
-            let nx = start.x + ((screen_x - start.x) * i) / steps;
-            let ny = start.y + ((screen_y - start.y) * i) / steps;
-            SetCursorPos(nx, ny);
-            std::thread::sleep(std::time::Duration::from_millis(8));
-        }
-        SetCursorPos(screen_x, screen_y);
+        perform_smooth_os_cursor_glide(screen_x, screen_y);
+        std::thread::sleep(std::time::Duration::from_millis(45));
+        mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, 0);
     }
 }
 

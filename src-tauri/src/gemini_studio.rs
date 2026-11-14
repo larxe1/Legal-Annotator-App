@@ -574,7 +574,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
     document.getElementById('la-gemini-pin-btn').addEventListener('click', function() {
       var homeUrl = getGeminiHomeUrl();
-      _notebookTransitionReadyAt = Date.now() + 3000;
+      _notebookTransitionReadyAt = Date.now() + 1000;
       showStatus('Opening Gemini homepage…', '#93c5fd');
       window.location.href = homeUrl;
     });
@@ -652,38 +652,13 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     updateBarUI();
   }
 
-  var _notebookTransitionReadyAt = Date.now() + 3000;
+  var _verifiedModelKeyOnCurrentPage = '';
+  var _notebookTransitionReadyAt = Date.now() + 1000;
 
   function returnToNotebookHome() {
     var homeUrl = getGeminiHomeUrl();
-    _notebookTransitionReadyAt = Date.now() + 3000;
-    if (!isNotebookUrl(window.location.href)) {
-      try {
-        var newChatSelectors = [
-          'a[aria-label*="New chat" i]',
-          'button[aria-label*="New chat" i]',
-          '[data-test-id*="new-chat" i]',
-          '[mattooltip*="New chat" i]',
-          'a[href="/app"]',
-          'a[href$="/app"]'
-        ];
-        for (var si = 0; si < newChatSelectors.length; si++) {
-          var candidates = Array.from(document.querySelectorAll(newChatSelectors[si]));
-          for (var ci = 0; ci < candidates.length; ci++) {
-            var nc = candidates[ci];
-            if (!nc || !nc.isConnected) continue;
-            if (nc.closest('#la-gemini-studio-bar') || nc.closest('#la-gemini-model-popover') || nc.closest('#la-gemini-fab-send')) continue;
-            if (nc.disabled || nc.getAttribute('aria-disabled') === 'true') continue;
-            var r = nc.getBoundingClientRect();
-            if (r.width <= 0 || r.height <= 0) continue;
-            var st = window.getComputedStyle ? window.getComputedStyle(nc) : null;
-            if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
-            nativeOsClickElement(nc, 'New chat');
-            return true;
-          }
-        }
-      } catch (e) {}
-    }
+    _verifiedModelKeyOnCurrentPage = '';
+    _notebookTransitionReadyAt = Date.now() + 1000;
     window.location.href = homeUrl;
     return true;
   }
@@ -722,7 +697,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         _state.pinnedNotebookUrl = norm;
         syncPrefsToApp();
         updateBarUI();
-        _notebookTransitionReadyAt = Date.now() + 3000;
+        _notebookTransitionReadyAt = Date.now() + 1000;
         showStatus('Matched "' + subj + '" Notebook! Opening…', '#4ade80');
         window.location.href = norm;
         return true;
@@ -747,7 +722,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     });
 
     if (bestCard) {
-      _notebookTransitionReadyAt = Date.now() + 3000;
+      _notebookTransitionReadyAt = Date.now() + 1000;
       showStatus('Opening "' + subj + '" Notebook…', '#4ade80');
       realPointerClick(bestCard);
       return true;
@@ -1152,7 +1127,6 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     if (!target || !target.isConnected) return false;
     var pos = getElementScreenCenter(target);
     showClickCursorAt(pos.cx, pos.cy, labelText);
-    dispatchDomHoverSequence(target, pos.cx, pos.cy);
     sendBridgeMsg({
       action: 'native_hover',
       x: pos.cx,
@@ -1171,7 +1145,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     var menuSafetyTimer = setTimeout(function() {
       _menuInteractionActive = false;
       flushBridgeQueue();
-    }, 5000);
+    }, 9000);
 
     function getPillText(el) {
       if (!el) return '';
@@ -1183,7 +1157,11 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     function isStateVerified(el) {
       if (!el || !el.isConnected) return false;
       var txt = getPillText(el);
-      return matchesModelLabelText(txt, targetModel);
+      if (!matchesModelLabelText(txt, targetModel)) return false;
+      if (!needThinking) return true;
+      if (matchesThinkingLevelText(txt, targetThinking)) return true;
+      if (_verifiedModelKeyOnCurrentPage === getModelPillText()) return true;
+      return false;
     }
 
     function dismissOverlayIfOpen() {
@@ -1259,16 +1237,15 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         var livePill = findGeminiModelPill(inputEl || findGeminiPromptInput()) || curPill;
         var openItems = getFloatingMenuItems(livePill);
         if (openItems.length === 0) {
-          if (openPolls === 4) {
-            openMenuTriggerWithKeys(livePill);
+          if (openPolls === 6) {
             nativeOsClickElement(livePill, 'Opening model menu');
             return;
           }
-          if (passNum >= 2 && openPolls === 7) {
+          if (passNum >= 2 && openPolls === 10) {
             nativeOsClickElement(livePill, 'Opening model menu');
             return;
           }
-          if (openPolls >= 12) {
+          if (openPolls >= 14) {
             clearInterval(openTimer);
             if (passNum < 2) {
               setTimeout(function() { runSelectionPass(passNum + 1); }, 280);
@@ -1287,13 +1264,13 @@ const GEMINI_INIT_SCRIPT: &str = r#"
             nativeOsClickElement(modelItem.el, 'Selecting ' + targetModel);
             setTimeout(function() {
               advanceToThinkingStep(passNum);
-            }, 320);
+            }, 550);
             return;
           }
         }
         // Model already matches (e.g. "Hydrogen Low"): do NOT re-click "4 Hydrogen", go straight to Thinking level!
         advanceToThinkingStep(passNum);
-      }, 150);
+      }, 180);
     }
 
     function advanceToThinkingStep(passNum) {
@@ -1321,7 +1298,6 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       var pillReopened = false;
       var submenuOpenedAt = 0;
       var submenuKeySent = false;
-      var submenuNativeHoverSent = false;
       var levelClickSent = false;
       var thinkPolls = 0;
 
@@ -1339,11 +1315,12 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         if (lvlRow && !levelClickSent) {
           levelClickSent = true;
           clearInterval(thinkTimer);
+          nativeOsClickElement(lvlRow, 'Thinking: ' + targetThinking);
           setTimeout(function() {
-            var freshRow = findThinkingLevelRow(pNow, targetThinking) || lvlRow;
-            nativeOsClickElement(freshRow, 'Thinking: ' + targetThinking);
-            waitVerifyPill(passNum);
-          }, 90);
+            _verifiedModelKeyOnCurrentPage = getModelPillText();
+            dismissOverlayIfOpen();
+            finish(true);
+          }, 500);
           return;
         }
 
@@ -1359,24 +1336,18 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           if (trig) {
             if (!submenuOpenedAt) {
               submenuOpenedAt = Date.now();
-              nativeOsClickElement(trig, 'Opening Thinking level');
-              return;
-            }
-            if (!submenuKeySent && (Date.now() - submenuOpenedAt >= 280)) {
-              submenuKeySent = true;
-              programmaticDomSubmenuKey(trig);
-              nativeOsClickElement(trig, 'Clicking Thinking level');
-              return;
-            }
-            if (passNum >= 2 && !submenuNativeHoverSent && (Date.now() - submenuOpenedAt >= 600)) {
-              submenuNativeHoverSent = true;
               nativeOsHoverElement(trig, 'Hovering Thinking level');
+              return;
+            }
+            if (!submenuKeySent && (Date.now() - submenuOpenedAt >= 420)) {
+              submenuKeySent = true;
+              nativeOsClickElement(trig, 'Opening Thinking level');
               return;
             }
           }
         }
 
-        if (thinkPolls >= 18) {
+        if (thinkPolls >= 22) {
           clearInterval(thinkTimer);
           dismissOverlayIfOpen();
           var endPill = findGeminiModelPill(inputEl || findGeminiPromptInput()) || pNow;
@@ -1388,7 +1359,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
             finish(false);
           }
         }
-      }, 140);
+      }, 180);
     }
 
     function waitVerifyPill(passNum) {
@@ -2019,26 +1990,37 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     _isPasting = true;
-    try { activeInput.scrollIntoView({ block: 'center' }); } catch (e) {}
-    var pos = getElementScreenCenter(activeInput);
-    if (!pos || pos.cy < 44) {
-      _isPasting = false;
-      return false;
-    }
+    showStatus('Verifying ' + getModelPillText() + ' with OS mouse…', '#93c5fd');
 
-    if (_state.jobId) {
-      sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
-    }
-    armAutoSendWatcher();
-    showStatus('Clicking prompt box (OS) → waiting 3s → OS Ctrl+V → waiting 3s → OS Enter…', '#93c5fd');
-    emitStudioStatus('extracting', 'Pasting via OS', 'Clicking prompt box (OS) → waiting 3s → OS Ctrl+V → waiting 3s → OS Enter…', false);
+    ensureGeminiModelSelected(activeInput, function(modelVerified) {
+      var targetInput = findGeminiPromptInput() || activeInput;
+      if (!targetInput || !targetInput.isConnected) {
+        _isPasting = false;
+        setTimeout(function() { processActiveJob(); }, 400);
+        return;
+      }
 
-    sendBridgeMsg({
-      action: 'native_paste_and_submit',
-      x: pos.cx,
-      y: pos.cy,
-      dpr: window.devicePixelRatio || 1,
-      autoSubmit: !!_state.autoSubmit
+      try { targetInput.scrollIntoView({ block: 'center' }); } catch (e) {}
+      var pos = getElementScreenCenter(targetInput);
+      if (!pos || pos.cy < 44) {
+        _isPasting = false;
+        return;
+      }
+
+      if (_state.jobId) {
+        sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
+      }
+      armAutoSendWatcher();
+      showStatus('Clicking prompt box (OS) → waiting 1s → OS Ctrl+V → waiting 1s → OS Enter…', '#93c5fd');
+      emitStudioStatus('extracting', 'Pasting via OS', 'Clicking prompt box (OS) → waiting 1s → OS Ctrl+V → waiting 1s → OS Enter…', false);
+
+      sendBridgeMsg({
+        action: 'native_paste_and_submit',
+        x: pos.cx,
+        y: pos.cy,
+        dpr: window.devicePixelRatio || 1,
+        autoSubmit: !!_state.autoSubmit
+      });
     });
 
     return true;
@@ -2188,7 +2170,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     var attempts = 0;
     _jobTimer = setInterval(function() {
       if (Date.now() < _notebookTransitionReadyAt) {
-        showStatus('Waiting 3s for Gemini session & skills to initialize…', '#93c5fd');
+        showStatus('Waiting 1s for Gemini session & skills to initialize…', '#93c5fd');
         return;
       }
       attempts++;
@@ -2230,7 +2212,12 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
       sessionStorage.removeItem('la_gemini_auto_opened_job_id');
       _isPasting = false;
-      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 3000);
+      _verifiedModelKeyOnCurrentPage = '';
+      if (_jobTimer) {
+        clearInterval(_jobTimer);
+        _jobTimer = null;
+      }
+      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1000);
     }
     saveStateCache();
     ensureStudioBar();
@@ -2242,7 +2229,10 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         if (sessionStorage.getItem('la_gemini_nav_once_job_id') !== String(_state.jobId)) {
           sessionStorage.setItem('la_gemini_nav_once_job_id', String(_state.jobId));
           showStatus('Opening Gemini homepage…', '#93c5fd');
-          if (returnToNotebookHome()) return;
+          if (returnToNotebookHome()) {
+            setTimeout(function() { processActiveJob(); }, 1200);
+            return;
+          }
         }
       }
     }
@@ -2261,8 +2251,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       if (window.location.href !== _lastHref) {
         _lastHref = window.location.href;
         _studioBlockerReported = false;
+        _verifiedModelKeyOnCurrentPage = '';
         updateBarUI();
-        _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 3000);
+        _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1000);
         processActiveJob();
       }
     } catch (e) {
@@ -2272,7 +2263,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   function bootGeminiStudio() {
     try {
-      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 3000);
+      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1000);
       ensureStudioBar();
       emitStudioStatus('extracting', 'Studio ready', 'Gemini Studio loaded.', false);
       processActiveJob();
@@ -2743,7 +2734,7 @@ pub async fn desktop_open_gemini_studio(
                                                 screen_x, screen_y,
                                             );
                                             std::thread::sleep(std::time::Duration::from_millis(
-                                                3000,
+                                                1000,
                                             ));
                                             let _ = gw.show();
                                             let _ = gw.unminimize();
@@ -2759,12 +2750,12 @@ pub async fn desktop_open_gemini_studio(
                                             ));
                                             crate::perform_native_os_ctrl_v();
                                             std::thread::sleep(std::time::Duration::from_millis(
-                                                300,
+                                                200,
                                             ));
                                             let _ = gw.set_focus();
                                             crate::perform_native_os_key_space();
                                             std::thread::sleep(std::time::Duration::from_millis(
-                                                2700,
+                                                800,
                                             ));
                                             if auto_submit {
                                                 let _ = gw.set_focus();

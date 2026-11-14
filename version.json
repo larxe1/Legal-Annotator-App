@@ -1,7 +1,7 @@
 {
-    "version":  "1.22.6",
-    "build":  60,
-    "updatedAt":  "2026-11-14T08:10:23Z",
-    "notes":  "Use real OS clipboard Ctrl+V, Space, and Enter input with 3s delays in Gemini Digest Studio, mask navigator.webdriver, and stop auto-clicking the model picker.",
+    "version":  "1.22.7",
+    "build":  61,
+    "updatedAt":  "2026-11-14T10:17:02Z",
+    "notes":  "Select 4 Hydrogen High via human-like OS cursor movement, reduce studio delays to 1s, and fix 2nd-PDF trigger after previous Gemini chat.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
