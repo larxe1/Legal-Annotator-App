@@ -409,13 +409,12 @@ pub fn encode_grayscale_jpeg(gray: &[u8], width: u32, height: u32, quality: u8) 
         0xFF, 0xDA, 0x00, 8, 1, 1, 0x00, 0x00, 0x3F, 0x00,
     ]);
 
-    // 7. Encode 8x8 blocks with dust-despeckle & high-frequency deadzone
+    // 7. Encode 8x8 blocks with dust-despeckle
     let wu = width as usize;
     let hu = height as usize;
     let mut prev_dc: i32 = 0;
     let mut block = [0.0f32; 64];
     let mut zz = [0i32; 64];
-    let apply_ac_deadzone = q <= 46;
 
     let mut by = 0usize;
     while by < hu {
@@ -461,10 +460,7 @@ pub fn encode_grayscale_jpeg(gray: &[u8], width: u32, height: u32, quality: u8) 
 
             for z in 0..64 {
                 let nat_idx = ZIGZAG_ORDER[z];
-                let mut qval = (block[nat_idx] * fdtbl[nat_idx]).round() as i32;
-                if apply_ac_deadzone && z >= 24 && qval.abs() == 1 {
-                    qval = 0;
-                }
+                let qval = (block[nat_idx] * fdtbl[nat_idx]).round() as i32;
                 zz[z] = qval;
             }
 
@@ -579,9 +575,9 @@ fn bgra_to_clean_legal_grayscale(
         let out_v = if luma >= white_t {
             255u8
         } else if ink_boost && luma <= ink_t {
-            ((luma * 2) / 5).clamp(0, 42) as u8
+            ((luma * 3) / 10).clamp(0, 18) as u8
         } else {
-            let scaled = 42 + ((luma - ink_t) * 213) / span;
+            let scaled = 18 + ((luma - ink_t) * 237) / span;
             let clamped = scaled.clamp(0, 255) as u8;
             if clamped >= 245 {
                 255u8
@@ -591,36 +587,32 @@ fn bgra_to_clean_legal_grayscale(
         };
         gray.push(out_v);
     }
-    gray
+    sharpen_legal_text_grayscale(&gray, width, height)
 }
 
-fn downsample_grayscale(gray: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
-    if dst_w >= src_w || dst_h >= src_h || dst_w == 0 || dst_h == 0 {
+/// Fast 3x3 unsharp mask on non-paper interior pixels to restore crisp serif and scan edges.
+fn sharpen_legal_text_grayscale(gray: &[u8], width: u32, height: u32) -> Vec<u8> {
+    if width < 3 || height < 3 {
         return gray.to_vec();
     }
-    let sw = src_w as usize;
-    let sh = src_h as usize;
-    let dw = dst_w as usize;
-    let dh = dst_h as usize;
-    let mut out = Vec::with_capacity(dw * dh);
+    let wu = width as usize;
+    let hu = height as usize;
+    let mut out = gray.to_vec();
 
-    for dy in 0..dh {
-        let sy0 = (dy * sh) / dh;
-        let sy1 = (((dy + 1) * sh) / dh).max(sy0 + 1).min(sh);
-        for dx in 0..dw {
-            let sx0 = (dx * sw) / dw;
-            let sx1 = (((dx + 1) * sw) / dw).max(sx0 + 1).min(sw);
-            let mut sum = 0u32;
-            let mut cnt = 0u32;
-            for sy in sy0..sy1 {
-                let row = sy * sw;
-                for sx in sx0..sx1 {
-                    sum += gray[row + sx] as u32;
-                    cnt += 1;
-                }
+    for y in 1..(hu - 1) {
+        let row_off = y * wu;
+        for x in 1..(wu - 1) {
+            let idx = row_off + x;
+            let center = gray[idx] as i32;
+            if center < 248 {
+                let top = gray[idx - wu] as i32;
+                let bottom = gray[idx + wu] as i32;
+                let left = gray[idx - 1] as i32;
+                let right = gray[idx + 1] as i32;
+                let neighbor_avg = (top + bottom + left + right) / 4;
+                let boosted = (center + ((center - neighbor_avg) * 3) / 4).clamp(0, 255) as u8;
+                out[idx] = if boosted >= 246 { 255 } else { boosted };
             }
-            let avg = (sum / cnt.max(1)) as u8;
-            out.push(if avg >= 246 { 255 } else { avg });
         }
     }
     out
@@ -638,23 +630,10 @@ fn encode_grayscale_with_budget(
         return (jpeg, width, height);
     }
 
-    // Pass 2: lower JPEG quality on dense pages
-    let q2 = (initial_quality.saturating_sub(14)).max(22);
+    // Pass 2: moderate quality step-down on dense pages at full resolution
+    let q2 = (initial_quality.saturating_sub(10)).max(46);
     jpeg = encode_grayscale_jpeg(gray, width, height, q2);
-    if jpeg.len() <= max_page_bytes {
-        return (jpeg, width, height);
-    }
-
-    // Pass 3: downsample dense photo/halftone page by 0.74x so it stays within target budget
-    let dw = ((width as f64 * 0.74).round() as u32).max(400);
-    let dh = ((height as f64 * 0.74).round() as u32).max(400);
-    let small_gray = downsample_grayscale(gray, width, height, dw, dh);
-    let jpeg_small = encode_grayscale_jpeg(&small_gray, dw, dh, 24);
-    if jpeg_small.len() < jpeg.len() {
-        (jpeg_small, dw, dh)
-    } else {
-        (jpeg, width, height)
-    }
+    (jpeg, width, height)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -864,29 +843,29 @@ struct PresetConfig {
 fn get_preset_config(preset: &str) -> PresetConfig {
     match preset {
         "max" => PresetConfig {
-            target_long_edge_px: 1140,
-            jpeg_quality: 34,
-            white_thresh: 196,
-            white_margin: 26,
+            target_long_edge_px: 1650,
+            jpeg_quality: 54,
+            white_thresh: 200,
+            white_margin: 18,
             ink_boost: true,
-            max_page_jpeg_bytes: 34_000,
+            max_page_jpeg_bytes: 75_000,
         },
         "archival" => PresetConfig {
-            target_long_edge_px: 1620,
-            jpeg_quality: 54,
-            white_thresh: 214,
-            white_margin: 15,
+            target_long_edge_px: 2480,
+            jpeg_quality: 78,
+            white_thresh: 216,
+            white_margin: 12,
             ink_boost: true,
-            max_page_jpeg_bytes: 72_000,
+            max_page_jpeg_bytes: 190_000,
         },
         _ => PresetConfig {
-            // "balanced" default: crisp legal text + ~75-80% size reduction
-            target_long_edge_px: 1340,
-            jpeg_quality: 42,
-            white_thresh: 204,
-            white_margin: 22,
+            // "balanced" default: crisp legal text + high legibility
+            target_long_edge_px: 2040,
+            jpeg_quality: 68,
+            white_thresh: 206,
+            white_margin: 15,
             ink_boost: true,
-            max_page_jpeg_bytes: 46_000,
+            max_page_jpeg_bytes: 115_000,
         },
     }
 }
@@ -897,15 +876,24 @@ fn normalize_page_points_and_pixels(
     target_long_edge_px: c_int,
 ) -> (f64, f64, c_int, c_int) {
     // Preserve exact original PDF page point dimensions so existing annotations, viewports,
-    // and cached coordinates stay 100% aligned, while bounding rendered pixel dimensions by target_long_edge_px.
+    // and cached coordinates stay 100% aligned, while bounding rendered pixel dimensions.
     let width_pt = raw_w_pt.clamp(72.0, 4800.0);
     let height_pt = raw_h_pt.clamp(72.0, 6400.0);
 
-    // Compute pixel dimensions strictly bounded by target_long_edge_px
-    let long_pt = width_pt.max(height_pt).max(1.0);
-    let px_scale = (target_long_edge_px as f64) / long_pt;
-    let render_w = ((width_pt * px_scale).round() as c_int).clamp(360, target_long_edge_px);
-    let render_h = ((height_pt * px_scale).round() as c_int).clamp(360, target_long_edge_px);
+    // 2-up landscape book spreads need extra horizontal resolution so each half-page stays crisp
+    let (render_w, render_h) = if width_pt > height_pt * 1.15 {
+        let max_w = (target_long_edge_px * 14) / 10;
+        let px_scale = (target_long_edge_px as f64 * 0.78) / height_pt.max(1.0);
+        let rw = ((width_pt * px_scale).round() as c_int).clamp(360, max_w);
+        let rh = ((height_pt * px_scale).round() as c_int).clamp(360, target_long_edge_px);
+        (rw, rh)
+    } else {
+        let long_pt = width_pt.max(height_pt).max(1.0);
+        let px_scale = (target_long_edge_px as f64) / long_pt;
+        let rw = ((width_pt * px_scale).round() as c_int).clamp(360, target_long_edge_px);
+        let rh = ((height_pt * px_scale).round() as c_int).clamp(360, target_long_edge_px);
+        (rw, rh)
+    };
 
     (width_pt, height_pt, render_w, render_h)
 }
@@ -1351,15 +1339,7 @@ pub fn execute_streaming_ocr_compress(
         job.updated_at = now_ms();
         persist_job_status(&data_dir, &job);
 
-        let orig_avg_page_bytes = if job.original_bytes > 0 {
-            (job.original_bytes / (total_pages as u64)).max(20_000) as usize
-        } else {
-            200_000usize
-        };
-        let page_jpeg_budget = cfg
-            .max_page_jpeg_bytes
-            .min((orig_avg_page_bytes * 60) / 100)
-            .max(18_000);
+        let page_jpeg_budget = cfg.max_page_jpeg_bytes;
 
         for page_num in 1..=total_pages {
             if let Ok(c_guard) = CANCELLED_JOBS.lock() {

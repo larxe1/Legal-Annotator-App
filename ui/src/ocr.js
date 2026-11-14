@@ -382,10 +382,11 @@ export function applyOcrToRenderedPage(pageNum, trueId = null) {
     return false;
   }
 
-  // Only skip if page already has abundant native non-OCR text items (> 25 items and more than OCR lines)
+  // Only skip if page already has abundant native non-OCR text words (> 25 words and >= 60% of OCR word count)
   const nativeItems = (pgState.textItems || []).filter(i => !i.ocr && i.str && i.str.trim());
+  const nativeWordCount = nativeItems.reduce((sum, i) => sum + i.str.trim().split(/\s+/).filter(Boolean).length, 0);
   const ocrWordCount = ocrData.lines.reduce((sum, l) => sum + (Array.isArray(l.words) && l.words.length ? l.words.length : 1), 0);
-  if (nativeItems.length > 25 && nativeItems.length > ocrWordCount * 1.2) {
+  if (nativeWordCount > 25 && nativeWordCount >= ocrWordCount * 0.6) {
     return false;
   }
 

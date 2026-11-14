@@ -1,7 +1,7 @@
 {
-    "version":  "1.22.14",
-    "build":  68,
-    "updatedAt":  "2026-11-14T15:17:23Z",
-    "notes":  "Set post-completion Gemini digest auto-send delay to 1.5s, speed up watcher polling, remove redundant Notebook transition waits when already idle, and shorten batch inter-case pause to 1.5s.",
+    "version":  "1.22.15",
+    "build":  69,
+    "updatedAt":  "2026-11-14T15:34:15Z",
+    "notes":  "Fix OCR and Compressor Studio window boot, upgrade scanned book OCR and compression sharpness, contrast, and resolution, and fix PDF text-selection ghosting while preserving native text layers.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

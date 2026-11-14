@@ -1641,7 +1641,8 @@ async function refreshSettingsVersionCard(manual) {
 }
 
 async function initDesktopBridge() {
-  const isPrintStudioQuery = new URLSearchParams(window.location.search || '').get('print-studio') === '1';
+  const searchParams = new URLSearchParams(window.location.search || '');
+  const isPrintStudioQuery = searchParams.get('print-studio') === '1';
   let isPrintStudioMode = isPrintStudioQuery || !!document.getElementById('print-studio-app');
   if (!isPrintStudioMode && window.__DESKTOP_PRINT_STUDIO__?.getMode) {
     try {
@@ -1650,6 +1651,16 @@ async function initDesktopBridge() {
     } catch {}
   }
   if (isPrintStudioMode) return;
+
+  const isOcrStudioQuery = searchParams.get('studio') === '1' || searchParams.get('ocr-studio') === '1';
+  let isOcrStudioMode = isOcrStudioQuery || !!document.getElementById('ocr-studio-app');
+  if (!isOcrStudioMode && window.__DESKTOP_PDFIUM__?.getStudioMode) {
+    try {
+      const mode = await window.__DESKTOP_PDFIUM__.getStudioMode();
+      if (mode?.isStudio) isOcrStudioMode = true;
+    } catch {}
+  }
+  if (isOcrStudioMode) return;
 
   injectDesktopUI();
   try { injectSettingsVersionCard(); } catch (e) { console.warn('[Desktop Bridge] version card error:', e); }

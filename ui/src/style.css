@@ -1082,7 +1082,13 @@ body.sidebar-collapsed #app:not(.sidebar-autohide):not([data-rail-autohide="true
 .pg-wrap canvas { display: block; }
 .txt-layer { position: absolute; top: 0; left: 0; overflow: hidden; pointer-events: none; user-select: none; -webkit-user-select: none; }
 .txt-layer.sel { pointer-events: all; user-select: text; -webkit-user-select: text; cursor: text; }
-.txt-layer span { color: transparent; position: absolute; white-space: pre; transform-origin: 0% 0%; cursor: text; }
+.txt-layer span { color: transparent; -webkit-text-fill-color: transparent; position: absolute; white-space: pre; transform-origin: 0% 0%; cursor: text; }
+.txt-layer ::selection,
+.txt-layer span::selection { color: transparent !important; -webkit-text-fill-color: transparent !important; }
+[data-skin="folio"] .txt-layer ::selection,
+[data-skin="folio"] .txt-layer span::selection { background: rgba(22, 74, 56, 0.22); color: transparent !important; -webkit-text-fill-color: transparent !important; }
+[data-skin="casebook"] .txt-layer ::selection,
+[data-skin="casebook"] .txt-layer span::selection { background: rgba(221, 108, 69, 0.28); color: transparent !important; -webkit-text-fill-color: transparent !important; }
 .draw-canvas { position: absolute; top: 0; left: 0; pointer-events: none; cursor: crosshair; z-index: 4; }
 .draw-canvas.active { pointer-events: all; z-index: 6; }
 .ann-ov { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 3; }

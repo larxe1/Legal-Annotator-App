@@ -364,12 +364,29 @@ export function watchStudioJobForCurrentPdf(docId) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 export async function checkAndBootOcrStudioApp() {
-  const isUrlStudio = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('studio') === '1';
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search || '');
+  const isUrlStudio = params.get('studio') === '1' || params.get('ocr-studio') === '1';
   let studioInfo = { isStudio: isUrlStudio };
 
-  if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.getStudioMode) {
+  if (!window.__DESKTOP_PDFIUM__?.getStudioMode && (window.__TAURI_INTERNALS__ || window.__TAURI__)) {
+    try {
+      await import('./desktop-bridge.js');
+    } catch (err) {
+      console.warn('[ocr-studio] desktop-bridge import notice:', err);
+    }
+  }
+
+  if (window.__DESKTOP_PDFIUM__?.getStudioMode) {
     try {
       const modeRes = await window.__DESKTOP_PDFIUM__.getStudioMode();
+      if (modeRes?.isStudio || isUrlStudio) {
+        studioInfo = { ...modeRes, isStudio: true };
+      }
+    } catch {}
+  } else if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
+    try {
+      const modeRes = await window.__TAURI_INTERNALS__.invoke('desktop_get_studio_mode');
       if (modeRes?.isStudio || isUrlStudio) {
         studioInfo = { ...modeRes, isStudio: true };
       }
