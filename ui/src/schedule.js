@@ -898,13 +898,25 @@ function getSyncDateWindow() {
   };
 }
 
+function stripParentheticalNotes(subject) {
+  return String(subject || '').replace(/\s*\([^)]*\)\s*$/g, '').trim();
+}
+
+function canonicalCourseKey(subject) {
+  const cleaned = stripParentheticalNotes(subject).toLowerCase();
+  const code = cleaned.match(/\b(\d{3})\b/)?.[1];
+  if (code) return `code:${code}`;
+  return `name:${cleaned.replace(/[^a-z0-9]+/g, ' ').trim()}`;
+}
+
 function buildScheduleFromRawEvents(rawEvents, { source, icalUrl } = {}) {
   const prefs = loadGcalPrefs();
   const windowRange = getSyncDateWindow();
   const existingSchedule = loadScheduleData();
+  const todayStr = toLocalDateStr(new Date());
 
   const instances = [];
-  const keptMap = new Map();
+  const seenInstanceKeys = new Set();
   const ignoredMap = new Map();
   let totalFetched = 0;
 
@@ -938,6 +950,10 @@ function buildScheduleFromRawEvents(rawEvents, { source, icalUrl } = {}) {
     const prof = enrichCourseMetadata(day, summary, rawEv.location, rawEv.description);
     const startMinutes = isAllDay ? 0 : (startDt.getHours() * 60 + startDt.getMinutes());
 
+    const instanceDedupKey = `${dateStr}|${summary.toLowerCase()}|${time.toLowerCase()}`;
+    if (seenInstanceKeys.has(instanceDedupKey)) return;
+    seenInstanceKeys.add(instanceDedupKey);
+
     instances.push({
       id: rawEv.id || `gcal_${dateStr}_${idx}`,
       dateStr,
@@ -948,19 +964,74 @@ function buildScheduleFromRawEvents(rawEvents, { source, icalUrl } = {}) {
       prof,
       isAllDay,
       startMinutes,
+      isRecurring: Boolean(rawEv.recurringEventId || rawEv.isRecurring),
       source: source || 'gcal',
     });
-
-    const keptKey = `${day}|${summary.toLowerCase()}|${time.toLowerCase()}`;
-    if (!keptMap.has(keptKey)) {
-      keptMap.set(keptKey, { day, subject: summary, time, prof, startMinutes });
-    }
   });
 
   instances.sort((a, b) => a.dateStr.localeCompare(b.dateStr) || (a.startMinutes - b.startMinutes));
 
-  // Derive recurring weekly schedule (deduplicated by day + subject + time)
-  const weeklySchedule = Array.from(keptMap.values())
+  // Derive canonical weekly schedule from current/upcoming instances (excludes dropped past classes
+  // and one-off extended/makeup overrides while keeping exact dated instances in Calendar Grid)
+  const upcomingInstances = instances.filter(inst => inst.dateStr >= todayStr);
+  const pool = upcomingInstances.length > 0 ? upcomingInstances : instances;
+
+  const courseGroups = new Map();
+  let globalMaxVariantCount = 0;
+
+  pool.forEach(inst => {
+    const cleanSubj = stripParentheticalNotes(inst.subject) || inst.subject;
+    const courseKey = `${inst.day}|${canonicalCourseKey(inst.subject)}`;
+    if (!courseGroups.has(courseKey)) {
+      courseGroups.set(courseKey, new Map());
+    }
+    const variants = courseGroups.get(courseKey);
+    const variantKey = `${cleanSubj.toLowerCase()}|${(inst.time || '').toLowerCase()}`;
+    const existing = variants.get(variantKey);
+    if (existing) {
+      if (!existing.dates.has(inst.dateStr)) {
+        existing.dates.add(inst.dateStr);
+        existing.count = existing.dates.size;
+      }
+      if (inst.isRecurring) existing.isRecurring = true;
+      if (inst.subject === cleanSubj) existing.hasExactClean = true;
+      if (!existing.prof && inst.prof) existing.prof = inst.prof;
+    } else {
+      variants.set(variantKey, {
+        day: inst.day,
+        subject: cleanSubj,
+        time: inst.time,
+        prof: inst.prof,
+        startMinutes: inst.startMinutes,
+        isRecurring: inst.isRecurring,
+        hasExactClean: inst.subject === cleanSubj,
+        dates: new Set([inst.dateStr]),
+        count: 1,
+      });
+    }
+    const cnt = variants.get(variantKey).count;
+    if (cnt > globalMaxVariantCount) globalMaxVariantCount = cnt;
+  });
+
+  const chosenWeekly = [];
+  courseGroups.forEach(variants => {
+    const sorted = Array.from(variants.values()).sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      if (a.hasExactClean !== b.hasExactClean) return a.hasExactClean ? -1 : 1;
+      if (a.isRecurring !== b.isRecurring) return a.isRecurring ? -1 : 1;
+      return a.startMinutes - b.startMinutes;
+    });
+    if (sorted.length === 0) return;
+
+    const top = sorted[0];
+    // If calendar has recurring classes (2+ occurrences), skip one-off single-day classes/makeups
+    if (globalMaxVariantCount >= 2 && top.count < 2) {
+      return;
+    }
+    chosenWeekly.push(top);
+  });
+
+  const weeklySchedule = chosenWeekly
     .sort((a, b) => {
       const da = DAY_ORDER.indexOf(a.day);
       const db = DAY_ORDER.indexOf(b.day);
@@ -990,7 +1061,7 @@ function buildScheduleFromRawEvents(rawEvents, { source, icalUrl } = {}) {
     collegeCount: instances.length,
     ignoredCount: Math.max(0, totalFetched - instances.length),
     weeklyClasses: weeklySchedule.length,
-    keptSamples: Array.from(keptMap.values()).map(k => `${k.day} · ${k.subject} (${k.time})`).slice(0, 24),
+    keptSamples: chosenWeekly.map(k => `${k.day} · ${k.subject} (${k.time})`).slice(0, 24),
     ignoredSamples: Array.from(ignoredMap.values()).slice(0, 24),
   };
 

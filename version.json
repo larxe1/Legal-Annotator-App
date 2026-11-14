@@ -1,7 +1,7 @@
 {
-    "version":  "1.22.0",
-    "build":  54,
-    "updatedAt":  "2026-11-14T05:55:04Z",
-    "notes":  "Add Study Desk Google Calendar sync (OAuth and iCal feed with smart college-class filter) and Weekly Docket / Calendar Grid view toggle, and remove obsolete 113: Labor 1 default classes.",
+    "version":  "1.22.1",
+    "build":  55,
+    "updatedAt":  "2026-11-14T06:05:02Z",
+    "notes":  "Deduplicate Google Calendar weekly schedule cards so one-off class extensions, makeup sessions, and dropped past classes no longer duplicate on the Study Desk Weekly Docket.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
