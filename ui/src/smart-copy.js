@@ -44,14 +44,57 @@ export function getFolderBreadcrumb(folderId) {
   return parts.length ? parts.join(' › ') : 'Current Subfolder';
 }
 
+const GLOBAL_MAIN_INSTR_KEY = 'copy_instr_global_main_v1';
+const GLOBAL_FOOTER_INSTR_KEY = 'copy_instr_global_footer_v1';
+
+export const DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE =
+  'Create a digest for this case. The topic is {topic}, specifically {subtopic}.';
+
+export const DEFAULT_DIGEST_FOOTER_INSTRUCTION =
+  '---\nApply both the ph-case-digest and strict-source-verification skills. Begin Line 1 with "I have accessed the text from..." followed immediately by "### 1. Recit-Ready Summary Table" (no case title banner above it), and end with "### 6. Sources, Syllabus Note & Self-QA Verification (exclude)".';
+
 /**
- * Automatically builds the main digest instruction from the PDF's folder (Topic)
- * and subfolder chain (Subtopic), e.g.:
- * "Create a digest for this case. The topic is Sales, specifically Parties in a Sale (Sales > Parties in a Sale)."
+ * Reads the saved global Main Instruction template (preserving '' if intentionally cleared).
  */
-export function getDefaultDigestInstructionForFolder(folderId) {
+export function getGlobalMainCopyInstructionTemplate() {
+  const stored = safeStorageGet(GLOBAL_MAIN_INSTR_KEY, null);
+  return stored === null ? DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE : stored;
+}
+
+/**
+ * Persists the global Main Instruction template to localStorage and Supabase app_settings.
+ */
+export function saveGlobalMainCopyInstructionTemplate(text) {
+  const clean = String(text ?? '').trim();
+  safeStorageSet(GLOBAL_MAIN_INSTR_KEY, clean);
+  dbSetSetting(GLOBAL_MAIN_INSTR_KEY, clean).catch(() => {});
+  updateCopyInstructionButtonState();
+}
+
+/**
+ * Reads the saved global Bottom Instruction (preserving '' if intentionally cleared).
+ */
+export function getGlobalFooterCopyInstruction() {
+  const stored = safeStorageGet(GLOBAL_FOOTER_INSTR_KEY, null);
+  return stored === null ? DEFAULT_DIGEST_FOOTER_INSTRUCTION : stored;
+}
+
+/**
+ * Persists the global Bottom Instruction to localStorage and Supabase app_settings.
+ */
+export function saveGlobalFooterCopyInstruction(text) {
+  const clean = String(text ?? '').trim();
+  safeStorageSet(GLOBAL_FOOTER_INSTR_KEY, clean);
+  dbSetSetting(GLOBAL_FOOTER_INSTR_KEY, clean).catch(() => {});
+  updateCopyInstructionButtonState();
+}
+
+/**
+ * Resolves { topic, subtopic } from a folder's hierarchy and parent subject.
+ */
+export function resolveFolderTopicParts(folderId) {
   if (!folderId || !Array.isArray(S.folders)) {
-    return 'Create a digest for this case.';
+    return { topic: '', subtopic: '' };
   }
   const folderChain = [];
   let cur = S.folders.find(f => f.id === folderId);
@@ -71,37 +114,86 @@ export function getDefaultDigestInstructionForFolder(folderId) {
   }
 
   if (folderChain.length >= 2) {
-    const topic = folderChain[0];
-    const subtopic = folderChain.slice(1).join(' > ');
-    return `Create a digest for this case. The topic is ${topic}, specifically ${subtopic}.`;
+    return { topic: folderChain[0], subtopic: folderChain.slice(1).join(' > ') };
   }
 
   if (folderChain.length === 1) {
     const folderName = folderChain[0];
     if (subjectName && subjectName.toLowerCase() !== folderName.toLowerCase()) {
-      return `Create a digest for this case. The topic is ${subjectName}, specifically ${folderName}.`;
+      return { topic: subjectName, subtopic: folderName };
     }
-    return `Create a digest for this case. The topic is ${folderName}.`;
+    return { topic: folderName, subtopic: '' };
   }
 
   if (subjectName) {
-    return `Create a digest for this case. The topic is ${subjectName}.`;
+    return { topic: subjectName, subtopic: '' };
   }
 
-  return 'Create a digest for this case.';
+  return { topic: '', subtopic: '' };
 }
 
-export const DEFAULT_DIGEST_FOOTER_INSTRUCTION =
-  '---\nApply both the ph-case-digest and strict-source-verification skills. Begin Line 1 with "I have accessed the text from..." followed immediately by "### 1. Recit-Ready Summary Table" (no case title banner above it), and end with "### 6. Sources, Syllabus Note & Self-QA Verification (exclude)".';
+/**
+ * Resolves {topic} and {subtopic} placeholders in a global main instruction template.
+ */
+export function resolveGlobalMainTemplate(template, topic = '', subtopic = '') {
+  const tpl = String(template ?? '');
+  if (!tpl.trim()) return '';
+
+  const hasTopicPh = tpl.includes('{topic}');
+  const hasSubtopicPh = tpl.includes('{subtopic}');
+  if (!hasTopicPh && !hasSubtopicPh) {
+    return tpl.trim();
+  }
+
+  let out = tpl;
+  if (topic && subtopic) {
+    out = out.replace(/\{topic\}/g, topic).replace(/\{subtopic\}/g, subtopic);
+  } else if (topic && !subtopic) {
+    out = out
+      .replace(/,\s*specifically\s*\{subtopic\}/gi, '')
+      .replace(/\bspecifically\s*\{subtopic\}/gi, '')
+      .replace(/\{topic\}/g, topic)
+      .replace(/\{subtopic\}/g, '');
+  } else if (!topic && subtopic) {
+    out = out
+      .replace(/\{topic\}\s*,\s*specifically\s*/gi, '')
+      .replace(/\{topic\}/g, '')
+      .replace(/\{subtopic\}/g, subtopic);
+  } else {
+    out = out
+      .replace(/\s*The topic is\s*\{topic\}\s*,\s*specifically\s*\{subtopic\}\.?/gi, '')
+      .replace(/\s*The topic is\s*\{topic\}\.?/gi, '')
+      .replace(/,\s*specifically\s*\{subtopic\}/gi, '')
+      .replace(/\bspecifically\s*\{subtopic\}/gi, '')
+      .replace(/\{topic\}/g, '')
+      .replace(/\{subtopic\}/g, '');
+  }
+
+  return out
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,;!?])/g, '$1')
+    .trim();
+}
 
 /**
- * Combines the automatic Topic/Subtopic Main Instruction with any optional extra
+ * Automatically builds the main digest instruction from the global template
+ * and the PDF's folder (Topic) / subfolder chain (Subtopic).
+ */
+export function getDefaultDigestInstructionForFolder(folderId, templateOverride = null) {
+  const tpl = templateOverride !== null ? String(templateOverride) : getGlobalMainCopyInstructionTemplate();
+  if (!tpl.trim()) return '';
+  const { topic, subtopic } = resolveFolderTopicParts(folderId);
+  return resolveGlobalMainTemplate(tpl, topic, subtopic);
+}
+
+/**
+ * Combines the Global Main Instruction with any optional extra
  * subfolder instruction added via "+ Add Instruction".
  */
 export function buildFullCopyInstruction(folderId) {
-  const mainInstruction = getDefaultDigestInstructionForFolder(folderId);
+  const mainInstruction = getDefaultDigestInstructionForFolder(folderId).trim();
   const extraInstruction = folderId ? getSubfolderCopyInstruction(folderId).trim() : '';
-  return extraInstruction ? `${mainInstruction}\n${extraInstruction}` : mainInstruction;
+  return [mainInstruction, extraInstruction].filter(Boolean).join('\n');
 }
 
 export function getSubfolderCopyInstruction(folderId) {
@@ -121,26 +213,34 @@ export function updateCopyInstructionButtonState() {
   const btn = document.getElementById('btn-copy-pdf-instr');
   if (!btn) return;
   const folderId = getActiveSubfolderId();
-  if (!folderId) {
+  const mainTpl = getGlobalMainCopyInstructionTemplate();
+  const footerTpl = getGlobalFooterCopyInstruction();
+  const hasCustomGlobal =
+    mainTpl !== DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE ||
+    footerTpl !== DEFAULT_DIGEST_FOOTER_INSTRUCTION;
+  const resolvedMain = getDefaultDigestInstructionForFolder(folderId) || '(none)';
+  const footerSummary = footerTpl.trim() || '(none)';
+  const instr = folderId ? getSubfolderCopyInstruction(folderId).trim() : '';
+
+  if (instr || hasCustomGlobal) {
+    btn.classList.add('has-instr');
+    btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Instruction</span>';
+  } else {
     btn.classList.remove('has-instr');
-    btn.innerHTML = '<span>+ Add Instruction</span>';
-    btn.title = 'Open a PDF to add extra subfolder-specific instructions to Copy Text';
+    btn.innerHTML = folderId ? '<span>+ Add Instruction</span>' : '<span>+ Edit Instructions</span>';
+  }
+
+  if (!folderId) {
+    btn.title = `Global Main Instruction: ${resolvedMain}\nGlobal Bottom Instruction: ${footerSummary}\nClick to edit global Copy Text instructions`;
     return;
   }
 
   const breadcrumb = getFolderBreadcrumb(folderId);
-  const autoMain = getDefaultDigestInstructionForFolder(folderId);
-  const instr = getSubfolderCopyInstruction(folderId).trim();
-
   if (instr) {
-    btn.classList.add('has-instr');
-    btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Instruction</span>';
     const preview = instr.length > 140 ? instr.slice(0, 140) + '…' : instr;
-    btn.title = `Main Instruction: ${autoMain}\nExtra Subfolder Instruction for "${breadcrumb}" (click to edit):\n${preview}\n\nBottom Footer (auto-included):\n${DEFAULT_DIGEST_FOOTER_INSTRUCTION}`;
+    btn.title = `Main Instruction: ${resolvedMain}\nExtra Subfolder Instruction for "${breadcrumb}" (click to edit):\n${preview}\n\nBottom Footer:\n${footerSummary}`;
   } else {
-    btn.classList.remove('has-instr');
-    btn.innerHTML = '<span>+ Add Instruction</span>';
-    btn.title = `Main Instruction (auto-included): ${autoMain}\nBottom Footer (auto-included): ${DEFAULT_DIGEST_FOOTER_INSTRUCTION}\nClick to add extra instructions for "${breadcrumb}"`;
+    btn.title = `Main Instruction (auto-included): ${resolvedMain}\nBottom Footer: ${footerSummary}\nClick to edit global instructions or add extra instructions for "${breadcrumb}"`;
   }
 
   // Lazy one-time cloud sync check for this subfolder if local is empty
@@ -159,28 +259,82 @@ export function updateCopyInstructionButtonState() {
   }
 }
 
+function updateCopyInstrAutoPreview(folderId, mainVal) {
+  const autoPreview = document.getElementById('copy-instr-auto-preview');
+  if (!autoPreview) return;
+  const { topic, subtopic } = resolveFolderTopicParts(folderId);
+  const topicLabel = topic ? ` (${subtopic ? `${topic} › ${subtopic}` : topic})` : '';
+  const resolved = resolveGlobalMainTemplate(mainVal, topic, subtopic);
+  autoPreview.textContent = `Preview${topicLabel}: ${resolved || '(empty)'}`;
+}
+
+async function hydrateGlobalCopyInstructionsFromCloud() {
+  try {
+    let changed = false;
+    if (safeStorageGet(GLOBAL_MAIN_INSTR_KEY, null) === null) {
+      const cloudMain = await dbGetSetting(GLOBAL_MAIN_INSTR_KEY);
+      if (typeof cloudMain === 'string' && safeStorageGet(GLOBAL_MAIN_INSTR_KEY, null) === null) {
+        safeStorageSet(GLOBAL_MAIN_INSTR_KEY, cloudMain);
+        changed = true;
+      }
+    }
+    if (safeStorageGet(GLOBAL_FOOTER_INSTR_KEY, null) === null) {
+      const cloudFooter = await dbGetSetting(GLOBAL_FOOTER_INSTR_KEY);
+      if (typeof cloudFooter === 'string' && safeStorageGet(GLOBAL_FOOTER_INSTR_KEY, null) === null) {
+        safeStorageSet(GLOBAL_FOOTER_INSTR_KEY, cloudFooter);
+        changed = true;
+      }
+    }
+    if (changed) {
+      updateCopyInstructionButtonState();
+      const modal = document.getElementById('mo-copy-instructions');
+      if (modal?.classList.contains('open')) {
+        const globalMainEl = document.getElementById('copy-instr-global-main');
+        const globalFooterEl = document.getElementById('copy-instr-global-footer');
+        const mainVal = getGlobalMainCopyInstructionTemplate();
+        if (globalMainEl) globalMainEl.value = mainVal;
+        if (globalFooterEl) globalFooterEl.value = getGlobalFooterCopyInstruction();
+        const folderId = modal.dataset.folderId || getActiveSubfolderId();
+        updateCopyInstrAutoPreview(folderId, mainVal);
+      }
+    }
+  } catch {}
+}
+
 export function openCopyInstructionModal() {
   const folderId = getActiveSubfolderId();
-  if (!folderId) {
-    toast('Open a PDF first to set copy instructions for its subfolder.');
-    return;
-  }
   const modal = document.getElementById('mo-copy-instructions');
   const lbl = document.getElementById('copy-instr-folder-lbl');
-  const autoPreview = document.getElementById('copy-instr-auto-preview');
+  const globalMainEl = document.getElementById('copy-instr-global-main');
+  const globalFooterEl = document.getElementById('copy-instr-global-footer');
+  const subfolderWrap = document.getElementById('copy-instr-subfolder-wrap');
   const textarea = document.getElementById('copy-instr-textarea');
-  if (!modal || !textarea) return;
+  const btnClear = document.getElementById('btn-copy-instr-clear');
+  if (!modal) return;
 
-  const breadcrumb = getFolderBreadcrumb(folderId);
-  if (lbl) lbl.textContent = `Subfolder: ${breadcrumb}`;
-  if (autoPreview) {
-    autoPreview.style.whiteSpace = 'pre-line';
-    autoPreview.textContent = `${getDefaultDigestInstructionForFolder(folderId)}\n\nBottom Instruction (Always Appended at End):\n${DEFAULT_DIGEST_FOOTER_INSTRUCTION}`;
+  const mainVal = getGlobalMainCopyInstructionTemplate();
+  const footerVal = getGlobalFooterCopyInstruction();
+  if (globalMainEl) globalMainEl.value = mainVal;
+  if (globalFooterEl) globalFooterEl.value = footerVal;
+
+  if (folderId) {
+    const breadcrumb = getFolderBreadcrumb(folderId);
+    if (lbl) lbl.textContent = `Subfolder: ${breadcrumb}`;
+    if (subfolderWrap) subfolderWrap.style.display = '';
+    if (textarea) textarea.value = getSubfolderCopyInstruction(folderId);
+    if (btnClear) btnClear.style.display = '';
+    modal.dataset.folderId = folderId;
+  } else {
+    if (lbl) lbl.textContent = 'Global Copy Text Settings (applies to ALL folders)';
+    if (subfolderWrap) subfolderWrap.style.display = 'none';
+    if (textarea) textarea.value = '';
+    if (btnClear) btnClear.style.display = 'none';
+    delete modal.dataset.folderId;
   }
-  textarea.value = getSubfolderCopyInstruction(folderId);
-  modal.dataset.folderId = folderId;
+
+  updateCopyInstrAutoPreview(folderId, mainVal);
   modal.classList.add('open');
-  setTimeout(() => textarea.focus(), 40);
+  setTimeout(() => (folderId && textarea ? textarea : globalMainEl)?.focus(), 40);
 }
 
 // Commercial publisher footers (e.g., CD Technologies Asia, Inc. & cdasiaonline.com)
@@ -732,7 +886,8 @@ export async function copyEntirePdfTextSmart() {
     const activeFolderId = getActiveSubfolderId();
     const fullInstruction = buildFullCopyInstruction(activeFolderId);
     const extraInstr = activeFolderId ? getSubfolderCopyInstruction(activeFolderId).trim() : '';
-    const finalCopyText = `${fullInstruction}\n\n${fullText}\n\n${DEFAULT_DIGEST_FOOTER_INSTRUCTION}`;
+    const footerInstruction = getGlobalFooterCopyInstruction().trim();
+    const finalCopyText = [fullInstruction, fullText, footerInstruction].filter(Boolean).join('\n\n');
 
     const ok = await copyToClipboard(finalCopyText);
     if (!ok) {
@@ -1189,7 +1344,8 @@ async function extractPdfDigestPromptPayload({ doc, total, pdfObj, isCancelled }
   const activeFolderId = getActiveSubfolderId();
   const subfolderName = activeFolderId ? getFolderBreadcrumb(activeFolderId) : '';
   const instructionText = buildFullCopyInstruction(activeFolderId);
-  const fullPromptText = `${instructionText}\n\n${pdfText}\n\n${DEFAULT_DIGEST_FOOTER_INSTRUCTION}`;
+  const footerInstruction = getGlobalFooterCopyInstruction().trim();
+  const fullPromptText = [instructionText, pdfText, footerInstruction].filter(Boolean).join('\n\n');
 
   return {
     ok: true,
@@ -2519,17 +2675,68 @@ export function initSmartCopy() {
   if (btnSaveInstr) {
     btnSaveInstr.addEventListener('click', () => {
       const modal = document.getElementById('mo-copy-instructions');
+      const globalMainEl = document.getElementById('copy-instr-global-main');
+      const globalFooterEl = document.getElementById('copy-instr-global-footer');
       const textarea = document.getElementById('copy-instr-textarea');
       const folderId = modal?.dataset.folderId || getActiveSubfolderId();
-      if (!folderId) return;
-      const val = (textarea?.value || '').trim();
-      saveSubfolderCopyInstruction(folderId, val);
+
+      if (globalMainEl) {
+        saveGlobalMainCopyInstructionTemplate(globalMainEl.value);
+      }
+      if (globalFooterEl) {
+        saveGlobalFooterCopyInstruction(globalFooterEl.value);
+      }
+      if (folderId && textarea) {
+        saveSubfolderCopyInstruction(folderId, textarea.value);
+      }
+
+      updateCopyInstructionButtonState();
       modal?.classList.remove('open');
-      const breadcrumb = getFolderBreadcrumb(folderId);
-      if (val) {
-        toast(`Saved copy instructions for "${breadcrumb}"`);
+
+      if (folderId) {
+        const breadcrumb = getFolderBreadcrumb(folderId);
+        toast(`Saved global & "${breadcrumb}" copy instructions`);
       } else {
-        toast(`Cleared copy instructions for "${breadcrumb}"`);
+        toast('Saved global Copy Text instructions');
+      }
+    });
+  }
+
+  const btnResetGlobalInstr = document.getElementById('btn-copy-instr-reset-global');
+  if (btnResetGlobalInstr) {
+    btnResetGlobalInstr.addEventListener('click', () => {
+      const modal = document.getElementById('mo-copy-instructions');
+      const globalMainEl = document.getElementById('copy-instr-global-main');
+      const globalFooterEl = document.getElementById('copy-instr-global-footer');
+      if (globalMainEl) globalMainEl.value = DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE;
+      if (globalFooterEl) globalFooterEl.value = DEFAULT_DIGEST_FOOTER_INSTRUCTION;
+      const folderId = modal?.dataset.folderId || getActiveSubfolderId();
+      updateCopyInstrAutoPreview(folderId, DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE);
+      toast('Reset global instructions to default (click Save to apply)');
+    });
+  }
+
+  const globalMainInput = document.getElementById('copy-instr-global-main');
+  if (globalMainInput) {
+    globalMainInput.addEventListener('input', () => {
+      const modal = document.getElementById('mo-copy-instructions');
+      const folderId = modal?.dataset.folderId || getActiveSubfolderId();
+      updateCopyInstrAutoPreview(folderId, globalMainInput.value);
+    });
+    globalMainInput.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        btnSaveInstr?.click();
+      }
+    });
+  }
+
+  const globalFooterInput = document.getElementById('copy-instr-global-footer');
+  if (globalFooterInput) {
+    globalFooterInput.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        btnSaveInstr?.click();
       }
     });
   }
@@ -2561,6 +2768,7 @@ export function initSmartCopy() {
   }
 
   updateCopyInstructionButtonState();
+  hydrateGlobalCopyInstructionsFromCloud();
 
   const btnPplx = document.getElementById('btn-perplexity-digest');
   if (btnPplx) {

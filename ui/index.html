@@ -1697,22 +1697,31 @@
 
 <!-- Subfolder Copy Instructions Modal -->
 <div class="modal-ov" id="mo-copy-instructions">
-  <div class="modal-box" style="max-width:540px; width:92%;">
+  <div class="modal-box" style="max-width:560px; width:92%; max-height:90vh; overflow-y:auto;">
     <h3 style="margin-bottom:4px; display:flex; align-items:center; gap:8px;"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>Copy Text Instructions</span></h3>
     <p id="copy-instr-folder-lbl" style="font-size:12px; color:var(--gold); margin-bottom:10px; font-weight:500;">Subfolder: —</p>
-    <div style="background:var(--gold-bg); border:1px solid var(--accent, var(--gold)); border-radius:6px; padding:8px 10px; margin-bottom:10px;">
-      <div style="font-size:11px; color:var(--accent, var(--gold)); font-weight:600; margin-bottom:3px; display:inline-flex; align-items:center; gap:5px;"><svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>Automatic Main Instruction (Always Included from Folder &amp; Subfolder):</span></div>
-      <div id="copy-instr-auto-preview" style="font-size:12px; color:var(--ink); line-height:1.45;">Create a digest for this case.</div>
+    <div style="background:var(--gold-bg); border:1px solid var(--accent, var(--gold)); border-radius:6px; padding:10px; margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
+        <div style="font-size:11.5px; color:var(--accent, var(--gold)); font-weight:600; display:inline-flex; align-items:center; gap:5px;"><svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>Global Main &amp; Bottom Instructions (Applies to ALL Copy Text)</span></div>
+        <button type="button" class="btn-sec" id="btn-copy-instr-reset-global" style="font-size:11px; padding:3px 8px;" title="Reset global main and bottom instructions to defaults">Reset Default</button>
+      </div>
+      <label for="copy-instr-global-main" style="display:block; font-size:11px; color:var(--ink-muted, var(--muted)); font-weight:600; margin-bottom:4px;">Top Main Instruction (Supports <code>{topic}</code> &amp; <code>{subtopic}</code>):</label>
+      <textarea id="copy-instr-global-main" rows="2" placeholder="Use {topic} and {subtopic} placeholders or write a fixed main instruction for all cases…" style="width:100%; box-sizing:border-box; background:var(--surface-paper); border:1px solid var(--border, var(--rule)); border-radius:6px; color:var(--ink); font-family:var(--font-ui); font-size:12px; line-height:1.45; padding:8px; resize:vertical; outline:none; margin-bottom:5px;"></textarea>
+      <div id="copy-instr-auto-preview" style="font-size:11.5px; color:var(--ink-muted, var(--muted)); line-height:1.4; margin-bottom:8px;">Create a digest for this case.</div>
+      <label for="copy-instr-global-footer" style="display:block; font-size:11px; color:var(--ink-muted, var(--muted)); font-weight:600; margin-bottom:4px;">Bottom Instruction (Always Appended at End):</label>
+      <textarea id="copy-instr-global-footer" rows="4" placeholder="Optional bottom instruction appended to the end of copied text…" style="width:100%; box-sizing:border-box; background:var(--surface-paper); border:1px solid var(--border, var(--rule)); border-radius:6px; color:var(--ink); font-family:var(--font-ui); font-size:12px; line-height:1.45; padding:8px; resize:vertical; outline:none;"></textarea>
     </div>
-    <p style="font-size:11.5px; color:var(--ink-muted, var(--muted)); line-height:1.5; margin-bottom:8px;">
-      Add any <strong>additional custom instructions</strong> below that you also want appended for all PDFs inside this subfolder (other folders will not be affected):
-    </p>
-    <textarea id="copy-instr-textarea" rows="6" placeholder="Optional extra instructions for this subfolder (e.g., Focus on the requisites of a valid sale, double sales under Art. 1544, etc.)…" style="width:100%; box-sizing:border-box; background:var(--surface-paper); border:1px solid var(--border, var(--rule)); border-radius:6px; color:var(--ink); font-family:var(--font-ui); font-size:12.5px; line-height:1.5; padding:10px; resize:vertical; outline:none; margin-bottom:12px;"></textarea>
+    <div id="copy-instr-subfolder-wrap">
+      <p style="font-size:11.5px; color:var(--ink-muted, var(--muted)); line-height:1.5; margin-bottom:8px;">
+        Add any <strong>additional custom instructions</strong> below that you also want appended for all PDFs inside this subfolder (other folders will not be affected):
+      </p>
+      <textarea id="copy-instr-textarea" rows="4" placeholder="Optional extra instructions for this subfolder (e.g., Focus on the requisites of a valid sale, double sales under Art. 1544, etc.)…" style="width:100%; box-sizing:border-box; background:var(--surface-paper); border:1px solid var(--border, var(--rule)); border-radius:6px; color:var(--ink); font-family:var(--font-ui); font-size:12.5px; line-height:1.5; padding:10px; resize:vertical; outline:none; margin-bottom:12px;"></textarea>
+    </div>
     <div class="modal-acts" style="display:flex; justify-content:space-between; align-items:center; width:100%;">
       <button class="btn-sec" id="btn-copy-instr-clear" style="color:var(--red); font-size:12px;"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span>Clear Extra Instruction</span></button>
       <div style="display:flex; gap:8px;">
         <button class="btn-sec" data-close="mo-copy-instructions">Cancel</button>
-        <button class="btn-gold" id="btn-copy-instr-save"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg><span>Save Extra Instruction</span></button>
+        <button class="btn-gold" id="btn-copy-instr-save"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg><span>Save Instructions</span></button>
       </div>
     </div>
   </div>

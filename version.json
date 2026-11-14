@@ -1,7 +1,7 @@
 {
-    "version":  "1.22.2",
-    "build":  56,
-    "updatedAt":  "2026-11-14T06:29:26Z",
-    "notes":  "Append the ph-case-digest and strict-source-verification formatting footer to Copy Text and digest prompts.",
+    "version":  "1.22.3",
+    "build":  57,
+    "updatedAt":  "2026-11-14T06:51:59Z",
+    "notes":  "Make the global main and bottom Copy Text instructions editable in Copy Text Instructions with live topic/subtopic preview, Reset Default, and cloud sync.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
