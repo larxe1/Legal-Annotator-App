@@ -1859,6 +1859,12 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     };
   }
 
+  var _awaitingLastChangeAt = 0;
+  var _awaitingStoppedAt = 0;
+  var _hasSeenGenerationForJob = false;
+  var _studioBlockerReported = false;
+  var _studioMountedAt = Date.now();
+
   function armAutoSendWatcher() {
     try {
       var baseSnap = getLatestGeminiAnswerSnapshot();
@@ -1868,13 +1874,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       sessionStorage.setItem('la_gemini_baseline_text', baseSnap.text || '');
       _autoSendLastText = '';
       _autoSendStableSince = 0;
+      _hasSeenGenerationForJob = false;
     } catch (e) {}
   }
-
-  var _awaitingLastChangeAt = 0;
-  var _awaitingStoppedAt = 0;
-  var _studioBlockerReported = false;
-  var _studioMountedAt = Date.now();
 
   function detectStudioPageBlocker() {
     if (Date.now() - _studioMountedAt < 3500) return false;
@@ -1920,6 +1922,10 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     var snap = getLatestGeminiAnswerSnapshot();
     var generating = isGeminiStillGenerating();
 
+    if (generating || (snap.text && snap.text !== baseline && snap.wordCount > 5)) {
+      _hasSeenGenerationForJob = true;
+    }
+
     if (!snap.text || snap.text === baseline || snap.wordCount < 55) {
       if (snap.text && snap.text !== baseline && snap.wordCount > 5) {
         if (snap.text !== _autoSendLastText) {
@@ -1929,9 +1935,14 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         showStatus('Gemini is writing digest (' + snap.wordCount + ' words)… will auto-send when finished.', '#fbbf24');
         emitStudioStatus('streaming', 'Writing digest (' + snap.wordCount + ' words)', 'Gemini is writing digest (' + snap.wordCount + ' words)…', false);
       } else if (!generating) {
-        if (!_awaitingStoppedAt) _awaitingStoppedAt = Date.now();
-        if (Date.now() - _awaitingStoppedAt > 25000 && Date.now() - _awaitingLastChangeAt > 25000) {
-          emitStudioStatus('error', 'Generation stalled', 'Gemini did not start or stalled before completing digest — focus Studio to check.', true);
+        if (_hasSeenGenerationForJob) {
+          if (!_awaitingStoppedAt) _awaitingStoppedAt = Date.now();
+          if (Date.now() - _awaitingStoppedAt > 25000 && Date.now() - _awaitingLastChangeAt > 25000) {
+            emitStudioStatus('error', 'Generation stalled', 'Gemini did not start or stalled before completing digest — focus Studio to check.', true);
+          }
+        } else {
+          _awaitingStoppedAt = 0;
+          _awaitingLastChangeAt = Date.now();
         }
       } else {
         _awaitingStoppedAt = 0;
@@ -1960,8 +1971,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     var stableMs = Date.now() - _autoSendStableSince;
-    if (stableMs < 4500) {
-      var secsLeft = Math.max(1, Math.ceil((4500 - stableMs) / 1000));
+    if (stableMs < 3500) {
+      var secsLeft = Math.max(1, Math.ceil((3500 - stableMs) / 1000));
       showStatus('Digest complete (' + snap.wordCount + ' words) — auto-sending in ' + secsLeft + 's…', '#4ade80');
       emitStudioStatus('streaming', 'Finalizing digest (' + snap.wordCount + ' words)', 'Digest complete (' + snap.wordCount + ' words) — sending in ' + secsLeft + 's…', false);
       return;
@@ -1984,43 +1995,36 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     var activeInput = findGeminiPromptInput();
-    if (!activeInput) {
+    if (!activeInput || !activeInput.isConnected) {
       if (manualTrigger) showStatus('Waiting for Gemini "Ask Gemini" prompt box…', '#fbbf24');
       return false;
     }
 
     _isPasting = true;
-    showStatus('Verifying ' + getModelPillText() + ' with OS mouse…', '#93c5fd');
+    try { activeInput.scrollIntoView({ block: 'center' }); } catch (e) {}
+    var pos = getElementScreenCenter(activeInput);
 
-    ensureGeminiModelSelected(activeInput, function(modelVerified) {
-      var targetInput = findGeminiPromptInput() || activeInput;
-      if (!targetInput || !targetInput.isConnected) {
-        _isPasting = false;
-        setTimeout(function() { processActiveJob(); }, 400);
-        return;
-      }
+    if (_state.jobId) {
+      sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
+    }
+    armAutoSendWatcher();
 
-      try { targetInput.scrollIntoView({ block: 'center' }); } catch (e) {}
-      var pos = getElementScreenCenter(targetInput);
-      if (!pos || pos.cy < 44) {
-        _isPasting = false;
-        return;
-      }
+    if (!pos || pos.cy < 44) {
+      var fallbackOk = setGeminiInputText(activeInput, fullText);
+      if (fallbackOk) typeTrailingSpaceKeystroke(activeInput);
+      window.__onNativePasteSubmitDone(fallbackOk);
+      return fallbackOk;
+    }
 
-      if (_state.jobId) {
-        sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
-      }
-      armAutoSendWatcher();
-      showStatus('Clicking prompt box (OS) → waiting 1s → OS Ctrl+V → waiting 1s → OS Enter…', '#93c5fd');
-      emitStudioStatus('extracting', 'Pasting via OS', 'Clicking prompt box (OS) → waiting 1s → OS Ctrl+V → waiting 1s → OS Enter…', false);
+    showStatus('Pasting prompt & case text via OS Ctrl+V…', '#93c5fd');
+    emitStudioStatus('extracting', 'Pasting via OS', 'Pasting prompt & case text into Ask Gemini…', false);
 
-      sendBridgeMsg({
-        action: 'native_paste_and_submit',
-        x: pos.cx,
-        y: pos.cy,
-        dpr: window.devicePixelRatio || 1,
-        autoSubmit: !!_state.autoSubmit
-      });
+    sendBridgeMsg({
+      action: 'native_paste_and_submit',
+      x: pos.cx,
+      y: pos.cy,
+      dpr: window.devicePixelRatio || 1,
+      autoSubmit: false
     });
 
     return true;
@@ -2030,48 +2034,26 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     _isPasting = false;
     _awaitingLastChangeAt = Date.now();
     _awaitingStoppedAt = 0;
-    if (!ok) {
+    _hasSeenGenerationForJob = false;
+    var fullText = (_state.fullPromptText || '').trim();
+    var curBox = findGeminiPromptInput();
+    var getBoxLen = function(el) {
+      return ((el && (el.innerText || el.textContent || el.value || '').replace(/\u200B/g, '').trim().length) || 0);
+    };
+    var boxLen = getBoxLen(curBox);
+    if (boxLen <= 20 && curBox && fullText) {
+      if (setGeminiInputText(curBox, fullText)) {
+        typeTrailingSpaceKeystroke(curBox);
+        boxLen = getBoxLen(curBox);
+      }
+    }
+    if (!ok && boxLen <= 20) {
       showStatus('Click inside Ask Gemini and press Ctrl+V (OS paste failed).', '#fbbf24');
       emitStudioStatus('error', 'Paste needs focus', 'Could not paste automatically via OS — click inside Ask Gemini and press Ctrl+V.', true);
       return;
     }
-    if (_state.autoSubmit) {
-      showStatus('Submitted via OS Ctrl+V + Enter! Waiting to auto-send to Case Digest…', '#4ade80');
-      emitStudioStatus('submitted', 'Prompt submitted', 'Submitted via OS Ctrl+V + Enter — waiting for Gemini response…', false, true);
-      setTimeout(function() {
-        if (!isGeminiStillGenerating()) {
-          var curBox = findGeminiPromptInput();
-          var boxLen = ((curBox && (curBox.innerText || curBox.textContent || curBox.value || '').trim().length) || 0);
-          if (boxLen > 20) {
-            var sendSelectors = [
-              'button[aria-label*="Send" i]:not([disabled])',
-              'button[aria-label*="Submit" i]:not([disabled])',
-              'button.send-button:not([disabled])',
-              'button[data-test-id*="send" i]:not([disabled])',
-              'button[mattooltip*="Send" i]:not([disabled])'
-            ];
-            for (var si = 0; si < sendSelectors.length; si++) {
-              var btns = Array.from(document.querySelectorAll(sendSelectors[si]));
-              for (var bi = 0; bi < btns.length; bi++) {
-                var btn = btns[bi];
-                if (!btn || !btn.isConnected) continue;
-                if (btn.closest('#la-gemini-studio-bar') || btn.closest('#la-gemini-model-popover') || btn.closest('#la-gemini-fab-send') || btn.closest('#la-gemini-click-cursor')) continue;
-                if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
-                var r = btn.getBoundingClientRect();
-                if (r.width <= 0 || r.height <= 0 || r.top < 44) continue;
-                var st = window.getComputedStyle ? window.getComputedStyle(btn) : null;
-                if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
-                nativeOsClickElement(btn, 'Send');
-                return;
-              }
-            }
-          }
-        }
-      }, 900);
-    } else {
-      showStatus('Pasted via OS Ctrl+V! Review prompt and press Enter to submit.', '#4ade80');
-      emitStudioStatus('idle', 'Ready in Studio', 'Pasted via OS Ctrl+V — press Enter in Studio to submit.', false, true);
-    }
+    showStatus('Case pasted! Select model & press Enter — will auto-save to Case Digest when done.', '#4ade80');
+    emitStudioStatus('streaming', 'Select model & Submit', 'Case pasted in Studio — select model & press Enter! Will auto-save when done.', false, true);
   };
 
   function extractAndSendDigest() {
@@ -2212,6 +2194,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
       sessionStorage.removeItem('la_gemini_auto_opened_job_id');
       _isPasting = false;
+      _hasSeenGenerationForJob = false;
       _verifiedModelKeyOnCurrentPage = '';
       if (_jobTimer) {
         clearInterval(_jobTimer);
@@ -2695,10 +2678,6 @@ pub async fn desktop_open_gemini_studio(
                             let css_x = msg_val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let css_y = msg_val.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let js_dpr = msg_val.get("dpr").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let auto_submit = msg_val
-                                .get("autoSubmit")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(true);
                             let prompt_text = state_for_nav
                                 .lock()
                                 .ok()
@@ -2734,36 +2713,15 @@ pub async fn desktop_open_gemini_studio(
                                                 screen_x, screen_y,
                                             );
                                             std::thread::sleep(std::time::Duration::from_millis(
-                                                1000,
+                                                150,
                                             ));
-                                            let _ = gw.show();
-                                            let _ = gw.unminimize();
                                             let _ = gw.set_focus();
-                                            std::thread::sleep(std::time::Duration::from_millis(
-                                                50,
-                                            ));
-                                            crate::perform_native_os_mouse_click(
-                                                screen_x, screen_y,
-                                            );
-                                            std::thread::sleep(std::time::Duration::from_millis(
-                                                120,
-                                            ));
                                             crate::perform_native_os_ctrl_v();
                                             std::thread::sleep(std::time::Duration::from_millis(
-                                                200,
+                                                150,
                                             ));
                                             let _ = gw.set_focus();
                                             crate::perform_native_os_key_space();
-                                            std::thread::sleep(std::time::Duration::from_millis(
-                                                800,
-                                            ));
-                                            if auto_submit {
-                                                let _ = gw.set_focus();
-                                                std::thread::sleep(
-                                                    std::time::Duration::from_millis(40),
-                                                );
-                                                crate::perform_native_os_key_enter();
-                                            }
                                             ok = true;
                                         }
                                     }
