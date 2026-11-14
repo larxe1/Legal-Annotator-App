@@ -1552,6 +1552,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
 (function() {
   if (window.__LA_PPLX_STUDIO_LOADED__) return;
   window.__LA_PPLX_STUDIO_LOADED__ = true;
+  try { Object.defineProperty(Object.getPrototypeOf(navigator), 'webdriver', { get: function() { return false; }, configurable: true }); } catch (e) {}
 
   var _state = {
     pdfId: '',
@@ -3540,6 +3541,127 @@ pub(crate) fn perform_native_os_mouse_move(screen_x: i32, screen_y: i32) {
 
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn perform_native_os_mouse_move(_screen_x: i32, _screen_y: i32) {}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn set_native_os_clipboard_text(text: &str) -> bool {
+    #[link(name = "user32")]
+    extern "system" {
+        fn OpenClipboard(h_wnd_new_owner: isize) -> i32;
+        fn EmptyClipboard() -> i32;
+        fn SetClipboardData(u_format: u32, h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn CloseClipboard() -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GlobalAlloc(u_flags: u32, dw_bytes: usize) -> *mut std::ffi::c_void;
+        fn GlobalLock(h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn GlobalUnlock(h_mem: *mut std::ffi::c_void) -> i32;
+        fn GlobalFree(h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+    const GMEM_MOVEABLE: u32 = 0x0002;
+    const CF_UNICODETEXT: u32 = 13;
+
+    let utf16: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let byte_len = utf16.len() * std::mem::size_of::<u16>();
+
+    unsafe {
+        let hmem = GlobalAlloc(GMEM_MOVEABLE, byte_len);
+        if hmem.is_null() {
+            return false;
+        }
+        let ptr = GlobalLock(hmem) as *mut u16;
+        if ptr.is_null() {
+            GlobalFree(hmem);
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(utf16.as_ptr(), ptr, utf16.len());
+        GlobalUnlock(hmem);
+
+        let mut opened = false;
+        for _ in 0..8 {
+            if OpenClipboard(0) != 0 {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        if !opened {
+            GlobalFree(hmem);
+            return false;
+        }
+        if EmptyClipboard() == 0 {
+            CloseClipboard();
+            GlobalFree(hmem);
+            return false;
+        }
+        let res = SetClipboardData(CF_UNICODETEXT, hmem);
+        CloseClipboard();
+        if res.is_null() {
+            GlobalFree(hmem);
+            return false;
+        }
+        true
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn set_native_os_clipboard_text(_text: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn native_os_keybd_event(b_vk: u8, b_scan: u8, dw_flags: u32) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn keybd_event(b_vk: u8, b_scan: u8, dw_flags: u32, dw_extra_info: usize);
+    }
+    keybd_event(b_vk, b_scan, dw_flags, 0);
+}
+
+#[cfg(target_os = "windows")]
+fn perform_native_os_key_tap(vk: u8, scan: u8) {
+    const KEYEVENTF_KEYUP: u32 = 0x0002;
+    unsafe {
+        native_os_keybd_event(vk, scan, 0);
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        native_os_keybd_event(vk, scan, KEYEVENTF_KEYUP);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn perform_native_os_ctrl_v() {
+    const VK_CONTROL: u8 = 0x11;
+    const VK_V: u8 = 0x56;
+    const KEYEVENTF_KEYUP: u32 = 0x0002;
+    unsafe {
+        native_os_keybd_event(VK_CONTROL, 0x1D, 0);
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        native_os_keybd_event(VK_V, 0x2F, 0);
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        native_os_keybd_event(VK_V, 0x2F, KEYEVENTF_KEYUP);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        native_os_keybd_event(VK_CONTROL, 0x1D, KEYEVENTF_KEYUP);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn perform_native_os_ctrl_v() {}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn perform_native_os_key_space() {
+    perform_native_os_key_tap(0x20, 0x39);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn perform_native_os_key_space() {}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn perform_native_os_key_enter() {
+    perform_native_os_key_tap(0x0D, 0x1C);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn perform_native_os_key_enter() {}
 
 pub(crate) fn percent_decode_str(input: &str) -> String {
     let bytes = input.as_bytes();
