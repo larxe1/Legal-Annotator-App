@@ -271,14 +271,18 @@ export function setSidebarAutoHide(enabled, showNotification = true) {
   safeStorageSet('sidebar_autohide', String(enabled));
   const app = document.getElementById('app');
   const pinBtn = document.getElementById('btn-pin-sidebar');
+  const side = document.getElementById('lib-side');
   if (app) {
     app.classList.toggle('sidebar-autohide', enabled);
     app.setAttribute('data-rail-autohide', enabled ? 'true' : 'false');
   }
+  side?.classList.remove('collapsed');
+  document.body.classList.remove('sidebar-collapsed');
 
   if (pinBtn) {
-    pinBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg>';
+    pinBtn.innerHTML = `<svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg><span class="rail__pin-label">${enabled ? 'Auto' : 'Pinned'}</span>`;
     pinBtn.setAttribute('aria-pressed', String(!enabled));
+    pinBtn.classList.toggle('pinned', !enabled);
     pinBtn.classList.toggle('is-autohide', enabled);
     pinBtn.style.color = '';
     pinBtn.style.borderColor = '';
@@ -295,14 +299,34 @@ export function setSidebarAutoHide(enabled, showNotification = true) {
     closeSidebar();
     if (showNotification) toast('Sidebar Auto-Hide active (hover left edge to reveal)');
   } else {
-    document.getElementById('lib-side')?.classList.remove('hover-open');
+    side?.classList.remove('hover-open');
+    _syncSidebarToggleButtons();
     if (showNotification) toast('Sidebar pinned (always visible)');
   }
 }
 
+function _isSidebarVisible() {
+  const side = document.getElementById('lib-side');
+  if (!side) return false;
+  if (window.innerWidth <= 1024 || isSidebarAutoHide()) {
+    return side.classList.contains('open') || side.classList.contains('hover-open');
+  }
+  return !side.classList.contains('collapsed') && !document.body.classList.contains('sidebar-collapsed');
+}
+
+function _syncSidebarToggleButtons() {
+  const expanded = String(_isSidebarVisible());
+  document.getElementById('btn-tabs-sidebar-toggle')?.setAttribute('aria-expanded', expanded);
+  document.getElementById('mob-menu-btn')?.setAttribute('aria-expanded', expanded);
+}
+
 export function openSidebar() {
-  document.getElementById('lib-side')?.classList.add('open');
+  const side = document.getElementById('lib-side');
+  side?.classList.remove('collapsed');
+  document.body.classList.remove('sidebar-collapsed');
+  side?.classList.add('open');
   document.getElementById('lib-backdrop')?.classList.add('open');
+  _syncSidebarToggleButtons();
 }
 
 export function closeSidebar() {
@@ -312,15 +336,27 @@ export function closeSidebar() {
     side.classList.remove('hover-open');
   }
   document.getElementById('lib-backdrop')?.classList.remove('open');
+  _syncSidebarToggleButtons();
 }
 
 export function toggleSidebar() {
   const side = document.getElementById('lib-side');
-  if (side?.classList.contains('open') || side?.classList.contains('hover-open')) {
-    closeSidebar();
-  } else {
-    openSidebar();
+  if (window.innerWidth <= 1024 || isSidebarAutoHide()) {
+    if (side?.classList.contains('open') || side?.classList.contains('hover-open')) {
+      closeSidebar();
+    } else {
+      openSidebar();
+    }
+    return;
   }
+  const willCollapse = !(side?.classList.contains('collapsed') || document.body.classList.contains('sidebar-collapsed'));
+  side?.classList.toggle('collapsed', willCollapse);
+  document.body.classList.toggle('sidebar-collapsed', willCollapse);
+  if (willCollapse) {
+    side?.classList.remove('open', 'hover-open');
+    document.getElementById('lib-backdrop')?.classList.remove('open');
+  }
+  _syncSidebarToggleButtons();
 }
 
 export function initSidebar() {
@@ -334,10 +370,17 @@ export function initSidebar() {
     setSidebarAutoHide(!current, true);
   });
 
-  // 3. Mobile / Desktop hamburger toggle
+  // 3. Mobile / Desktop sidebar toggles
   document.getElementById('mob-menu-btn')?.addEventListener('click', toggleSidebar);
+  document.getElementById('gn-doc-tabs')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('#btn-tabs-sidebar-toggle');
+    if (!btn) return;
+    e.stopPropagation();
+    toggleSidebar();
+  });
   document.getElementById('lib-close')?.addEventListener('click', closeSidebar);
   document.getElementById('lib-backdrop')?.addEventListener('click', closeSidebar);
+  _syncSidebarToggleButtons();
 
   // 4. Hover peek trigger zone on the far-left edge
   const hoverZone = document.getElementById('lib-hover-zone');
@@ -744,6 +787,7 @@ export function initZoom() {
   document.getElementById('btn-copy-pdf-text')?.addEventListener('click', copyEntirePdfText);
   document.getElementById('btn-manage-colors')?.addEventListener('click', _openColorManager);
   document.getElementById('btn-panel-manage-colors')?.addEventListener('click', _openColorManager);
+  document.getElementById('btn-capsule-search')?.addEventListener('click', () => document.getElementById('btn-search')?.click());
   document.getElementById('btn-cmd-palette')?.addEventListener('click', () => openCommandPalette());
   initCommandPalette();
 }
@@ -1228,7 +1272,8 @@ export function initKeyboard(deps) {
       }
     }
 
-    if (e.key === 't' || e.key === 'T') deps.setMode('text');
+    if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.metaKey && !e.altKey) deps.setMode('select');
+    else if (e.key === 't' || e.key === 'T') deps.setMode('text');
     else if (e.key === 'b' || e.key === 'B') deps.setMode('box');
     else if (e.key === 'd' || e.key === 'D') deps.setMode('draw');
     else if (e.key === '?') openModal('mo-keys');
@@ -1356,8 +1401,16 @@ export function updateAppTitle() {
       cbInfo.hidden = false;
     }
   } else {
-    document.title = `${prefix}Legal Annotator`;
-    if (cbInfo) cbInfo.hidden = true;
+    const fdv = document.getElementById('folder-doc-viewer');
+    const folderDocOpen = Boolean(fdv && fdv.style.display && fdv.style.display !== 'none');
+    if (folderDocOpen) {
+      const fTitle = document.getElementById('folder-doc-title')?.textContent?.trim();
+      document.title = `${prefix}${fTitle ? fTitle + ' — ' : ''}Legal Annotator`;
+      if (cbInfo) cbInfo.hidden = false;
+    } else {
+      document.title = `${prefix}Legal Annotator`;
+      if (cbInfo) cbInfo.hidden = true;
+    }
   }
 }
 

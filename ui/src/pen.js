@@ -156,12 +156,22 @@ function buildButton(toolbar) {
   _btn = document.createElement('button');
   _btn.id = 'pen-toggle';
   _btn.type = 'button';
-  _btn.className = 'tb-btn capsule__tool';
+  _btn.className = 'tb-btn capsule__btn pen-stylus-btn';
   _btn.title = 'Pen mode: use Apple Pencil to highlight text / draw. Fingers keep scrolling and zooming.';
-  _btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-pen"/></svg><span>Pen</span>';
-  const anchor = document.getElementById('mode-tog');
-  if (anchor?.parentNode) anchor.parentNode.insertBefore(_btn, anchor.nextSibling);
-  else toolbar.appendChild(_btn);
+  _btn.setAttribute('aria-label', 'Toggle Apple Pencil Stylus Mode');
+  _btn.setAttribute('aria-pressed', String(_enabled));
+  _btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-pen"/></svg>';
+  const actions = document.querySelector('#reader-capsule .capsule__actions');
+  const searchBtn = document.getElementById('btn-capsule-search');
+  if (actions && searchBtn && searchBtn.parentNode === actions) {
+    actions.insertBefore(_btn, searchBtn);
+  } else if (actions) {
+    actions.appendChild(_btn);
+  } else {
+    const anchor = document.getElementById('mode-tog');
+    if (anchor?.parentNode) anchor.parentNode.insertBefore(_btn, anchor.nextSibling);
+    else toolbar.appendChild(_btn);
+  }
   _btn.addEventListener('click', () => setPenMode(!_enabled));
 
   const sb = document.getElementById('btn-pen-setting');

@@ -1131,10 +1131,10 @@ function buildSubjectEl(subj, idx = 0) {
 
   w.innerHTML = `
     <div class="li-subj-hd">
-      <span class="li-chev ${exp ? '' : 'closed'}">▼</span>
-      <span class="li-dot" style="background:${binderColor}"></span>
+      <span class="li-dot tree__spine" style="--spine:${binderColor};background:${binderColor}"></span>
       <span class="li-subj-name" title="${subj.name.replace(/"/g, '&quot;')}">${subj.name}</span>
-      ${subjPdfCount > 0 ? `<span class="subj-count-pill" style="font-variant-numeric:tabular-nums;" title="${subjPdfCount} cases in binder">${subjPdfCount}</span>` : ''}
+      ${subjPdfCount > 0 ? `<span class="subj-count-pill tree__count" style="font-variant-numeric:tabular-nums;" title="${subjPdfCount} cases in binder">${subjPdfCount}</span>` : ''}
+      <span class="li-chev tree__chevron ${exp ? 'open' : 'closed'}" aria-hidden="true">${svgIcon('i-chevron')}</span>
       <div class="li-acts">
         <button class="li-act-btn" title="Add folder" aria-label="Add folder" data-act="add-fold">${svgIcon('i-folder')}</button>
         <button class="li-act-btn" title="Rename" aria-label="Rename" data-act="rename">${svgIcon('i-pen')}</button>
@@ -1151,6 +1151,7 @@ function buildSubjectEl(subj, idx = 0) {
     if (e.target.closest('.li-acts')) return;
     S.collapsedSubj[subj.id] = !S.collapsedSubj[subj.id];
     chev.classList.toggle('closed');
+    chev.classList.toggle('open', !S.collapsedSubj[subj.id]);
     ch.style.display = S.collapsedSubj[subj.id] ? 'none' : 'flex';
   });
 
@@ -1241,7 +1242,7 @@ function buildFolderEl(fold) {
 
   w.innerHTML = `
     <div class="li-fold-hd">
-      <span class="li-chev ${exp ? '' : 'closed'}" title="Expand / collapse folder">▼</span>
+      <span class="li-chev tree__chevron ${exp ? 'open' : 'closed'}" title="Expand / collapse folder" aria-hidden="true">${svgIcon('i-chevron')}</span>
       <span class="li-fold-icon" style="display:inline-flex;align-items:center;">${svgIcon(foldIconId)}</span>
       <span class="li-fold-name" title="${fold.name.replace(/"/g, '&quot;')}">${fold.name}</span>
       ${progBadgeHtml}${offlineBadgeHtml}
@@ -1286,6 +1287,7 @@ function buildFolderEl(fold) {
     if (e.target.closest('.li-chev')) {
       S.expandedFold[fold.id] = !S.expandedFold[fold.id];
       chev.classList.toggle('closed');
+      chev.classList.toggle('open', !!S.expandedFold[fold.id]);
       ch.style.display = S.expandedFold[fold.id] ? 'flex' : 'none';
     } else {
       // Clicking the folder immediately opens the folder's general notes

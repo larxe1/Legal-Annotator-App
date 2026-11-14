@@ -5,7 +5,7 @@
 import { S } from './state.js';
 import { safeStorageGet, safeStorageSet, safeStorageRemove, initStorageManager } from './storage.js';
 import { dbSetSetting, dbGetSetting } from './db.js';
-import { toast } from './ui.js';
+import { toast, toggleSidebar } from './ui.js';
 
 const THEME_KEY = 'app_ui_theme';
 const OPEN_TABS_KEY = 'gn_open_tabs_v1';
@@ -93,16 +93,28 @@ export function getAppTheme() {
 
 function updateThemeToggleButton(skin) {
   const btn = document.getElementById('btn-theme-toggle');
-  if (!btn) return;
-  if (skin === 'folio') {
-    btn.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-sun"/></svg><span>Folio</span>';
-    btn.title = 'Current: Chancery & Folio (Day) — Click to switch to Darkroom Casebook';
-  } else if (skin === 'casebook') {
-    btn.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-moon"/></svg><span>Casebook</span>';
-    btn.title = 'Current: Darkroom Casebook (Night) — Click to switch to Chancery & Folio';
-  } else {
-    btn.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-scale"/></svg><span>Classic</span>';
-    btn.title = 'Current: Classic Legal Navy — Click to switch to Chancery & Folio';
+  if (btn) {
+    if (skin === 'folio') {
+      btn.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-sun"/></svg><span>Folio</span>';
+      btn.title = 'Current: Chancery & Folio (Day) — Click to switch to Darkroom Casebook';
+    } else if (skin === 'casebook') {
+      btn.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-moon"/></svg><span>Casebook</span>';
+      btn.title = 'Current: Darkroom Casebook (Night) — Click to switch to Chancery & Folio';
+    } else {
+      btn.innerHTML = '<svg class="icon icon-sm" aria-hidden="true"><use href="#i-scale"/></svg><span>Classic</span>';
+      btn.title = 'Current: Classic Legal Navy — Click to switch to Chancery & Folio';
+    }
+  }
+
+  const railSwitch = document.getElementById('skin-switch-rail');
+  if (railSwitch) {
+    const isCasebook = skin === 'casebook';
+    const iconId = isCasebook ? 'i-sun' : 'i-moon';
+    railSwitch.innerHTML = `<svg class="icon" aria-hidden="true"><use href="#${iconId}"/></svg><span class="skin-switch__label">Day folio / Night casebook</span>`;
+    railSwitch.setAttribute('aria-pressed', String(isCasebook));
+    railSwitch.title = isCasebook
+      ? 'Current: Darkroom Casebook (Night) — Click to switch to Day Folio'
+      : 'Current: Chancery & Folio (Day) — Click to switch to Night Casebook';
   }
 }
 
@@ -456,6 +468,21 @@ export function renderDocTabs() {
 
   bar.innerHTML = '';
 
+  // 0. Sidebar toggle button
+  const menuBtn = document.createElement('button');
+  menuBtn.type = 'button';
+  menuBtn.className = 'tabs__menu-btn';
+  menuBtn.id = 'btn-tabs-sidebar-toggle';
+  menuBtn.title = 'Toggle Library Sidebar';
+  menuBtn.setAttribute('aria-label', 'Toggle Library Sidebar');
+  menuBtn.setAttribute('aria-expanded', String(!document.body.classList.contains('sidebar-collapsed')));
+  menuBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>';
+  menuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSidebar();
+  });
+  bar.appendChild(menuBtn);
+
   // 1. Pinned "Study Desk" Tab
   const homeTab = document.createElement('div');
   homeTab.className = 'gn-tab gn-tab-home' + (_activeTabId === 'home' && !S.curPDF ? ' active' : '');
@@ -602,7 +629,7 @@ function formatRelativeTime(ts) {
   }
 }
 
-function getRecentPdfsForShelf() {
+function getRecentPdfsForShelf(limit = 6) {
   const entries = [...loadRecentEntries()].sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const found = [];
   for (const entry of entries) {
@@ -613,9 +640,11 @@ function getRecentPdfsForShelf() {
     if (p && !found.some(f => String(f.pdf.id) === String(p.id))) {
       found.push({ pdf: p, ts: entry.ts });
     }
-    if (found.length >= 4) break;
+    if (found.length >= limit) break;
   }
-  // Strictly return ONLY cases the user actually opened recently (never pad with old library cases!)
+  if (found.length === 0 && Array.isArray(S.pdfs) && S.pdfs.length > 0) {
+    return S.pdfs.slice(0, limit).map(p => ({ pdf: p, ts: 0 }));
+  }
   return found;
 }
 
@@ -682,31 +711,38 @@ export function renderStudyDesk(options = {}) {
     if (hasCaseDigest(p)) digestedCount++;
   }
 
-  // 2. Ensure Continue Studying Shelf exists above .cal-grid
+  // Populate Study Desk header stats slot when mounted
+  const statsSlot = document.getElementById('gn-desk-stats-slot');
+  if (statsSlot) {
+    statsSlot.innerHTML = `<span class="desk__stats-value">${digestedCount} / ${totalCases}</span><span class="desk__stats-label">digested</span>`;
+  }
+
+  // 2. Ensure Active Folios / Continue Studying Shelf sits AFTER .docket / .cal-grid
+  const docketEl = cal.querySelector('section.docket') || cal.querySelector('.docket') || cal.querySelector('.cal-grid');
+  const quoteEl = cal.querySelector('.desk-quote');
   let shelf = document.getElementById('gn-study-shelf');
   if (!shelf) {
     shelf = document.createElement('div');
     shelf.id = 'gn-study-shelf';
-    const header = cal.querySelector('.cal-header');
-    if (header && header.nextSibling) {
-      cal.insertBefore(shelf, header.nextSibling);
-    } else {
-      cal.prepend(shelf);
+  }
+  if (docketEl && docketEl.parentElement === cal) {
+    if (docketEl.nextElementSibling !== shelf) {
+      docketEl.insertAdjacentElement('afterend', shelf);
     }
+  } else if (quoteEl && quoteEl.parentElement === cal) {
+    if (shelf.nextElementSibling !== quoteEl) {
+      cal.insertBefore(shelf, quoteEl);
+    }
+  } else if (shelf.parentElement !== cal) {
+    cal.appendChild(shelf);
   }
 
-  // Update header subtitle with live Digest stats pill
-  const headerP = cal.querySelector('.cal-header p');
-  if (headerP) {
-    headerP.innerHTML = `2ND YEAR, 1ST SEMESTER &nbsp;•&nbsp; <span class="gn-desk-stat" style="display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums;"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-scale"/></svg><span>${digestedCount} / ${totalCases} Digested</span></span>`;
-  }
-
-  const recentItems = getRecentPdfsForShelf();
+  const recentItems = getRecentPdfsForShelf(6);
   if (recentItems.length > 0) {
     shelf.style.display = 'block';
     shelf.innerHTML = `
-      <div class="gn-shelf-hd">
-        <span style="display:inline-flex;align-items:center;gap:6px;"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-book"/></svg><span>Continue Studying</span></span>
+      <div class="gn-shelf-hd desk__section-head">
+        <span class="desk__section-label" style="display:inline-flex;align-items:center;gap:6px;"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-book"/></svg><span>ACTIVE FOLIOS · CONTINUE STUDYING</span></span>
         <div style="display:flex;align-items:center;gap:10px;">
           <span class="gn-shelf-sub">Your most recently opened cases</span>
           <button type="button" class="gn-shelf-clear" title="Clear Continue Studying list">Clear list</button>
@@ -727,20 +763,21 @@ export function renderStudyDesk(options = {}) {
       const timeLabel = formatRelativeTime(ts);
 
       const card = document.createElement('div');
-      card.className = 'gn-notebook-card folio';
+      card.className = 'gn-notebook-card gn-folio-card folio';
       card.dataset.caseId = String(pdf.id);
       card.style.setProperty('--spine-color', spineColor);
       card.style.setProperty('--spine', spineColor);
-      card.style.borderInlineStart = `4px solid ${spineColor}`;
-      card.style.padding = '14px 16px';
       card.innerHTML = `
         <div class="gn-nb-body" style="padding:0;gap:6px;">
           <div class="gn-nb-top-row folio__top">
-            <div class="gn-nb-meta folio__subject">${escDeskHtml(subj ? subj.name : 'Library')}${fold ? ' › ' + escDeskHtml(fold.name) : ''}</div>
-            <button type="button" class="gn-nb-dismiss" title="Remove from Continue Studying" aria-label="Remove from Continue Studying"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-close"/></svg></button>
+            <div class="gn-nb-meta gn-folio-subj folio__subject">${escDeskHtml(subj ? subj.name : 'Library')}${fold ? ' › ' + escDeskHtml(fold.name) : ''}</div>
+            <div style="display:inline-flex;align-items:center;gap:6px;">
+              ${i === 0 ? '<span class="folio__badge">Continue reading</span>' : ''}
+              <button type="button" class="gn-nb-dismiss" title="Remove from Continue Studying" aria-label="Remove from Continue Studying"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-close"/></svg></button>
+            </div>
           </div>
-          <div class="gn-nb-title folio__title" style="font-family:var(--font-display);" title="${escDeskHtml(pdf.name)}">${escDeskHtml(pdf.name)}</div>
-          <div class="gn-nb-footer folio__footer">
+          <div class="gn-nb-title gn-folio-title folio__title" style="font-family:var(--font-display);" title="${escDeskHtml(pdf.name)}">${escDeskHtml(pdf.name)}</div>
+          <div class="gn-nb-footer gn-folio-meta folio__footer">
             <span class="gn-nb-status folio__status ${stClass}" data-digest="${digested ? 'ready' : 'none'}" style="display:inline-flex;align-items:center;gap:4px;"><svg class="icon icon-sm" aria-hidden="true"><use href="#${stIcon}"/></svg><span>${stLabel}</span></span>
             <span class="gn-nb-time folio__pages" style="font-family:var(--font-mono, var(--font-num));font-variant-numeric:tabular-nums;">${timeLabel}</span>
           </div>
@@ -771,9 +808,11 @@ export function renderStudyDesk(options = {}) {
     const strong = item.querySelector('strong');
     if (!strong) return;
     const subjTitle = strong.textContent.trim();
-    const color = getSubjectBinderColor({ name: subjTitle });
-    item.style.borderLeft = `4px solid ${color}`;
-    item.style.setProperty('--spine', color);
+    if (!item.style.getPropertyValue('--spine')) {
+      const color = getSubjectBinderColor({ name: subjTitle });
+      item.style.setProperty('--spine', color || 'var(--accent)');
+    }
+    item.style.removeProperty('border-left');
 
     if (!item.querySelector('.gn-cal-actions')) {
       const bar = document.createElement('div');
@@ -808,6 +847,7 @@ export function initGoodNotesUI() {
   renderStudyDesk();
 
   document.getElementById('btn-theme-toggle')?.addEventListener('click', (e) => cycleAppTheme(e));
+  document.getElementById('skin-switch-rail')?.addEventListener('click', (e) => cycleAppTheme(e));
 
   // Background timer to prune inactive tabs every 20 seconds and on window focus/visibility change
   setInterval(pruneInactiveTabs, 20000);

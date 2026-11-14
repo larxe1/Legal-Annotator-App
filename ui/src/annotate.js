@@ -131,22 +131,22 @@ export function drawAnnotation(ann) {
     let html = '';
     const catInfo = getColorCategoryForHex(ann.hex_color);
     const dotColor = catInfo.hex_color || ann.hex_color || '#c9a84c';
-    html += `<div style="display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; color:#b0aaa0; margin-bottom:6px;"><span style="width:9px; height:9px; border-radius:50%; background:${_escHtml(dotColor)}; display:inline-block; flex-shrink:0;"></span><span>${_escHtml(catInfo.name)}</span></div>`;
+    html += `<div style="display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; color:var(--ink-muted, var(--muted, #b0aaa0)); margin-bottom:6px;"><span style="width:9px; height:9px; border-radius:50%; background:${_escHtml(dotColor)}; display:inline-block; flex-shrink:0;"></span><span>${_escHtml(catInfo.name)}</span></div>`;
     if (caseCount > 0) {
       const caseLabel = caseCount === 1 ? 'case' : 'cases';
-      html += `<div style="display:flex; align-items:center; gap:6px; font-size:0.9em; font-weight:600; color:#c9a84c; background:rgba(201,168,76,0.12); border:1px solid rgba(201,168,76,0.35); border-radius:6px; padding:4px 10px; margin-bottom:${genNotes.length ? '8px' : '0'};"><svg class="icon" style="width:14px;height:14px;flex-shrink:0" aria-hidden="true"><use href="#i-scale"/></svg> (${caseCount}) ${caseLabel}</div>`;
+      html += `<div style="display:flex; align-items:center; gap:6px; font-size:0.9em; font-weight:600; color:var(--accent, #c9a84c); background:var(--accent-soft, rgba(201,168,76,0.12)); border:1px solid var(--border-strong, rgba(201,168,76,0.35)); border-radius:6px; padding:4px 10px; margin-bottom:${genNotes.length ? '8px' : '0'};"><svg class="icon" style="width:14px;height:14px;flex-shrink:0" aria-hidden="true"><use href="#i-scale"/></svg> (${caseCount}) ${caseLabel}</div>`;
     }
 
     const toShow = Math.min(genNotes.length, 3);
     for (let i = 0; i < toShow; i++) {
-      if (i > 0) html += '<div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 6px 0; padding-top: 6px;"></div>';
+      if (i > 0) html += '<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px;"></div>';
       html += getNoteBody(genNotes[i]);
     }
     
     if (genNotes.length > 3) {
-      html += `<div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 6px 0; padding-top: 6px; font-size: 0.9em; color: #b0aaa0; text-align: center; font-style: italic;">...and ${genNotes.length - 3} more notes (click to view)</div>`;
+      html += `<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px; font-size: 0.9em; color: var(--ink-muted, var(--muted, #b0aaa0)); text-align: center; font-style: italic;">...and ${genNotes.length - 3} more notes (click to view)</div>`;
     } else if (genNotes.length > 1) {
-      html += `<div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 6px 0; padding-top: 6px; font-size: 0.9em; color: #b0aaa0; text-align: center; font-style: italic;">(click to manage notes)</div>`;
+      html += `<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px; font-size: 0.9em; color: var(--ink-muted, var(--muted, #b0aaa0)); text-align: center; font-style: italic;">(click to manage notes)</div>`;
     }
     
     showTip(e, html);
@@ -198,7 +198,7 @@ function showTip(e, html) {
   if (!tip) {
     tip = document.createElement('div');
     tip.className = 'ann-hover-tip note-body';
-    tip.style.cssText = 'position:fixed;background:#1a2540;border:1px solid #c9a84c;border-radius:10px;padding:14px 18px;font-size:13.5px;min-width:260px;width:max-content;max-width:min(520px,85vw);max-height:80vh;overflow-y:auto;line-height:1.6;z-index:700;pointer-events:none;color:#e8e4db;box-shadow:0 8px 28px rgba(0,0,0,.5);word-break:break-word;';
+    tip.style.cssText = 'position:fixed;background:var(--surface-paper, var(--navy, #1a2540));border:1px solid var(--border-strong, var(--accent, #c9a84c));border-radius:10px;padding:14px 18px;font-size:13.5px;min-width:260px;width:max-content;max-width:min(520px,85vw);max-height:80vh;overflow-y:auto;line-height:1.6;z-index:700;pointer-events:none;color:var(--ink, var(--text, #e8e4db));box-shadow:var(--shadow-float, 0 8px 28px rgba(0,0,0,.22));word-break:break-word;';
     document.body.appendChild(tip);
   }
   tip.innerHTML = html;
@@ -348,26 +348,32 @@ function renderNotes(ann) {
     return;
   }
 
+  const catInfo = getColorCategoryForHex(ann.hex_color);
+  const annColor = catInfo.hex_color || normalizeHexColor(ann.hex_color) || ann.hex_color || '#c9a84c';
+  const rawHighlight = String(ann.highlighted_text || '').replace(/\s+/g, ' ').trim();
+  const excerpt = rawHighlight.length > 140 ? rawHighlight.slice(0, 137).trimEnd() + '…' : rawHighlight;
+
   filtered.forEach((note, i) => {
     const card = document.createElement('div');
     const isCase = activeNoteTab === 'case';
     card.className = 'note-card' + (isCase ? ' case-card' : '');
-    
-    const cardTitle = isCase
-      ? `<svg class="icon" style="width:13px;height:13px;vertical-align:-2px;margin-right:4px" aria-hidden="true"><use href="#i-scale"/></svg>Case Summary ${i + 1}`
-      : `<svg class="icon" style="width:13px;height:13px;vertical-align:-2px;margin-right:4px" aria-hidden="true"><use href="#i-note"/></svg>Note ${i + 1}`;
     const cleanBody = getNoteBody(note);
     const hasTable = /<table[\s>]/i.test(cleanBody);
 
     card.innerHTML = `
-      <div class="note-card-header">
-        <div class="note-num">${cardTitle}</div>
+      <div class="note-card-header note-card__head">
+        <span class="note-card__meta">
+          <span class="note-card__swatch" style="background:${_escHtml(annColor)}" aria-hidden="true"></span>
+          <span class="note-num">${isCase ? `<svg class="icon" style="width:12px;height:12px;vertical-align:-2px;margin-right:4px" aria-hidden="true"><use href="#i-scale"/></svg>` : ''}Page ${_escHtml(ann.page || '?')} · #${i + 1}</span>
+        </span>
+        <span class="note-card__ink">${_escHtml(catInfo.name || 'Highlight')}</span>
         <div class="note-actions">
-          ${hasTable ? `<button class="note-act-btn copy-tbl-btn" title="Copy 1st summary table preserving formatting (ignores untabled text below)" style="color:var(--gold); border-color:rgba(201,168,76,0.4);"><svg class="icon" style="width:12px;height:12px;vertical-align:-2px;margin-right:4px" aria-hidden="true"><use href="#i-copy"/></svg>Copy Summary Table</button>` : ''}
+          ${hasTable ? `<button class="note-act-btn copy-tbl-btn" title="Copy 1st summary table preserving formatting (ignores untabled text below)"><svg class="icon" style="width:12px;height:12px;vertical-align:-2px;margin-right:4px" aria-hidden="true"><use href="#i-copy"/></svg>Copy Summary Table</button>` : ''}
           <button class="note-act-btn edit-btn" title="Edit Note"><svg class="icon" style="width:12px;height:12px;vertical-align:-2px;margin-right:3px" aria-hidden="true"><use href="#i-pen"/></svg>Edit</button>
           <button class="note-act-btn del" title="Delete Note"><svg class="icon" style="width:12px;height:12px;vertical-align:-2px;margin-right:3px" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button>
         </div>
       </div>
+      ${i === 0 && excerpt ? `<blockquote class="note-card__quote">“${_escHtml(excerpt)}”</blockquote>` : ''}
       <div class="note-body">${cleanBody}</div>
     `;
     

@@ -649,6 +649,25 @@ function wireScheduleModals() {
 
 // ── 6. Render Editable Schedule into #welcome-calendar ──────────────────────
 
+function resolveScheduleSpineColor(subjectTitle, sylPdf) {
+  if (sylPdf) {
+    const linkedSubj = getSubjectForPdf(sylPdf);
+    if (linkedSubj) return getSubjectBinderColor(linkedSubj);
+  }
+  const q = (subjectTitle || '').trim().toLowerCase();
+  if (q && Array.isArray(S.subjects) && S.subjects.length) {
+    const codeMatch = q.match(/\b(\d{3})\b/);
+    const code = codeMatch ? codeMatch[1] : null;
+    const matched = (code && S.subjects.find(s => (s.name || '').toLowerCase().includes(code)))
+      || S.subjects.find(s => {
+        const sn = (s.name || '').toLowerCase();
+        return sn === q || sn.includes(q) || q.includes(sn);
+      });
+    if (matched) return getSubjectBinderColor(matched);
+  }
+  return subjectTitle ? getSubjectBinderColor({ name: subjectTitle }) : 'var(--accent)';
+}
+
 export function renderEditableSchedule(options = {}) {
   const cal = document.getElementById('welcome-calendar');
   if (!cal) return;
@@ -656,29 +675,31 @@ export function renderEditableSchedule(options = {}) {
   cal.dataset.schedRendered = 'true';
   const schedule = loadScheduleData();
 
-  // 1. Ensure header contains Edit / Add Class toolbar
+  // 1. Ensure Study Desk header (.cal-header.desk__header) with stats slot & Edit / Add Class controls
   let header = cal.querySelector('.cal-header');
   if (!header) {
     header = document.createElement('div');
-    header.className = 'cal-header';
-    header.innerHTML = `<h2>Class Schedule</h2><p>2nd Year, 1st Semester</p>`;
     cal.prepend(header);
   }
+  header.className = 'cal-header desk__header';
 
-  let actBar = header.querySelector('.cal-header-acts');
-  if (!actBar) {
-    actBar = document.createElement('div');
-    actBar.className = 'cal-header-acts';
-    actBar.innerHTML = `
-      <button type="button" id="btn-edit-schedule" class="btn-sec" style="font-size:12px; padding:5px 12px; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Customize your class schedule"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-pen"/></svg><span>Edit Schedule</span></button>
-      <button type="button" id="btn-add-class" class="btn-gold" style="font-size:12px; padding:5px 12px; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Add a new class"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg><span>Add Class</span></button>
+  if (!header.querySelector('.desk__heading')) {
+    header.innerHTML = `
+      <div class="desk__heading">
+        <h1 class="desk__title">Study Desk</h1>
+        <p class="desk__subtitle">Midterm Case Syllabus · Class Docket &amp; Active Folios</p>
+      </div>
+      <div class="desk__controls cal-header-acts">
+        <div class="desk__stats" id="gn-desk-stats-slot"></div>
+        <button type="button" id="btn-edit-schedule" class="btn-sec" title="Customize your class schedule"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-pen"/></svg><span>Edit Schedule</span></button>
+        <button type="button" id="btn-add-class" class="btn-gold" title="Add a new class"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg><span>Add Class</span></button>
+      </div>
     `;
-    header.prepend(actBar);
 
-    actBar.querySelector('#btn-edit-schedule')?.addEventListener('click', () => {
+    header.querySelector('#btn-edit-schedule')?.addEventListener('click', () => {
       openEditScheduleModal();
     });
-    actBar.querySelector('#btn-add-class')?.addEventListener('click', () => {
+    header.querySelector('#btn-add-class')?.addEventListener('click', () => {
       openEditScheduleModal(null, true);
     });
   }
@@ -691,13 +712,26 @@ export function renderEditableSchedule(options = {}) {
   if (hasSat) activeDays.push('SAT');
   if (hasSun) activeDays.push('SUN');
 
-  // 3. Populate .cal-grid
-  let grid = cal.querySelector('.cal-grid');
+  // 3. Wrap #cal-grid inside <section class="docket"> and populate it
+  let docket = cal.querySelector('section.docket');
+  let grid = cal.querySelector('#cal-grid') || cal.querySelector('.cal-grid');
+  if (!docket) {
+    docket = document.createElement('section');
+    docket.className = 'docket';
+    docket.innerHTML = `<div class="desk__section-head"><h2 class="desk__section-label">TODAY'S DOCKET · CLASS SCHEDULE</h2></div>`;
+    if (grid && grid.parentNode) {
+      grid.parentNode.insertBefore(docket, grid);
+      docket.appendChild(grid);
+    } else {
+      header.insertAdjacentElement('afterend', docket);
+    }
+  }
   if (!grid) {
     grid = document.createElement('div');
     grid.className = 'cal-grid';
-    cal.appendChild(grid);
+    docket.appendChild(grid);
   }
+  if (!grid.id) grid.id = 'cal-grid';
 
   grid.style.removeProperty('grid-template-columns');
   grid.style.setProperty('--cal-cols', String(activeDays.length));
@@ -721,8 +755,8 @@ export function renderEditableSchedule(options = {}) {
       col.appendChild(empty);
     } else {
       dayEntries.forEach(entry => {
-        const color = getSubjectBinderColor({ name: entry.subject });
         const sylPdf = getSyllabusPdfForSubject(entry.subject);
+        const color = resolveScheduleSpineColor(entry.subject, sylPdf);
         const sylTooltip = sylPdf
           ? `Open ${sylPdf.name} where you last left off`
           : `Open Syllabus for ${entry.subject} (click to choose)`;
@@ -731,7 +765,6 @@ export function renderEditableSchedule(options = {}) {
         card.className = 'cal-item';
         card.dataset.id = entry.id;
         card.dataset.subject = entry.subject;
-        card.style.borderLeft = `4px solid ${color}`;
         card.style.setProperty('--spine', color);
 
         card.innerHTML = `
@@ -759,14 +792,12 @@ export function renderEditableSchedule(options = {}) {
     grid.appendChild(col);
   });
 
-  // Keep GoodNotes Study Desk shelf & digest stat counters in sync (only when not already called from renderStudyDesk)
-  if (!options?.fromStudyDesk) {
-    import('./goodnotes-ui.js').then(m => {
-      if (typeof m.renderStudyDesk === 'function') {
-        m.renderStudyDesk({ skipSchedule: true });
-      }
-    }).catch(() => {});
-  }
+  // Keep Study Desk stats slot & Active Folios shelf position synced without circular calls
+  import('./goodnotes-ui.js').then(m => {
+    if (typeof m.renderStudyDesk === 'function') {
+      m.renderStudyDesk({ skipSchedule: true });
+    }
+  }).catch(() => {});
 }
 
 // ── 7. Context Menu Integration & Reactive Observers ────────────────────────

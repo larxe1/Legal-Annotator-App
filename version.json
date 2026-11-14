@@ -1,7 +1,7 @@
 {
-    "version": "1.19.4",
-    "build": 50,
-    "updatedAt": "2026-11-14T07:50:00Z",
-    "notes": "Open Gemini Digest Studio directly on the general Gemini homepage (https://gemini.google.com/app) instead of per-subject Notebooks.",
-    "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
+    "version":  "1.20.0",
+    "build":  51,
+    "updatedAt":  "2026-11-14T00:52:12Z",
+    "notes":  "Day Folio and Night Casebook UI overhaul with unboxed Study Desk docket/folios grid, crisp reading bar, annotation/notepad cards, and floating capsule controls.",
+    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

@@ -116,6 +116,15 @@ export async function openFolderDoc(fold) {
   closeOtherPanels();
 
   document.getElementById('folder-doc-title').textContent = liveFold.name;
+  const cbInfo = document.getElementById('casebar-info');
+  const cbTitle = document.getElementById('casebar-title');
+  const cbMeta = document.getElementById('casebar-meta');
+  const subj = (S.subjects || []).find(s => s.id === liveFold.subject_id);
+  if (cbInfo && cbTitle && cbMeta) {
+    cbTitle.textContent = liveFold.name || 'Folder Notes';
+    cbMeta.textContent = `${subj?.name ? subj.name + ' · ' : ''}Folder Notes`;
+    cbInfo.hidden = false;
+  }
   const ed = document.getElementById('folder-doc-editor');
   const localNotes = safeStorageGet('local_folder_notes_' + liveFold.id, '') || '';
   const initialNotes = liveFold.notes || localNotes || '';
@@ -970,7 +979,7 @@ export async function ensurePageRendered(pageNum, container = null) {
     drawCanvas.dataset.page = pageNum;
 
     const txtLayer = document.createElement('div');
-    txtLayer.className = 'txt-layer' + (S.mode === 'text' ? ' sel' : '');
+    txtLayer.className = 'txt-layer' + (S.mode === 'text' || S.mode === 'select' ? ' sel' : '');
     txtLayer.style.width  = vp.width  + 'px';
     txtLayer.style.height = vp.height + 'px';
 
@@ -1141,15 +1150,21 @@ export async function renderPageInto(pageNum, container, pdfDocObj, paneState) {
 export function setMode(m) {
   S.mode = m;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
-  document.getElementById('draw-ctrls').classList.toggle('visible', m === 'draw');
+  document.getElementById('draw-ctrls')?.classList.toggle('visible', m === 'draw');
+  if (m !== 'text') {
+    document.getElementById('sel-menu')?.classList.remove('open');
+    S.pendingSel = null;
+  }
   for (const pn of Object.keys(S.pages)) applyModeVisuals(parseInt(pn));
 }
 
 function applyModeVisuals(pageNum) {
-  const { txtLayer, drawCanvas, wrap } = S.pages[pageNum];
-  txtLayer.className = 'txt-layer' + (S.mode === 'text' ? ' sel' : '');
-  drawCanvas.className = 'draw-canvas' + (S.mode === 'draw' ? ' active' : '');
-  wrap.style.cursor = S.mode === 'draw' ? 'crosshair' : 'default';
+  const pg = S.pages[pageNum];
+  if (!pg) return;
+  const { txtLayer, drawCanvas, wrap } = pg;
+  if (txtLayer) txtLayer.className = 'txt-layer' + (S.mode === 'text' || S.mode === 'select' ? ' sel' : '');
+  if (drawCanvas) drawCanvas.className = 'draw-canvas' + (S.mode === 'draw' ? ' active' : '');
+  if (wrap) wrap.style.cursor = S.mode === 'draw' ? 'crosshair' : 'default';
 }
 
 // ── Set up all listeners once per page ──
@@ -1175,6 +1190,7 @@ function setupAllListeners(pageNum) {
 
 // ── Text selection highlight ──
 function onTextUp(pageNum) {
+  if (S.mode !== 'text') return;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
   const text  = sel.toString().trim();
