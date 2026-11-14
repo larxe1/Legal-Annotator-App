@@ -43,17 +43,27 @@ pub(crate) fn normalize_gemini_notebook_url(raw: &str) -> String {
         return String::new();
     }
     let lower = trimmed.to_lowercase();
-    if let Some(idx) = lower.find("gemini.google.com/notebook/") {
-        let after = &trimmed[(idx + "gemini.google.com/notebook/".len())..];
-        let uuid_part: String = after
-            .chars()
-            .take_while(|c| *c != '/' && *c != '?' && *c != '#')
-            .collect();
-        if !uuid_part.is_empty() {
-            return format!("https://gemini.google.com/notebook/{}", uuid_part);
+    if let Some(nb_pos) = lower.find("/notebook/") {
+        if lower.contains("gemini.google.com") {
+            let after = &trimmed[(nb_pos + "/notebook/".len())..];
+            let uuid_part: String = after
+                .chars()
+                .take_while(|c| *c != '/' && *c != '?' && *c != '#')
+                .collect();
+            if !uuid_part.is_empty() {
+                // Check for optional /u/<digits> prefix before /notebook/
+                let prefix_slice = &lower[..nb_pos];
+                if let Some(u_idx) = prefix_slice.rfind("/u/") {
+                    let u_seg = &trimmed[u_idx..nb_pos];
+                    if u_seg.len() > 3 && u_seg[3..].chars().all(|c| c.is_ascii_digit()) {
+                        return format!("https://gemini.google.com{}/notebook/{}", u_seg, uuid_part);
+                    }
+                }
+                return format!("https://gemini.google.com/notebook/{}", uuid_part);
+            }
         }
     }
-    trimmed.to_string()
+    String::new()
 }
 
 fn load_gemini_prefs_disk() -> serde_json::Value {
@@ -100,7 +110,6 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 (function() {
   if (window.__LA_GEMINI_STUDIO_LOADED__) return;
   window.__LA_GEMINI_STUDIO_LOADED__ = true;
-  try { Object.defineProperty(Object.getPrototypeOf(navigator), 'webdriver', { get: function() { return false; }, configurable: true }); } catch (e) {}
 
   var _state = {
     pdfId: '',
@@ -296,11 +305,30 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
     var pinBtn = document.getElementById('la-gemini-pin-btn');
     if (pinBtn) {
-      pinBtn.textContent = 'Gemini Home';
-      pinBtn.style.borderColor = '#334155';
-      pinBtn.style.background = '#1e293b';
-      pinBtn.style.color = '#cbd5e1';
-      pinBtn.title = 'Return to the general Gemini homepage (https://gemini.google.com/app)';
+      var curIsNb = isNotebookUrl(window.location.href);
+      var curNorm = normalizeNotebookUrl(window.location.href);
+      var pinnedNorm = normalizeNotebookUrl(_state.pinnedNotebookUrl);
+      var subjLabel = _state.subjectName ? _state.subjectName : 'Notebook';
+      if (subjLabel.length > 18) subjLabel = subjLabel.slice(0, 17) + '…';
+      if (pinnedNorm && (!curIsNb || curNorm === pinnedNorm)) {
+        pinBtn.textContent = 'Pinned ' + subjLabel + ' ✓';
+        pinBtn.style.borderColor = 'rgba(96,165,250,0.65)';
+        pinBtn.style.background = 'rgba(59,130,246,0.18)';
+        pinBtn.style.color = '#93c5fd';
+        pinBtn.title = 'Pinned Notebook for ' + (_state.subjectName || 'Subject') + ': ' + pinnedNorm + '\n(Open another /notebook/<uuid> and click to update pin, or click to return to pinned Notebook)';
+      } else if (curIsNb) {
+        pinBtn.textContent = 'Pin for ' + subjLabel;
+        pinBtn.style.borderColor = '#4ade80';
+        pinBtn.style.background = 'rgba(74,222,128,0.16)';
+        pinBtn.style.color = '#4ade80';
+        pinBtn.title = 'Pin this Gemini Notebook URL for ' + (_state.subjectName || 'this Subject');
+      } else {
+        pinBtn.textContent = 'Pin for ' + subjLabel;
+        pinBtn.style.borderColor = '#334155';
+        pinBtn.style.background = '#1e293b';
+        pinBtn.style.color = '#cbd5e1';
+        pinBtn.title = 'Open your Subject Notebook in Gemini, then click to Pin';
+      }
     }
 
     var mBtn = document.getElementById('la-gemini-model-btn');
@@ -465,8 +493,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         id: 'la-gemini-pin-btn',
         type: 'button',
         style: btnStyle,
-        title: 'Return to the general Gemini homepage (https://gemini.google.com/app)',
-        text: 'Gemini Home'
+        title: 'Pin or return to your Gemini Subject Notebook',
+        text: 'Pin Notebook'
       }),
       mkEl('button', {
         id: 'la-gemini-model-btn',
@@ -573,10 +601,29 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     document.body.appendChild(fab);
 
     document.getElementById('la-gemini-pin-btn').addEventListener('click', function() {
-      var homeUrl = getGeminiHomeUrl();
-      _notebookTransitionReadyAt = Date.now() + 1000;
-      showStatus('Opening Gemini homepage…', '#93c5fd');
-      window.location.href = homeUrl;
+      var curUrl = window.location.href;
+      if (isNotebookUrl(curUrl)) {
+        var norm = normalizeNotebookUrl(curUrl);
+        var prevPinned = normalizeNotebookUrl(_state.pinnedNotebookUrl);
+        _state.pinnedNotebookUrl = norm;
+        syncPrefsToApp();
+        updateBarUI();
+        if (prevPinned && prevPinned === norm && curUrl.replace(/\/+$/, '') !== norm) {
+          _notebookTransitionReadyAt = Date.now() + 1400;
+          showStatus('Returning to clean Notebook root…', '#93c5fd');
+          window.location.href = norm;
+        } else {
+          showStatus('Pinned Notebook for ' + (_state.subjectName || 'Subject') + '!', '#4ade80');
+          processActiveJob();
+        }
+      } else if (_state.pinnedNotebookUrl) {
+        showStatus('Opening pinned Notebook…', '#93c5fd');
+        returnToNotebookHome();
+      } else {
+        if (!tryAutoOpenSubjectNotebook()) {
+          showStatus('Open your Subject\'s Notebook in Gemini first, then click Pin!', '#fbbf24');
+        }
+      }
     });
 
     document.getElementById('la-gemini-model-btn').addEventListener('click', function(e) {
@@ -656,11 +703,14 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   var _notebookTransitionReadyAt = Date.now() + 1000;
 
   function returnToNotebookHome() {
-    var homeUrl = getGeminiHomeUrl();
-    _verifiedModelKeyOnCurrentPage = '';
-    _notebookTransitionReadyAt = Date.now() + 1000;
-    window.location.href = homeUrl;
-    return true;
+    var clean = normalizeNotebookUrl(_state.pinnedNotebookUrl) || normalizeNotebookUrl(window.location.href);
+    if (clean) {
+      _verifiedModelKeyOnCurrentPage = '';
+      _notebookTransitionReadyAt = Date.now() + 1500;
+      window.location.href = clean;
+      return true;
+    }
+    return false;
   }
 
   function tryAutoOpenSubjectNotebook() {
@@ -1933,7 +1983,6 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           _awaitingStoppedAt = 0;
         }
         showStatus('Gemini is writing digest (' + snap.wordCount + ' words)… will auto-send when finished.', '#fbbf24');
-        emitStudioStatus('streaming', 'Writing digest (' + snap.wordCount + ' words)', 'Gemini is writing digest (' + snap.wordCount + ' words)…', false);
       } else if (!generating) {
         if (_hasSeenGenerationForJob) {
           if (!_awaitingStoppedAt) _awaitingStoppedAt = Date.now();
@@ -1958,7 +2007,6 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       _autoSendLastText = snap.text;
       _autoSendStableSince = Date.now();
       showStatus('Gemini is writing digest (' + snap.wordCount + ' words)… will auto-send when finished.', '#fbbf24');
-      emitStudioStatus('streaming', 'Writing digest (' + snap.wordCount + ' words)', 'Gemini is writing digest (' + snap.wordCount + ' words)…', false);
       if (Date.now() - _awaitingLastChangeAt > 180000) {
         emitStudioStatus('error', 'Generation stalled', 'Gemini digest generation appears stalled — focus Studio to check or send manually.', true);
       }
@@ -1974,7 +2022,6 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     if (stableMs < 3500) {
       var secsLeft = Math.max(1, Math.ceil((3500 - stableMs) / 1000));
       showStatus('Digest complete (' + snap.wordCount + ' words) — auto-sending in ' + secsLeft + 's…', '#4ade80');
-      emitStudioStatus('streaming', 'Finalizing digest (' + snap.wordCount + ' words)', 'Digest complete (' + snap.wordCount + ' words) — sending in ' + secsLeft + 's…', false);
       return;
     }
 
@@ -2017,7 +2064,6 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     showStatus('Pasting prompt & case text via OS Ctrl+V…', '#93c5fd');
-    emitStudioStatus('extracting', 'Pasting via OS', 'Pasting prompt & case text into Ask Gemini…', false);
 
     sendBridgeMsg({
       action: 'native_paste_and_submit',
@@ -2053,7 +2099,6 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       return;
     }
     showStatus('Case pasted! Select model & press Enter — will auto-save to Case Digest when done.', '#4ade80');
-    emitStudioStatus('streaming', 'Select model & Submit', 'Case pasted in Studio — select model & press Enter! Will auto-save when done.', false, true);
   };
 
   function extractAndSendDigest() {
@@ -2127,9 +2172,12 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           if (el) el.textContent = 'Send to Case Digest';
         }, 2400);
       }
-      // Return to the general Gemini homepage after 900ms for batch/next case readiness
+      // Return to pinned normalized Notebook URL after 900ms for batch/next case readiness
       setTimeout(function() {
-        returnToNotebookHome();
+        var pinnedNorm = normalizeNotebookUrl(_state.pinnedNotebookUrl);
+        if (pinnedNorm && window.location.href.replace(/\/+$/, '') !== pinnedNorm) {
+          returnToNotebookHome();
+        }
       }, 900);
     }
   };
@@ -2143,16 +2191,42 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     if (handledJob === String(_state.jobId)) return;
 
     var curUrl = window.location.href;
-    if (isNotebookUrl(curUrl)) {
-      returnToNotebookHome();
+    if (!isNotebookUrl(curUrl)) {
+      var pinnedNorm = normalizeNotebookUrl(_state.pinnedNotebookUrl);
+      if (pinnedNorm) {
+        var navOnceKey = 'la_gemini_autonav_' + String(_state.jobId);
+        if (sessionStorage.getItem(navOnceKey) !== '1') {
+          sessionStorage.setItem(navOnceKey, '1');
+          showStatus('Opening pinned "' + (_state.subjectName || 'Subject') + '" Notebook…', '#93c5fd');
+          returnToNotebookHome();
+          return;
+        }
+      }
+      if (isNotebooksIndexUrl(curUrl) && !_state.pinnedNotebookUrl && _state.subjectName) {
+        var autoKey = String(_state.jobId);
+        if (sessionStorage.getItem('la_gemini_auto_opened_job_id') !== autoKey) {
+          sessionStorage.setItem('la_gemini_auto_opened_job_id', autoKey);
+          if (tryAutoOpenSubjectNotebook()) return;
+        }
+      }
+      showStatus('Open your "' + (_state.subjectName || 'Subject') + '" Notebook and click Pin (or click Paste Case).', '#fbbf24');
       return;
+    }
+
+    if (!_state.pinnedNotebookUrl) {
+      var cleanCur = normalizeNotebookUrl(curUrl);
+      if (cleanCur) {
+        _state.pinnedNotebookUrl = cleanCur;
+        syncPrefsToApp();
+        updateBarUI();
+      }
     }
 
     if (_jobTimer) clearInterval(_jobTimer);
     var attempts = 0;
     _jobTimer = setInterval(function() {
       if (Date.now() < _notebookTransitionReadyAt) {
-        showStatus('Waiting 1s for Gemini session & skills to initialize…', '#93c5fd');
+        showStatus('Waiting for Gemini Notebook & skills to initialize…', '#93c5fd');
         return;
       }
       attempts++;
@@ -2188,7 +2262,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         _state[k] = job[k];
       }
     }
-    _state.pinnedNotebookUrl = '';
+    _state.pinnedNotebookUrl = normalizeNotebookUrl(_state.pinnedNotebookUrl) || normalizeNotebookUrl(window.location.href);
     if (isNewJob) {
       sessionStorage.removeItem('la_gemini_handled_job_id');
       sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
@@ -2200,20 +2274,26 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         clearInterval(_jobTimer);
         _jobTimer = null;
       }
-      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1000);
+      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1500);
     }
     saveStateCache();
     ensureStudioBar();
 
     if (isNewJob) {
-      var curHref = window.location.href || '';
-      var isInNotebookOrThread = isNotebookUrl(curHref) || /gemini\.google\.com\/(?:u\/\d+\/)?app\/[A-Za-z0-9_\-]+/i.test(curHref);
-      if (isInNotebookOrThread) {
+      var targetPinned = normalizeNotebookUrl(_state.pinnedNotebookUrl);
+      var curNorm = normalizeNotebookUrl(window.location.href);
+      var curClean = (window.location.href || '').replace(/\/+$/, '');
+      var hasExistingChat = false;
+      try {
+        var snap = getLatestGeminiAnswerSnapshot();
+        hasExistingChat = !!(snap && snap.text && snap.text.length > 20);
+      } catch (e) {}
+      if (targetPinned && (!isNotebookUrl(window.location.href) || curNorm !== targetPinned || curClean !== targetPinned || hasExistingChat)) {
         if (sessionStorage.getItem('la_gemini_nav_once_job_id') !== String(_state.jobId)) {
           sessionStorage.setItem('la_gemini_nav_once_job_id', String(_state.jobId));
-          showStatus('Opening Gemini homepage…', '#93c5fd');
+          showStatus('Opening "' + (_state.subjectName || 'Subject') + '" Notebook…', '#93c5fd');
           if (returnToNotebookHome()) {
-            setTimeout(function() { processActiveJob(); }, 1200);
+            setTimeout(function() { processActiveJob(); }, 1600);
             return;
           }
         }
@@ -2232,12 +2312,17 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         if (detectStudioPageBlocker()) _studioBlockerReported = true;
       }
       if (window.location.href !== _lastHref) {
+        var prevHref = _lastHref;
         _lastHref = window.location.href;
         _studioBlockerReported = false;
         _verifiedModelKeyOnCurrentPage = '';
         updateBarUI();
-        _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1000);
-        processActiveJob();
+        if (isNotebookUrl(_lastHref)) {
+          if (!isNotebookUrl(prevHref) || normalizeNotebookUrl(prevHref) !== normalizeNotebookUrl(_lastHref)) {
+            _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1500);
+          }
+          processActiveJob();
+        }
       }
     } catch (e) {
       try { console.warn('[GeminiStudio] interval tick error:', e); } catch (_e) {}
@@ -2246,9 +2331,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   function bootGeminiStudio() {
     try {
-      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1000);
+      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1800);
       ensureStudioBar();
-      emitStudioStatus('extracting', 'Studio ready', 'Gemini Studio loaded.', false);
       processActiveJob();
     } catch (e) {
       try { console.warn('[GeminiStudio] boot error:', e); } catch (_e) {}
@@ -2380,8 +2464,41 @@ pub async fn desktop_open_gemini_studio(
     let eff_subject_id = subject_id.unwrap_or_default().trim().to_string();
     let eff_subject_name = subject_name.unwrap_or_default().trim().to_string();
 
-    let _ = pinned_notebook_url;
-    let eff_pinned = String::new();
+    let eff_pinned = pinned_notebook_url
+        .as_deref()
+        .map(normalize_gemini_notebook_url)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if eff_subject_id.is_empty() {
+                None
+            } else {
+                disk_prefs
+                    .get("subjectNotebooks")
+                    .and_then(|m| m.get(&eff_subject_id))
+                    .and_then(|v| v.as_str())
+                    .map(normalize_gemini_notebook_url)
+                    .filter(|s| !s.is_empty())
+            }
+        })
+        .or_else(|| {
+            disk_prefs
+                .get("defaultNotebookUrl")
+                .and_then(|v| v.as_str())
+                .map(normalize_gemini_notebook_url)
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            disk_prefs
+                .get("subjectNotebooks")
+                .and_then(|m| m.as_object())
+                .and_then(|map| {
+                    map.values()
+                        .filter_map(|v| v.as_str())
+                        .map(normalize_gemini_notebook_url)
+                        .find(|s| !s.is_empty())
+                })
+        })
+        .unwrap_or_default();
 
     let eff_model_label = model_label
         .map(|s| s.trim().to_string())
@@ -2431,15 +2548,18 @@ pub async fn desktop_open_gemini_studio(
             .unwrap_or(true)
     });
 
-    if !eff_subject_id.is_empty() && !eff_pinned.is_empty() {
-        if !disk_prefs["subjectNotebooks"].is_object() {
-            disk_prefs["subjectNotebooks"] = serde_json::json!({});
-        }
-        if let Some(map) = disk_prefs["subjectNotebooks"].as_object_mut() {
-            map.insert(
-                eff_subject_id.clone(),
-                serde_json::Value::String(eff_pinned.clone()),
-            );
+    if !eff_pinned.is_empty() {
+        disk_prefs["defaultNotebookUrl"] = serde_json::Value::String(eff_pinned.clone());
+        if !eff_subject_id.is_empty() {
+            if !disk_prefs["subjectNotebooks"].is_object() {
+                disk_prefs["subjectNotebooks"] = serde_json::json!({});
+            }
+            if let Some(map) = disk_prefs["subjectNotebooks"].as_object_mut() {
+                map.insert(
+                    eff_subject_id.clone(),
+                    serde_json::Value::String(eff_pinned.clone()),
+                );
+            }
         }
     }
     disk_prefs["modelLabel"] = serde_json::Value::String(eff_model_label.clone());
@@ -2510,7 +2630,11 @@ pub async fn desktop_open_gemini_studio(
         return Ok(true);
     }
 
-    let start_url_str = "https://gemini.google.com/app".to_string();
+    let start_url_str = if eff_pinned.contains("/notebook/") && eff_pinned.starts_with("https://gemini.google.com/") {
+        eff_pinned.clone()
+    } else {
+        "https://gemini.google.com/notebooks".to_string()
+    };
 
     let parsed_url = tauri::Url::parse(&start_url_str).map_err(|e| e.to_string())?;
     let app_for_nav = app.clone();
@@ -2572,6 +2696,10 @@ pub async fn desktop_open_gemini_studio(
                                             serde_json::Value::String(norm.clone()),
                                         );
                                     }
+                                }
+                                if !norm.is_empty() {
+                                    prefs["defaultNotebookUrl"] =
+                                        serde_json::Value::String(norm.clone());
                                 }
                                 if let Ok(mut st) = state_for_nav.lock() {
                                     st["pinnedNotebookUrl"] = serde_json::Value::String(norm);
@@ -2678,13 +2806,20 @@ pub async fn desktop_open_gemini_studio(
                             let css_x = msg_val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let css_y = msg_val.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let js_dpr = msg_val.get("dpr").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let prompt_text = state_for_nav
+                            let (prompt_text, pdf_id_for_paste) = state_for_nav
                                 .lock()
                                 .ok()
-                                .and_then(|st| {
-                                    st.get("fullPromptText")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string())
+                                .map(|st| {
+                                    (
+                                        st.get("fullPromptText")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        st.get("pdfId")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    )
                                 })
                                 .unwrap_or_default();
                             let app_paste = app_for_nav.clone();
@@ -2733,6 +2868,19 @@ pub async fn desktop_open_gemini_studio(
                                         if ok { "true" } else { "false" }
                                     );
                                     let _ = gw.eval(&js);
+                                }
+                                if ok {
+                                    emit_gemini_studio_status(
+                                        &app_paste,
+                                        serde_json::json!({
+                                            "action": "studio_status",
+                                            "state": "streaming",
+                                            "stepLabel": "Select model & Submit",
+                                            "message": "Case pasted in Notebook — select model & press Enter! Will auto-save when done.",
+                                            "pdfId": pdf_id_for_paste,
+                                            "canRetry": false
+                                        }),
+                                    );
                                 }
                             });
                         } else if action == "studio_status" || action == "studio_error" {

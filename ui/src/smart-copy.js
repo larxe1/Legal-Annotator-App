@@ -1062,25 +1062,38 @@ async function hydrateGeminiNotebooksMapFromCloud() {
 }
 
 export async function getPinnedGeminiNotebookForSubject(subjectId) {
-  if (!subjectId) return '';
-  const sid = String(subjectId);
+  const sid = subjectId ? String(subjectId) : '';
   let map = readLocalGeminiNotebooksMap();
-  if (map[sid]) return map[sid];
+  if (sid && map[sid]) return map[sid];
   map = await hydrateGeminiNotebooksMapFromCloud();
-  if (map[sid]) return map[sid];
+  if (sid && map[sid]) return map[sid];
   try {
     const tauriInvoke = getTauriInvoke();
     const prefs = typeof window.desktopGetGeminiPrefs === 'function'
       ? await window.desktopGetGeminiPrefs()
       : (tauriInvoke ? await tauriInvoke('desktop_get_gemini_prefs') : null);
-    const desktopUrl = prefs?.subjectNotebooks?.[sid];
-    const norm = normalizeGeminiNotebookUrl(desktopUrl);
-    if (norm) {
-      map[sid] = norm;
-      writeLocalGeminiNotebooksMap(map);
-      return norm;
+    if (sid) {
+      const desktopUrl = prefs?.subjectNotebooks?.[sid];
+      const norm = normalizeGeminiNotebookUrl(desktopUrl);
+      if (norm) {
+        map[sid] = norm;
+        writeLocalGeminiNotebooksMap(map);
+        return norm;
+      }
+    }
+    const defNorm = normalizeGeminiNotebookUrl(prefs?.defaultNotebookUrl);
+    if (defNorm) return defNorm;
+    if (prefs?.subjectNotebooks && typeof prefs.subjectNotebooks === 'object') {
+      for (const v of Object.values(prefs.subjectNotebooks)) {
+        const norm = normalizeGeminiNotebookUrl(v);
+        if (norm) return norm;
+      }
     }
   } catch {}
+  for (const v of Object.values(map)) {
+    const norm = normalizeGeminiNotebookUrl(v);
+    if (norm) return norm;
+  }
   return '';
 }
 
@@ -1530,7 +1543,10 @@ export async function focusOrReopenGeminiStudio() {
     } catch {}
   }
 
-  const targetUrl = 'https://gemini.google.com/app';
+  const activeFolderId = getActiveSubfolderId();
+  const { subjectId } = getSubjectInfoForFolder(activeFolderId);
+  const pinnedForSubj = await getPinnedGeminiNotebookForSubject(subjectId);
+  const targetUrl = _lastGeminiUrl || pinnedForSubj || 'https://gemini.google.com/notebooks';
   try {
     const win = window.open(targetUrl, '_blank');
     if (win) {
@@ -2297,7 +2313,7 @@ export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
         };
       });
 
-      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Gemini…`, true, { provider: 'gemini', state: 'extracting', countLabel: stepLabel });
+      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Gemini Notebook…`, true, { provider: 'gemini', state: 'extracting', countLabel: stepLabel });
       await openGeminiDigestForCurrentPdf({
         forceAutoSubmit: true,
         forceAutoSend: true,
@@ -2401,7 +2417,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
   });
 
   try {
-    toast(`Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Gemini…`);
+    toast(`Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Gemini Notebook…`);
 
     const extracted = await extractPdfDigestPromptPayload({
       doc,
@@ -2432,7 +2448,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
     await copyToClipboard(fullPromptText);
 
     const { subjectId, subjectName } = getSubjectInfoForFolder(activeFolderId);
-    const pinnedNotebookUrl = '';
+    const pinnedNotebookUrl = await getPinnedGeminiNotebookForSubject(subjectId);
     const { modelLabel, thinkingLevel } = await resolveGeminiModelPrefs();
 
     const autoSubmitPref = opts?.forceAutoSubmit
@@ -2460,7 +2476,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
       autoSendDigest: Boolean(autoSendPref),
     };
     _lastGeminiStudioPayload = studioPayload;
-    _lastGeminiUrl = 'https://gemini.google.com/app';
+    _lastGeminiUrl = pinnedNotebookUrl || 'https://gemini.google.com/notebooks';
 
     if (typeof window.desktopOpenGeminiStudio === 'function') {
       const opened = await window.desktopOpenGeminiStudio(studioPayload);
@@ -2534,7 +2550,9 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
         pdfName: String(pdfObj.name || ''),
       });
     }
-    toast('Copied case + instructions! Paste (Ctrl+V) in Gemini.');
+    toast(pinnedNotebookUrl
+      ? `Copied case + instructions! Paste (Ctrl+V) in your ${subjectName || 'Subject'} Gemini Notebook.`
+      : 'Copied case + instructions! Open your Subject Notebook in Gemini and paste (Ctrl+V).');
   } catch (err) {
     if (preOpenedWebWin && !preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
       try { preOpenedWebWin.close(); } catch {}

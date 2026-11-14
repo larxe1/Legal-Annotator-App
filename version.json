@@ -1,7 +1,7 @@
 {
-    "version":  "1.22.8",
-    "build":  62,
-    "updatedAt":  "2026-11-14T10:33:14Z",
-    "notes":  "Strip automated Gemini model selection and auto-submit so users can pick the model and submit manually; keep auto-paste and automatic digest capture into Case Digest.",
-    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
+    "version": "1.22.9",
+    "build": 63,
+    "updatedAt": "2026-11-14T11:00:19Z",
+    "notes": "Base Gemini Digest Studio on pinned Subject Notebooks instead of the general homepage, restore Subject Notebook URL settings, and remove bot-fingerprint/XHR-interrupting navigation calls so Notebook skills load reliably.",
+    "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
