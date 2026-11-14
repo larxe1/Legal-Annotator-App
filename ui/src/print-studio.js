@@ -20,7 +20,8 @@ import {
   getFolderPathString,
 } from './export.js';
 
-const PREFS_STORAGE_KEY = 'la_print_studio_prefs';
+const PREFS_STORAGE_KEY = 'la_print_studio_prefs_v2';
+const DEFAULT_PRESET_STORAGE_KEY = 'la_print_studio_default_v2';
 const JOB_STORAGE_PREFIX = 'la_print_job_';
 const PRINT_CHANNEL_NAME = 'la_print_studio';
 const REALTIME_CHANNEL_NAME = 'legal_annotator_realtime';
@@ -32,10 +33,10 @@ const DEFAULT_PREFS = {
   tablesOnly: false,
   includeToc: false,
   columns: 1,
-  layout: 'compact',
-  paperSize: 'letter',
+  layout: 'tight',
+  paperSize: 'a4',
   orientation: 'portrait',
-  marginPreset: 'normal',
+  marginPreset: 'narrow',
   runningHeaders: true,
   previewZoom: 1,
 };
@@ -52,29 +53,44 @@ function getPrintChannel() {
   return _printChannel;
 }
 
-function loadSavedPrefs() {
+function normalizePrefs(parsed, base = DEFAULT_PREFS) {
+  if (!parsed || typeof parsed !== 'object') return { ...base };
+  return {
+    ...base,
+    ...parsed,
+    columns: parsed.columns !== undefined ? (Number(parsed.columns) === 2 ? 2 : 1) : base.columns,
+    layout: ['tight', 'compact', 'standard'].includes(parsed?.layout) ? parsed.layout : base.layout,
+    paperSize: ['letter', 'a4', 'legal'].includes(parsed?.paperSize) ? parsed.paperSize : base.paperSize,
+    orientation: ['portrait', 'landscape'].includes(parsed?.orientation) ? parsed.orientation : base.orientation,
+    marginPreset: ['normal', 'narrow', 'wide'].includes(parsed?.marginPreset) ? parsed.marginPreset : base.marginPreset,
+    previewZoom: [0.75, 1, 1.25].includes(Number(parsed?.previewZoom)) ? Number(parsed.previewZoom) : base.previewZoom,
+  };
+}
+
+function loadDefaultPreset() {
   try {
-    const raw = safeStorageGet(PREFS_STORAGE_KEY, null);
+    const raw = safeStorageGet(DEFAULT_PRESET_STORAGE_KEY, null);
     if (!raw) return { ...DEFAULT_PREFS };
-    const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_PREFS,
-      ...(parsed && typeof parsed === 'object' ? parsed : {}),
-      columns: Number(parsed?.columns) === 2 ? 2 : 1,
-      layout: parsed?.layout === 'standard' ? 'standard' : 'compact',
-      paperSize: ['letter', 'a4', 'legal'].includes(parsed?.paperSize) ? parsed.paperSize : 'letter',
-      orientation: parsed?.orientation === 'landscape' ? 'landscape' : 'portrait',
-      marginPreset: ['normal', 'narrow', 'wide'].includes(parsed?.marginPreset) ? parsed.marginPreset : 'normal',
-      previewZoom: [0.75, 1, 1.25].includes(Number(parsed?.previewZoom)) ? Number(parsed.previewZoom) : 1,
-    };
+    return normalizePrefs(JSON.parse(raw), DEFAULT_PREFS);
   } catch {
     return { ...DEFAULT_PREFS };
   }
 }
 
+function loadSavedPrefs() {
+  const base = loadDefaultPreset();
+  try {
+    const raw = safeStorageGet(PREFS_STORAGE_KEY, null);
+    if (!raw) return { ...base };
+    return normalizePrefs(JSON.parse(raw), base);
+  } catch {
+    return { ...base };
+  }
+}
+
 function savePrefs(prefs) {
   try {
-    safeStorageSet(PREFS_STORAGE_PREFIX, JSON.stringify(prefs));
+    safeStorageSet(PREFS_STORAGE_KEY, JSON.stringify(prefs));
   } catch {}
 }
 
@@ -496,15 +512,24 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     prefs.orientation = job.orientation;
   }
 
+  const queueItems = buildQueueFromJobOrMode(job, modeInfo);
+
   const state = {
     jobTitle: job?.title || 'Legal Print Studio',
     prefs,
-    queueItems: buildQueueFromJobOrMode(job, modeInfo),
+    queueItems,
     excludedFolderIds: new Set(),
     excludedPdfIds: new Set(),
-    collapsedSubjects: new Set(),
-    collapsedFolders: new Set(),
+    collapsedSubjects: new Set((S.subjects || []).map(s => s.id)),
+    collapsedFolders: new Set([
+      ...(S.folders || []).map(f => f.id),
+      '__other_folders__',
+      '__unfiled__',
+    ]),
+    sidebarOpen: queueItems.length === 0,
     searchQuery: '',
+    searchTimer: null,
+    lastPageCount: 0,
     notesCache: new Map(),
     folderNotesCache: new Map(),
     renderToken: 0,
@@ -513,30 +538,105 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     destroyed: false,
   };
 
+  function expandAncestorsForQueue(items) {
+    const subjIdSet = new Set((S.subjects || []).map(s => s.id));
+    for (const item of items) {
+      if (item.kind === 'folder') {
+        const fold = (S.folders || []).find(f => f.id === item.id);
+        if (!fold) continue;
+        const ancestors = getAncestorFolderIds(fold.parent_folder_id);
+        for (const aid of ancestors) state.collapsedFolders.delete(aid);
+        const rootId = ancestors.length ? ancestors[ancestors.length - 1] : fold.id;
+        const rootFold = (S.folders || []).find(f => f.id === rootId) || fold;
+        if (rootFold.subject_id && subjIdSet.has(rootFold.subject_id)) {
+          state.collapsedSubjects.delete(rootFold.subject_id);
+        } else {
+          state.collapsedFolders.delete('__other_folders__');
+        }
+      } else if (item.kind === 'pdf') {
+        const pdf = (S.pdfs || []).find(p => p.id === item.id);
+        if (!pdf) continue;
+        const fold = pdf.folder_id ? (S.folders || []).find(f => f.id === pdf.folder_id) : null;
+        if (fold) {
+          const ancestors = getAncestorFolderIds(fold.id);
+          for (const aid of ancestors) state.collapsedFolders.delete(aid);
+          const rootId = ancestors[ancestors.length - 1];
+          const rootFold = (S.folders || []).find(f => f.id === rootId) || fold;
+          if (rootFold.subject_id && subjIdSet.has(rootFold.subject_id)) {
+            state.collapsedSubjects.delete(rootFold.subject_id);
+          } else {
+            state.collapsedFolders.delete('__other_folders__');
+          }
+        } else {
+          state.collapsedFolders.delete('__unfiled__');
+        }
+      }
+    }
+  }
+
+  expandAncestorsForQueue(state.queueItems);
+
   rootEl.innerHTML = `
     <header id="ps-header">
       <div class="ps-header-left">
-        <div class="ps-brand-badge">🖨️</div>
+        <button id="ps-btn-toggle-sidebar" class="ps-btn ps-btn-drawer" type="button" aria-expanded="${state.sidebarOpen}" title="Toggle Cases &amp; Print Order">Cases <span id="ps-queue-count" class="ps-count-pill">0</span></button>
         <div class="ps-header-titles">
-          <div class="ps-title-row">
-            <span class="ps-brand-name">Legal Print Studio</span>
-            <span class="ps-scope-pill">Notes, Case Digests, Folder Docs &amp; Tables</span>
-          </div>
-          <div id="ps-selection-summary" class="ps-selection-summary">Preparing selection…</div>
+          <span class="ps-brand-name">Print Studio</span>
+          <span id="ps-preview-badge" class="ps-preview-badge">A4 Portrait</span>
         </div>
       </div>
+
+      <div class="ps-toolbar-center">
+        <div class="ps-seg-group" role="group" aria-label="Paper size">
+          <button class="ps-seg-btn" data-ps-paper="a4" type="button">A4</button>
+          <button class="ps-seg-btn" data-ps-paper="letter" type="button">Letter</button>
+          <button class="ps-seg-btn" data-ps-paper="legal" type="button">Legal</button>
+        </div>
+        <div class="ps-seg-group" role="group" aria-label="Orientation">
+          <button class="ps-seg-btn" data-ps-orient="portrait" type="button">Portrait</button>
+          <button class="ps-seg-btn" data-ps-orient="landscape" type="button">Landscape</button>
+        </div>
+        <div class="ps-seg-group" role="group" aria-label="Margins">
+          <button class="ps-seg-btn" data-ps-margin="narrow" type="button">Narrow</button>
+          <button class="ps-seg-btn" data-ps-margin="normal" type="button">Normal</button>
+          <button class="ps-seg-btn" data-ps-margin="wide" type="button">Wide</button>
+        </div>
+        <div class="ps-seg-group" role="group" aria-label="Spacing">
+          <button class="ps-seg-btn" data-ps-layout="tight" type="button">Tight</button>
+          <button class="ps-seg-btn" data-ps-layout="compact" type="button">Compact</button>
+          <button class="ps-seg-btn" data-ps-layout="standard" type="button">Standard</button>
+        </div>
+        <div class="ps-seg-group" role="group" aria-label="Columns">
+          <button id="ps-col-1" class="ps-seg-btn" data-ps-col="1" type="button">1 Col</button>
+          <button id="ps-col-2" class="ps-seg-btn" data-ps-col="2" type="button">2 Col</button>
+        </div>
+        <div class="ps-pill-toggles">
+          <label class="ps-pill-chk"><input id="ps-opt-digest" type="checkbox"><span>Digest</span></label>
+          <label class="ps-pill-chk"><input id="ps-opt-notes" type="checkbox"><span>Notes</span></label>
+          <label class="ps-pill-chk"><input id="ps-opt-folder-docs" type="checkbox"><span>Folder Notes</span></label>
+          <label class="ps-pill-chk ps-pill-accent"><input id="ps-opt-tables-only" type="checkbox"><span>Tables Only</span></label>
+          <label class="ps-pill-chk"><input id="ps-opt-toc" type="checkbox"><span>TOC</span></label>
+          <label class="ps-pill-chk"><input id="ps-opt-running-headers" type="checkbox"><span>Page #</span></label>
+        </div>
+        <button id="ps-btn-default-preset" class="ps-btn ps-btn-ghost ps-btn-sm" type="button" title="Click: Reset to Default (A4, Portrait, Narrow, Tight) • Shift+Click: Save current setup as Default">Default</button>
+      </div>
+
       <div class="ps-header-actions">
-        <button id="ps-btn-refresh" class="ps-btn ps-btn-sec" title="Reload latest Notes, Case Digests &amp; Folder Docs">🔄 Refresh Notes</button>
-        <button id="ps-btn-print" class="ps-btn ps-btn-primary" title="Print or Save as PDF (Ctrl+P)">🖨️ Print / Save as PDF</button>
-        <button id="ps-btn-close" class="ps-btn ps-btn-ghost" title="Close Print Studio">✕ Close</button>
+        <div class="ps-zoom-group" role="group" aria-label="Preview zoom">
+          <button id="ps-zoom-75" class="ps-zoom-btn" data-ps-zoom="0.75" type="button">75%</button>
+          <button id="ps-zoom-100" class="ps-zoom-btn" data-ps-zoom="1" type="button">100%</button>
+          <button id="ps-zoom-125" class="ps-zoom-btn" data-ps-zoom="1.25" type="button">125%</button>
+        </div>
+        <button id="ps-btn-refresh" class="ps-btn ps-btn-sec ps-btn-sm" type="button" title="Reload latest Notes, Case Digests &amp; Folder Docs">Refresh</button>
+        <button id="ps-btn-print" class="ps-btn ps-btn-primary" type="button" title="Print or Save as PDF (Ctrl+P)">Print / PDF</button>
+        <button id="ps-btn-close" class="ps-btn ps-btn-ghost ps-btn-icon" type="button" title="Close Print Studio">✕</button>
       </div>
     </header>
 
     <div id="ps-workspace">
-      <!-- LEFT PANE: Library Picker + Print Queue -->
-      <aside id="ps-left-pane">
+      <aside id="ps-left-pane"${state.sidebarOpen ? '' : ' class="collapsed"'}>
         <div class="ps-pane-head">
-          <span class="ps-pane-title">Library &amp; Cases</span>
+          <span id="ps-selection-summary" class="ps-selection-summary">Preparing selection…</span>
           <div class="ps-mini-actions">
             <button id="ps-btn-select-all" class="ps-link-btn" type="button">Select All</button>
             <span class="ps-dot-sep">&bull;</span>
@@ -550,121 +650,30 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
 
         <div id="ps-tree" class="ps-tree"></div>
 
-        <div id="ps-queue-section">
-          <div class="ps-pane-head ps-queue-head">
-            <span class="ps-pane-title">Print Order</span>
-            <span id="ps-queue-count" class="ps-count-pill">0</span>
-          </div>
+        <details id="ps-queue-section">
+          <summary class="ps-pane-head ps-queue-head"><span class="ps-pane-title">Print Order</span></summary>
           <div id="ps-queue-list" class="ps-queue-list"></div>
-        </div>
+        </details>
       </aside>
 
-      <!-- CENTER PANE: Live Print Preview -->
       <main id="ps-center-pane">
-        <div id="ps-preview-bar">
-          <div class="ps-preview-meta">
-            <span id="ps-preview-badge" class="ps-preview-badge">0 sections</span>
-            <span class="ps-print-tip">Tip: Uncheck &ldquo;Headers and footers&rdquo; in the print dialog for clean margins.</span>
-          </div>
-          <div class="ps-zoom-group" role="group" aria-label="Preview zoom">
-            <button id="ps-zoom-75" class="ps-zoom-btn" data-ps-zoom="0.75" type="button">75%</button>
-            <button id="ps-zoom-100" class="ps-zoom-btn" data-ps-zoom="1" type="button">100%</button>
-            <button id="ps-zoom-125" class="ps-zoom-btn" data-ps-zoom="1.25" type="button">125%</button>
-          </div>
-        </div>
-
         <div id="ps-preview-stage">
           <div id="ps-loading-bar" style="display:none;">Gathering notes &amp; building preview…</div>
           <iframe id="ps-preview-frame" title="Legal Print Studio Preview"></iframe>
           <div id="ps-empty-state" style="display:none;">
             <div class="ps-empty-card">
-              <div class="ps-empty-icon">🖨️</div>
               <h2 id="ps-empty-title">No items selected</h2>
-              <p id="ps-empty-desc">Check one or more folders or cases in the left panel to preview and print Notes, Case Digests, Folder Docs, or Summary Tables.</p>
+              <p id="ps-empty-desc">Check one or more folders or cases in the Cases panel to preview and print Notes, Case Digests, Folder Docs, or Summary Tables.</p>
               <button id="ps-empty-reset-btn" class="ps-btn ps-btn-primary" type="button" style="display:none;">Show All Content Types</button>
             </div>
           </div>
         </div>
       </main>
-
-      <!-- RIGHT PANE: Print Inspector -->
-      <aside id="ps-right-pane">
-        <div class="ps-pane-head">
-          <span class="ps-pane-title">Print Inspector</span>
-        </div>
-
-        <div class="ps-inspector-scroll">
-          <section class="ps-insp-group">
-            <div class="ps-insp-label">Content</div>
-            <label class="ps-toggle-row">
-              <input id="ps-opt-digest" type="checkbox">
-              <span>Case Digest</span>
-            </label>
-            <label class="ps-toggle-row">
-              <input id="ps-opt-notes" type="checkbox">
-              <span>Notes <small class="ps-muted-inline">(Appendix)</small></span>
-            </label>
-            <label class="ps-toggle-row">
-              <input id="ps-opt-folder-docs" type="checkbox">
-              <span>Folder Notes <small class="ps-muted-inline">(Folder Docs)</small></span>
-            </label>
-            <label class="ps-toggle-row ps-toggle-accent">
-              <input id="ps-opt-tables-only" type="checkbox">
-              <span>Summary Tables Only</span>
-            </label>
-            <div class="ps-insp-hint">Extracts the 1st summary table per case (or tables inside Folder Notes if no case tables exist).</div>
-            <label class="ps-toggle-row">
-              <input id="ps-opt-toc" type="checkbox">
-              <span>Cover &amp; Table of Contents</span>
-            </label>
-          </section>
-
-          <section class="ps-insp-group">
-            <div class="ps-insp-label">Layout</div>
-            <div class="ps-field-lbl">Columns</div>
-            <div class="ps-seg-group">
-              <button id="ps-col-1" class="ps-seg-btn" data-ps-col="1" type="button">📄 1 Col</button>
-              <button id="ps-col-2" class="ps-seg-btn" data-ps-col="2" type="button">📰 2 Col</button>
-            </div>
-            <div class="ps-field-lbl">Density</div>
-            <div class="ps-seg-group">
-              <button id="ps-layout-compact" class="ps-seg-btn" data-ps-layout="compact" type="button">⚡ Compact</button>
-              <button id="ps-layout-standard" class="ps-seg-btn" data-ps-layout="standard" type="button">📐 Standard</button>
-            </div>
-          </section>
-
-          <section class="ps-insp-group">
-            <div class="ps-insp-label">Page Setup</div>
-            <div class="ps-field-lbl">Paper Size</div>
-            <div class="ps-seg-group">
-              <button class="ps-seg-btn" data-ps-paper="letter" type="button">Letter</button>
-              <button class="ps-seg-btn" data-ps-paper="a4" type="button">A4</button>
-              <button class="ps-seg-btn" data-ps-paper="legal" type="button">Legal</button>
-            </div>
-
-            <div class="ps-field-lbl">Orientation</div>
-            <div class="ps-seg-group">
-              <button class="ps-seg-btn" data-ps-orient="portrait" type="button">📄 Portrait</button>
-              <button class="ps-seg-btn" data-ps-orient="landscape" type="button">🖼️ Landscape</button>
-            </div>
-
-            <div class="ps-field-lbl">Margins</div>
-            <div class="ps-seg-group">
-              <button class="ps-seg-btn" data-ps-margin="narrow" type="button">Narrow</button>
-              <button class="ps-seg-btn" data-ps-margin="normal" type="button">Normal</button>
-              <button class="ps-seg-btn" data-ps-margin="wide" type="button">Wide</button>
-            </div>
-
-            <label class="ps-toggle-row" style="margin-top:8px;">
-              <input id="ps-opt-running-headers" type="checkbox">
-              <span>Running Headers &amp; Page Numbers</span>
-            </label>
-          </section>
-        </div>
-      </aside>
     </div>
   `;
 
+  const elLeftPane = rootEl.querySelector('#ps-left-pane');
+  const elBtnToggleSidebar = rootEl.querySelector('#ps-btn-toggle-sidebar');
   const elSummary = rootEl.querySelector('#ps-selection-summary');
   const elTree = rootEl.querySelector('#ps-tree');
   const elQueueList = rootEl.querySelector('#ps-queue-list');
@@ -830,6 +839,10 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     rootEl.querySelectorAll('[data-ps-zoom]').forEach(btn => {
       btn.classList.toggle('active', Math.abs(Number(btn.dataset.psZoom) - Number(state.prefs.previewZoom)) < 0.01);
     });
+    if (elBtnToggleSidebar) {
+      elBtnToggleSidebar.classList.toggle('active', Boolean(state.sidebarOpen));
+      elBtnToggleSidebar.setAttribute('aria-expanded', String(Boolean(state.sidebarOpen)));
+    }
   }
 
   function renderQueueList() {
@@ -922,11 +935,53 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
         : 'Select folders or cases to preview';
     }
 
+    // Single O(F + P) precomputation pass for tree lookup and branch counts
+    const allFolders = S.folders || [];
+    const allPdfs = S.pdfs || [];
+    const folderById = new Map();
+    const childrenByParent = new Map();
+    for (const f of allFolders) {
+      folderById.set(f.id, f);
+      const pid = f.parent_folder_id || null;
+      if (!childrenByParent.has(pid)) childrenByParent.set(pid, []);
+      childrenByParent.get(pid).push(f);
+    }
+    for (const list of childrenByParent.values()) {
+      list.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+    }
+
+    const pdfsByFolder = new Map();
+    for (const p of allPdfs) {
+      const fid = p.folder_id || null;
+      if (!pdfsByFolder.has(fid)) pdfsByFolder.set(fid, []);
+      pdfsByFolder.get(fid).push(p);
+    }
+    for (const list of pdfsByFolder.values()) {
+      list.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+    }
+
+    const branchPdfCounts = new Map();
+    const computeBranchPdfCount = (folderId, visiting = new Set()) => {
+      if (branchPdfCounts.has(folderId)) return branchPdfCounts.get(folderId);
+      if (visiting.has(folderId)) return 0;
+      visiting.add(folderId);
+      let count = (pdfsByFolder.get(folderId) || []).length;
+      for (const sub of (childrenByParent.get(folderId) || [])) {
+        count += computeBranchPdfCount(sub.id, visiting);
+      }
+      visiting.delete(folderId);
+      branchPdfCounts.set(folderId, count);
+      return count;
+    };
+    for (const f of allFolders) {
+      computeBranchPdfCount(f.id);
+    }
+
     const folderMatchesCache = new Map();
     function folderOrDescMatches(folderId) {
       if (!q) return true;
       if (folderMatchesCache.has(folderId)) return folderMatchesCache.get(folderId);
-      const fold = S.folders.find(f => f.id === folderId);
+      const fold = folderById.get(folderId);
       if (!fold) {
         folderMatchesCache.set(folderId, false);
         return false;
@@ -935,12 +990,12 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
         folderMatchesCache.set(folderId, true);
         return true;
       }
-      const childPdfs = S.pdfs.filter(p => p.folder_id === folderId);
+      const childPdfs = pdfsByFolder.get(folderId) || [];
       if (childPdfs.some(p => (p.name || '').toLowerCase().includes(q))) {
         folderMatchesCache.set(folderId, true);
         return true;
       }
-      const subFolds = S.folders.filter(f => f.parent_folder_id === folderId);
+      const subFolds = childrenByParent.get(folderId) || [];
       const anySub = subFolds.some(sf => folderOrDescMatches(sf.id));
       folderMatchesCache.set(folderId, anySub);
       return anySub;
@@ -951,14 +1006,10 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     function renderFolderNode(folder, containerEl, depth = 0) {
       if (!folderOrDescMatches(folder.id)) return;
       const isCollapsed = !q && state.collapsedFolders.has(folder.id);
-      const subFolders = S.folders
-        .filter(f => f.parent_folder_id === folder.id)
-        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-      const pdfs = S.pdfs
-        .filter(p => p.folder_id === folder.id)
-        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      const subFolders = childrenByParent.get(folder.id) || [];
+      const folderPdfs = pdfsByFolder.get(folder.id) || [];
 
-      const hasChildren = subFolders.length > 0 || pdfs.length > 0;
+      const hasChildren = subFolders.length > 0 || folderPdfs.length > 0;
       const chkState = getFolderCheckState(folder.id);
 
       const nodeWrap = document.createElement('div');
@@ -1007,7 +1058,7 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
 
       const badge = document.createElement('span');
       badge.className = 'ps-node-count';
-      const branchPdfCount = S.pdfs.filter(p => new Set(getAllDescendantFolderIds(folder.id)).has(p.folder_id)).length;
+      const branchPdfCount = branchPdfCounts.get(folder.id) || 0;
       if (branchPdfCount > 0) badge.textContent = String(branchPdfCount);
 
       row.appendChild(toggleBtn);
@@ -1020,7 +1071,7 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
         const childrenBox = document.createElement('div');
         childrenBox.className = 'ps-tree-children';
 
-        for (const pdf of pdfs) {
+        for (const pdf of folderPdfs) {
           if (q && !(pdf.name || '').toLowerCase().includes(q) && !(folder.name || '').toLowerCase().includes(q)) {
             continue;
           }
@@ -1067,12 +1118,11 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     }
 
     const subjects = [...(S.subjects || [])];
+    const topLevelFolders = childrenByParent.get(null) || [];
     let renderedAny = false;
 
     for (const subj of subjects) {
-      const rootFolders = S.folders
-        .filter(f => f.subject_id === subj.id && !f.parent_folder_id)
-        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      const rootFolders = topLevelFolders.filter(f => f.subject_id === subj.id);
 
       const subjNameMatches = q && (subj.name || '').toLowerCase().includes(q);
       const visibleFolders = subjNameMatches
@@ -1109,53 +1159,80 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
 
     // Orphan folders (whose subject_id is missing)
     const subjIds = new Set(subjects.map(s => s.id));
-    const orphanFolders = S.folders.filter(f => !f.parent_folder_id && (!f.subject_id || !subjIds.has(f.subject_id)));
+    const orphanFolders = topLevelFolders.filter(f => !f.subject_id || !subjIds.has(f.subject_id));
     const visibleOrphans = orphanFolders.filter(f => folderOrDescMatches(f.id));
     if (visibleOrphans.length) {
       renderedAny = true;
       const groupEl = document.createElement('div');
       groupEl.className = 'ps-subj-group';
-      groupEl.innerHTML = '<div class="ps-subj-header"><span class="ps-subj-name">Other Folders</span></div>';
-      for (const rf of visibleOrphans) renderFolderNode(rf, groupEl, 0);
+      const isOtherCollapsed = !q && state.collapsedFolders.has('__other_folders__');
+      const hdr = document.createElement('div');
+      hdr.className = 'ps-subj-header';
+      hdr.innerHTML = `
+        <span class="ps-subj-twist">${isOtherCollapsed ? '▸' : '▾'}</span>
+        <span class="ps-subj-name">Other Folders</span>
+      `;
+      hdr.addEventListener('click', () => {
+        if (state.collapsedFolders.has('__other_folders__')) state.collapsedFolders.delete('__other_folders__');
+        else state.collapsedFolders.add('__other_folders__');
+        renderTree();
+      });
+      groupEl.appendChild(hdr);
+      if (!isOtherCollapsed) {
+        for (const rf of visibleOrphans) renderFolderNode(rf, groupEl, 0);
+      }
       elTree.appendChild(groupEl);
     }
 
     // Unfiled PDFs (folder_id missing or deleted)
-    const folderIdSet = new Set(S.folders.map(f => f.id));
-    const unfiledPdfs = S.pdfs.filter(p => !p.folder_id || !folderIdSet.has(p.folder_id))
+    const unfiledPdfs = allPdfs.filter(p => !p.folder_id || !folderById.has(p.folder_id))
       .filter(p => !q || (p.name || '').toLowerCase().includes(q));
     if (unfiledPdfs.length) {
       renderedAny = true;
       const groupEl = document.createElement('div');
       groupEl.className = 'ps-subj-group';
-      groupEl.innerHTML = '<div class="ps-subj-header"><span class="ps-subj-name">Unfiled Cases</span></div>';
-      for (const pdf of unfiledPdfs) {
-        const pdfRow = document.createElement('div');
-        pdfRow.className = 'ps-tree-row ps-tree-pdf';
-        pdfRow.style.paddingLeft = '12px';
-        const pcb = document.createElement('input');
-        pcb.type = 'checkbox';
-        pcb.className = 'ps-chk';
-        pcb.checked = isPdfEffectivelyIncluded(pdf);
-        pcb.addEventListener('change', () => {
-          togglePdfSelection(pdf.id, pcb.checked);
-          renderTree();
-          renderQueueList();
-          schedulePreview();
-        });
-        const plbl = document.createElement('span');
-        plbl.className = 'ps-tree-label';
-        plbl.textContent = `📄 ${getCleanPdfTitle(pdf)}`;
-        plbl.addEventListener('click', () => {
-          pcb.checked = !pcb.checked;
-          togglePdfSelection(pdf.id, pcb.checked);
-          renderTree();
-          renderQueueList();
-          schedulePreview();
-        });
-        pdfRow.appendChild(pcb);
-        pdfRow.appendChild(plbl);
-        groupEl.appendChild(pdfRow);
+      const isUnfiledCollapsed = !q && state.collapsedFolders.has('__unfiled__');
+      const hdr = document.createElement('div');
+      hdr.className = 'ps-subj-header';
+      hdr.innerHTML = `
+        <span class="ps-subj-twist">${isUnfiledCollapsed ? '▸' : '▾'}</span>
+        <span class="ps-subj-name">Unfiled Cases</span>
+      `;
+      hdr.addEventListener('click', () => {
+        if (state.collapsedFolders.has('__unfiled__')) state.collapsedFolders.delete('__unfiled__');
+        else state.collapsedFolders.add('__unfiled__');
+        renderTree();
+      });
+      groupEl.appendChild(hdr);
+      if (!isUnfiledCollapsed) {
+        for (const pdf of unfiledPdfs) {
+          const pdfRow = document.createElement('div');
+          pdfRow.className = 'ps-tree-row ps-tree-pdf';
+          pdfRow.style.paddingLeft = '12px';
+          const pcb = document.createElement('input');
+          pcb.type = 'checkbox';
+          pcb.className = 'ps-chk';
+          pcb.checked = isPdfEffectivelyIncluded(pdf);
+          pcb.addEventListener('change', () => {
+            togglePdfSelection(pdf.id, pcb.checked);
+            renderTree();
+            renderQueueList();
+            schedulePreview();
+          });
+          const plbl = document.createElement('span');
+          plbl.className = 'ps-tree-label';
+          plbl.textContent = `📄 ${getCleanPdfTitle(pdf)}`;
+          plbl.addEventListener('click', () => {
+            pcb.checked = !pcb.checked;
+            togglePdfSelection(pdf.id, pcb.checked);
+            renderTree();
+            renderQueueList();
+            schedulePreview();
+          });
+          pdfRow.appendChild(pcb);
+          pdfRow.appendChild(plbl);
+          groupEl.appendChild(pdfRow);
+        }
       }
       elTree.appendChild(groupEl);
     }
@@ -1167,29 +1244,43 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     }
   }
 
+  async function prefetchPdf(pdf) {
+    const trueId = pdf.linked_pdf_id || pdf.id;
+    const existing = state.notesCache.get(trueId);
+    const wantAnnTable = Boolean(state.prefs.tablesOnly);
+    if (!existing) {
+      const [nd, annTable] = await Promise.all([
+        fetchPdfNotesAndDigest(pdf),
+        wantAnnTable ? fetchFirstAnnotationTable(pdf) : Promise.resolve(undefined),
+      ]);
+      state.notesCache.set(trueId, wantAnnTable ? { ...nd, annotationTable: annTable } : { ...nd });
+    } else if (wantAnnTable && existing.annotationTable === undefined) {
+      const annTable = await fetchFirstAnnotationTable(pdf);
+      state.notesCache.set(trueId, { ...existing, annotationTable: annTable });
+    }
+  }
+
   async function ensurePrefetchedForItem(item) {
     if (item.kind === 'pdf') {
       const pdf = S.pdfs.find(p => p.id === item.id);
-      if (!pdf) return;
-      const trueId = pdf.linked_pdf_id || pdf.id;
-      if (!state.notesCache.has(trueId)) {
-        const [nd, annTable] = await Promise.all([
-          fetchPdfNotesAndDigest(pdf),
-          fetchFirstAnnotationTable(pdf),
-        ]);
-        state.notesCache.set(trueId, { ...nd, annotationTable: annTable });
-      }
+      if (pdf) await prefetchPdf(pdf);
       return;
     }
 
     const branchIds = getAllDescendantFolderIds(item.id);
+    const foldersToFetch = [];
     for (const fid of branchIds) {
       if (state.excludedFolderIds.has(fid)) continue;
       const fold = S.folders.find(f => f.id === fid);
       if (fold && !state.folderNotesCache.has(fid)) {
+        foldersToFetch.push({ fid, fold });
+      }
+    }
+    if (foldersToFetch.length) {
+      await Promise.all(foldersToFetch.map(async ({ fid, fold }) => {
         const fn = await fetchFolderNotes(fold);
         state.folderNotesCache.set(fid, fn);
-      }
+      }));
     }
 
     const branchSet = new Set(branchIds);
@@ -1197,16 +1288,7 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     // Fetch in small parallel batches of 6 so large folders load smoothly without overwhelming Supabase
     for (let i = 0; i < pdfs.length; i += 6) {
       const batch = pdfs.slice(i, i + 6);
-      await Promise.all(batch.map(async (pdf) => {
-        const trueId = pdf.linked_pdf_id || pdf.id;
-        if (!state.notesCache.has(trueId)) {
-          const [nd, annTable] = await Promise.all([
-            fetchPdfNotesAndDigest(pdf),
-            fetchFirstAnnotationTable(pdf),
-          ]);
-          state.notesCache.set(trueId, { ...nd, annotationTable: annTable });
-        }
-      }));
+      await Promise.all(batch.map(prefetchPdf));
     }
   }
 
@@ -1234,19 +1316,25 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     if (btnPrint) btnPrint.disabled = false;
   }
 
+  function getPaperOrientLabel() {
+    const paperLabel = { letter: 'Letter', a4: 'A4', legal: 'Legal' }[state.prefs.paperSize] || 'A4';
+    const orientLabel = state.prefs.orientation === 'landscape' ? 'Landscape' : 'Portrait';
+    return `${paperLabel} ${orientLabel}`;
+  }
+
   async function renderPreview() {
     if (state.destroyed) return;
     const myToken = ++state.renderToken;
 
     const { foldersCount, pdfsCount } = countEffectiveSelections();
-    const paperLabel = { letter: 'Letter', a4: 'A4', legal: 'Legal' }[state.prefs.paperSize] || 'Letter';
-    const orientLabel = state.prefs.orientation === 'landscape' ? 'Landscape' : 'Portrait';
+    const paperOrientLabel = getPaperOrientLabel();
 
     if (!state.queueItems.length) {
-      if (elPreviewBarBadge) elPreviewBarBadge.textContent = `0 sections • ${paperLabel} ${orientLabel}`;
+      state.lastPageCount = 0;
+      if (elPreviewBarBadge) elPreviewBarBadge.textContent = `0 sections • ${paperOrientLabel}`;
       showEmptyBanner({
         title: 'No folders or cases selected',
-        desc: 'Check one or more folders or cases in the left panel to preview and print Notes, Case Digests, Folder Docs, or Summary Tables.',
+        desc: 'Check one or more folders or cases in the Cases panel to preview and print Notes, Case Digests, Folder Docs, or Summary Tables.',
         showReset: false,
       });
       return;
@@ -1302,7 +1390,7 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
       const sectionCount = tocCollector.length || caseRegistry.length;
 
       if (elPreviewBarBadge) {
-        elPreviewBarBadge.textContent = `${sectionCount} ${sectionCount === 1 ? 'section' : 'sections'} • ${paperLabel} ${orientLabel}`;
+        elPreviewBarBadge.textContent = `${sectionCount} ${sectionCount === 1 ? 'section' : 'sections'} • ${paperOrientLabel}`;
       }
 
       if (!hasMeaningfulContent(sectionsHtml)) {
@@ -1312,7 +1400,7 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
             ? 'All content types are turned off'
             : (state.prefs.tablesOnly ? 'No summary tables found' : 'No matching notes or digests found'),
           desc: filtersDisabled
-            ? 'Enable Case Digest, Notes, or Folder Notes in the Print Inspector on the right.'
+            ? 'Enable Digest, Notes, or Folder Notes in the top toolbar.'
             : (state.prefs.tablesOnly
                 ? `None of the ${pdfsCount || foldersCount} selected item(s) have a summary table in Case Digest, Notes, or Annotation Summaries.`
                 : `None of the ${pdfsCount || foldersCount} selected item(s) currently have saved Case Digest, Notes, or Folder Notes.`),
@@ -1479,9 +1567,19 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
   }
 
   // ── Event Bindings ──
+  elBtnToggleSidebar?.addEventListener('click', () => {
+    state.sidebarOpen = !state.sidebarOpen;
+    elLeftPane?.classList.toggle('collapsed', !state.sidebarOpen);
+    elBtnToggleSidebar.classList.toggle('active', state.sidebarOpen);
+    elBtnToggleSidebar.setAttribute('aria-expanded', String(state.sidebarOpen));
+  });
+
   elSearch?.addEventListener('input', () => {
-    state.searchQuery = elSearch.value || '';
-    renderTree();
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(() => {
+      state.searchQuery = elSearch.value || '';
+      renderTree();
+    }, 120);
   });
 
   rootEl.querySelector('#ps-btn-select-all')?.addEventListener('click', () => {
@@ -1560,7 +1658,8 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
 
   rootEl.querySelectorAll('[data-ps-layout]').forEach(btn => {
     btn.addEventListener('click', () => {
-      state.prefs.layout = btn.dataset.psLayout === 'standard' ? 'standard' : 'compact';
+      const val = btn.dataset.psLayout;
+      state.prefs.layout = ['tight', 'compact', 'standard'].includes(val) ? val : 'tight';
       savePrefs(state.prefs);
       syncInspectorControls();
       schedulePreview(40);
@@ -1569,7 +1668,8 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
 
   rootEl.querySelectorAll('[data-ps-paper]').forEach(btn => {
     btn.addEventListener('click', () => {
-      state.prefs.paperSize = btn.dataset.psPaper;
+      const val = btn.dataset.psPaper;
+      state.prefs.paperSize = ['letter', 'a4', 'legal'].includes(val) ? val : 'a4';
       savePrefs(state.prefs);
       syncInspectorControls();
       schedulePreview(40);
@@ -1587,11 +1687,28 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
 
   rootEl.querySelectorAll('[data-ps-margin]').forEach(btn => {
     btn.addEventListener('click', () => {
-      state.prefs.marginPreset = btn.dataset.psMargin;
+      const val = btn.dataset.psMargin;
+      state.prefs.marginPreset = ['narrow', 'normal', 'wide'].includes(val) ? val : 'narrow';
       savePrefs(state.prefs);
       syncInspectorControls();
       schedulePreview(40);
     });
+  });
+
+  rootEl.querySelector('#ps-btn-default-preset')?.addEventListener('click', (e) => {
+    if (e.shiftKey) {
+      try {
+        safeStorageSet(DEFAULT_PRESET_STORAGE_KEY, JSON.stringify(state.prefs));
+      } catch {}
+      savePrefs(state.prefs);
+      toast('Saved current print setup as Default.');
+    } else {
+      state.prefs = { ...loadDefaultPreset(), previewZoom: state.prefs.previewZoom };
+      savePrefs(state.prefs);
+      syncInspectorControls();
+      schedulePreview(20);
+      toast('Reset to Default print setup.');
+    }
   });
 
   rootEl.querySelectorAll('[data-ps-zoom]').forEach(btn => {
@@ -1603,6 +1720,17 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
       applyZoomInPlace();
     });
   });
+
+  const onWindowMessage = (e) => {
+    if (state.destroyed) return;
+    if (e.data?.type === 'ps-pagination-done') {
+      state.lastPageCount = Number(e.data.pageCount) || 1;
+      if (elPreviewBarBadge) {
+        elPreviewBarBadge.textContent = `${state.lastPageCount} ${state.lastPageCount === 1 ? 'page' : 'pages'} • ${getPaperOrientLabel()}`;
+      }
+    }
+  };
+  window.addEventListener('message', onWindowMessage);
 
   const onKeyDown = (e) => {
     if (state.destroyed) return;
@@ -1647,6 +1775,16 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
       state.excludedFolderIds.clear();
       state.excludedPdfIds.clear();
       state.queueItems = buildQueueFromJobOrMode(newJob, {});
+      state.collapsedSubjects = new Set((S.subjects || []).map(s => s.id));
+      state.collapsedFolders = new Set([
+        ...(S.folders || []).map(f => f.id),
+        '__other_folders__',
+        '__unfiled__',
+      ]);
+      expandAncestorsForQueue(state.queueItems);
+      state.sidebarOpen = state.queueItems.length === 0;
+      elLeftPane?.classList.toggle('collapsed', !state.sidebarOpen);
+      elBtnToggleSidebar?.setAttribute('aria-expanded', String(state.sidebarOpen));
       if (newJob.defaultMode === 'tables-only') state.prefs.tablesOnly = true;
       else if (newJob.defaultMode === 'all') state.prefs.tablesOnly = false;
       if (newJob.orientation === 'landscape' || newJob.orientation === 'portrait') {
@@ -1661,7 +1799,9 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     destroy() {
       state.destroyed = true;
       clearTimeout(state.previewTimer);
+      clearTimeout(state.searchTimer);
       document.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('message', onWindowMessage);
     },
   };
 }

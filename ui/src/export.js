@@ -187,7 +187,7 @@ export function resolvePdfFolderPath(pdf) {
   return folder ? getFolderPathString(folder) : 'Library';
 }
 
-// Build HTML section for a single PDF and register its named @page entry in caseRegistry
+// Build HTML section for a single PDF and register its entry in caseRegistry
 export async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
   if (!pdf) return '';
   if (opts.excludedPdfIds?.has(pdf.id)) return '';
@@ -224,14 +224,15 @@ export async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
     if (firstTable && hasMeaningfulContent(firstTable)) {
       const pdfName = getCleanPdfTitle(pdf);
       const pageId = `cp${caseRegistry.length}`;
-      caseRegistry.push({ pageId, pdfName, folderPath });
+      const tocId = 'toc-' + (Array.isArray(opts.tocCollector) ? opts.tocCollector.length : caseRegistry.length);
+      caseRegistry.push({ pageId, tocId, pdfName, folderPath });
       if (Array.isArray(opts.tocCollector)) {
-        opts.tocCollector.push({ label: pdfName, sublabel: folderPath, badge: 'Summary Table' });
+        opts.tocCollector.push({ tocId, label: pdfName, kind: 'case' });
       }
 
       return `
-        <div class="case-section" style="page: ${pageId}; margin: 8pt 0; padding: 8pt 10pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
-          <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 5pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
+        <div class="case-section" data-toc-id="${tocId}" data-case-name="${escapeHtml(pdfName)}" data-folder-path="${escapeHtml(folderPath)}" style="margin: 4pt 0; padding: 5pt 8pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
+          <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 3pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
             ${escapeHtml(pdfName)}
           </div>
           <div class="case-digest-body" style="color: #1e293b; line-height: 1.25;">
@@ -249,17 +250,15 @@ export async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
 
   const pdfName = getCleanPdfTitle(pdf);
   const pageId = `cp${caseRegistry.length}`;
-  caseRegistry.push({ pageId, pdfName, folderPath });
+  const tocId = 'toc-' + (Array.isArray(opts.tocCollector) ? opts.tocCollector.length : caseRegistry.length);
+  caseRegistry.push({ pageId, tocId, pdfName, folderPath });
   if (Array.isArray(opts.tocCollector)) {
-    const badges = [];
-    if (hasDigest) badges.push('Case Digest');
-    if (hasContent) badges.push('Notes');
-    opts.tocCollector.push({ label: pdfName, sublabel: folderPath, badge: badges.join(' + ') });
+    opts.tocCollector.push({ tocId, label: pdfName, kind: 'case' });
   }
 
   let html = `
-    <div class="case-section" style="page: ${pageId}; margin: 8pt 0; padding: 8pt 10pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
-      <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 5pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
+    <div class="case-section" data-toc-id="${tocId}" data-case-name="${escapeHtml(pdfName)}" data-folder-path="${escapeHtml(folderPath)}" style="margin: 4pt 0; padding: 5pt 8pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
+      <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 3pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
         ${escapeHtml(pdfName)}
       </div>
   `;
@@ -306,8 +305,9 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
   const includeDigest = opts.includeDigest !== false;
   const includeNotes = opts.includeNotes !== false;
   const includeSubfolders = opts.includeSubfolders !== false;
-  const startCaseIdx = caseRegistry.length;
   const startTocIdx = Array.isArray(opts.tocCollector) ? opts.tocCollector.length : -1;
+  const folderName = stripEmojis(folder.name) || 'Folder';
+  const folderPathStr = getFolderPathString(folder);
 
   let casesHtml = '';
   let subfoldersHtml = '';
@@ -352,10 +352,6 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
     }
   }
 
-  // Determine the named page of the first case under this folder branch
-  const firstCase = caseRegistry.length > startCaseIdx ? caseRegistry[startCaseIdx] : null;
-  const firstPageStyle = firstCase ? `page: ${firstCase.pageId};` : '';
-
   // 3. Folder Notes
   let folderNotesHtml = '';
   if (includeFolderDocs) {
@@ -365,17 +361,18 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
 
     if (!tablesOnly && hasMeaningfulContent(folderNotes)) {
       hasAnyContent = true;
+      const tocId = 'toc-' + (Array.isArray(opts.tocCollector) ? opts.tocCollector.length : caseRegistry.length);
       if (Array.isArray(opts.tocCollector)) {
         const entry = {
-          label: `${stripEmojis(folder.name) || 'Folder'} — Folder Notes`,
-          sublabel: getFolderPathString(folder),
-          badge: 'Folder Doc',
+          tocId,
+          label: `${folderName} (Notes)`,
+          kind: 'folder',
         };
         if (startTocIdx >= 0) opts.tocCollector.splice(startTocIdx, 0, entry);
         else opts.tocCollector.push(entry);
       }
       folderNotesHtml += `
-        <div class="folder-notes-section" style="${firstPageStyle} margin-bottom: 10pt; padding: 6pt 10pt; background: #f8fafc; border: 0.75pt solid #e2e8f0; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
+        <div class="folder-notes-section" data-toc-id="${tocId}" data-case-name="${escapeHtml(folderName)}" data-folder-path="${escapeHtml(folderPathStr)}" style="margin: 4pt 0 6pt 0; padding: 5pt 8pt; background: #f8fafc; border: 0.75pt solid #e2e8f0; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
           <div class="section-badge" style="font-size: 7pt; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3pt;">Folder Notes</div>
           <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderNotes)}</div>
         </div>
@@ -385,17 +382,18 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
       const folderTables = extractAllTablesFromHtml(folderNotes);
       if (folderTables && hasMeaningfulContent(folderTables)) {
         hasAnyContent = true;
+        const tocId = 'toc-' + (Array.isArray(opts.tocCollector) ? opts.tocCollector.length : caseRegistry.length);
         if (Array.isArray(opts.tocCollector)) {
           const entry = {
-            label: `${stripEmojis(folder.name) || 'Folder'} — Summary Tables`,
-            sublabel: getFolderPathString(folder),
-            badge: 'Folder Table',
+            tocId,
+            label: `${folderName} (Notes)`,
+            kind: 'folder',
           };
           if (startTocIdx >= 0) opts.tocCollector.splice(startTocIdx, 0, entry);
           else opts.tocCollector.push(entry);
         }
         folderNotesHtml += `
-          <div class="folder-notes-section" style="${firstPageStyle} margin-bottom: 10pt; padding: 6pt 10pt; background: #ffffff; border: 0.75pt solid #cbd5e1; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
+          <div class="folder-notes-section" data-toc-id="${tocId}" data-case-name="${escapeHtml(folderName)}" data-folder-path="${escapeHtml(folderPathStr)}" style="margin: 4pt 0 6pt 0; padding: 5pt 8pt; background: #ffffff; border: 0.75pt solid #cbd5e1; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
             <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderTables)}</div>
           </div>
         `;
@@ -406,20 +404,18 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
   if (!hasAnyContent) return '';
 
   // 4. Folder Header:
-  // Depth=1 is the top-level exported folder — its name is already in the running @top-left header,
+  // Depth=1 is the top-level exported folder — its name is already in the running header,
   // so we skip the h1 to avoid duplicate titles.
   // Subfolders (depth >= 2) get an hN section divider.
-  // Assigning firstPageStyle ensures Chrome keeps the header on the same named page as its first case,
-  // preventing an empty intermediate page with only the folder header!
   let headerHtml = '';
   if (depth >= 2) {
-    const folderName = escapeHtml(stripEmojis(folder.name) || 'Folder');
+    const safeFolderName = escapeHtml(folderName);
     const hSize = depth === 2 ? '11.5pt' : '10.5pt';
     const hTag = depth === 2 ? 'h2' : 'h3';
     headerHtml = `
-      <div class="folder-header-wrap" style="${firstPageStyle} margin-top: 14pt; margin-bottom: 8pt; page-break-after: avoid; break-after: avoid;">
+      <div class="folder-header-wrap" style="margin-top: 8pt; margin-bottom: 4pt; page-break-after: avoid; break-after: avoid;">
         <${hTag} style="margin: 0 0 3pt 0; font-size: ${hSize}; color: #0f172a; font-weight: 700; border-bottom: 1.5pt solid #334155; padding-bottom: 2pt;">
-          ${folderName}
+          ${safeFolderName}
         </${hTag}>
       </div>
     `;
@@ -590,9 +586,9 @@ export async function exportPdfsToPDF(pdfsOrPdf, opts = {}) {
 }
 
 function resolvePrintPageMetrics(paperSize, orientation, marginPreset) {
-  const paper = ['letter', 'a4', 'legal'].includes(paperSize) ? paperSize : 'letter';
+  const paper = ['letter', 'a4', 'legal'].includes(paperSize) ? paperSize : 'a4';
   const orient = orientation === 'landscape' ? 'landscape' : 'portrait';
-  const margin = ['normal', 'narrow', 'wide'].includes(marginPreset) ? marginPreset : 'normal';
+  const margin = ['normal', 'narrow', 'wide'].includes(marginPreset) ? marginPreset : 'narrow';
 
   const dims = {
     letter: { w: '8.5in', h: '11in' },
@@ -604,9 +600,9 @@ function resolvePrintPageMetrics(paperSize, orientation, marginPreset) {
   const minHeight = orient === 'landscape' ? dims.w : dims.h;
 
   const margins = {
-    narrow: { page: '0.45in 0.35in 0.45in 0.35in', preview: '0.35in' },
-    normal: { page: '0.75in 0.5in 0.65in 0.5in', preview: '0.5in' },
-    wide: { page: '1.0in 0.85in 0.9in 0.85in', preview: '0.85in' },
+    narrow: { page: '0.32in', preview: '0.32in' },
+    normal: { page: '0.55in', preview: '0.55in' },
+    wide: { page: '0.8in', preview: '0.8in' },
   }[margin];
 
   return {
@@ -620,45 +616,27 @@ function resolvePrintPageMetrics(paperSize, orientation, marginPreset) {
   };
 }
 
-function buildTocBlockHtml({ safeTitleHtml, subtitleHtml, tocEntries, caseRegistry, tablesOnly, hasBody }) {
+function buildTocBlockHtml({ tocEntries, caseRegistry }) {
   const entries = (Array.isArray(tocEntries) && tocEntries.length > 0)
     ? tocEntries
-    : (caseRegistry || []).map(c => ({
+    : (caseRegistry || []).map((c, idx) => ({
+        tocId: c.tocId || ('toc-' + idx),
         label: c.pdfName || 'Case Document',
-        sublabel: c.folderPath || '',
-        badge: tablesOnly ? 'Summary Table' : 'Case',
+        kind: 'case',
       }));
-
-  const dateStr = new Date().toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
 
   const rowsHtml = entries.length > 0
     ? entries.map((item, idx) => `
-        <div class="ps-toc-row">
-          <div class="ps-toc-num">${idx + 1}.</div>
-          <div class="ps-toc-main">
-            <div class="ps-toc-label">${escapeHtml(item.label || 'Untitled')}</div>
-            ${item.sublabel ? `<div class="ps-toc-sub">${escapeHtml(item.sublabel)}</div>` : ''}
-          </div>
-          ${item.badge ? `<div class="ps-toc-badge">${escapeHtml(item.badge)}</div>` : ''}
+        <div class="ps-toc-row" data-toc-target="${escapeHtml(item.tocId || ('toc-' + idx))}">
+          <span class="ps-toc-title-text">${escapeHtml(item.label || 'Untitled')}</span>
+          <span class="ps-toc-leader" aria-hidden="true"></span>
+          <span class="ps-toc-page">1</span>
         </div>
       `).join('')
     : `<div class="ps-toc-empty">No indexed sections in this packet.</div>`;
 
   return `
-    <div class="print-cover-toc${hasBody ? ' has-page-break' : ''}">
-      <div class="ps-cover-kicker">LEGAL ANNOTATOR &bull; PRINT PACKET</div>
-      <h1 class="ps-cover-title">${safeTitleHtml}</h1>
-      ${subtitleHtml ? `<div class="ps-cover-sub">${subtitleHtml}</div>` : ''}
-      <div class="ps-cover-meta">
-        <span>Generated ${escapeHtml(dateStr)}</span>
-        <span>&bull;</span>
-        <span>${entries.length} ${entries.length === 1 ? 'Section' : 'Sections'}</span>
-        ${tablesOnly ? '<span>&bull;</span><span>Summary Tables Only</span>' : ''}
-      </div>
+    <div class="print-toc-block" id="ps-toc-block">
       <div class="ps-toc-heading">Table of Contents</div>
       <div class="ps-toc-list">${rowsHtml}</div>
     </div>
@@ -678,96 +656,31 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
     orient,
     width,
     minHeight,
-    pageMargin,
     previewPadding,
   } = resolvePrintPageMetrics(opts.paperSize, opts.orientation, opts.marginPreset);
 
-  const isStandard = opts.layout === 'standard';
+  const layoutMode = opts.layout === 'standard'
+    ? 'standard'
+    : (opts.layout === 'compact' ? 'compact' : 'tight');
+  const isStandard = layoutMode === 'standard';
+  const isTight = layoutMode === 'tight';
   const isTwoCol = Number(opts.columns) === 2;
   const includeToc = Boolean(opts.includeToc);
-  const tablesOnly = Boolean(opts.tablesOnly);
   const runningHeaders = opts.runningHeaders !== false;
   const embeddedPreview = Boolean(opts.embeddedPreview);
   const autoPrint = opts.autoPrint !== undefined ? Boolean(opts.autoPrint) : !embeddedPreview;
   const rawZoom = Number(opts.previewZoom);
   const previewZoom = Number.isFinite(rawZoom) && rawZoom >= 0.5 && rawZoom <= 2 ? rawZoom : 1;
 
-  const firstPageStyle = runningHeaders && caseRegistry.length > 0
-    ? `page: ${caseRegistry[0].pageId};`
-    : '';
-
-  // Build one @page rule per case with the case name and its own folder path hardcoded as CSS string literals
-  const casePageCss = runningHeaders
-    ? (caseRegistry || []).map(({ pageId, pdfName, folderPath: casePath }) => {
-        const safeName = (pdfName || 'Case Document').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        const safePath = (casePath || fallbackPath || 'Library').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        return `
-    @page ${pageId} {
-      @top-left {
-        content: "${safePath}";
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Calibri, Arial, sans-serif;
-        font-size: 7pt;
-        color: #475569;
-        border-bottom: 0.5pt solid #cbd5e1;
-        padding-bottom: 4pt;
-        text-align: left;
-        vertical-align: bottom;
-      }
-      @top-right {
-        content: "${safeName}";
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Calibri, Arial, sans-serif;
-        font-size: 7pt;
-        font-weight: 700;
-        color: #0f172a;
-        border-bottom: 0.5pt solid #cbd5e1;
-        padding-bottom: 4pt;
-        text-align: right;
-        vertical-align: bottom;
-      }
-      @bottom-center {
-        content: "Page " counter(page) " of " counter(pages);
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Calibri, Arial, sans-serif;
-        font-size: 7.5pt;
-        color: #64748b;
-        border-top: 0.5pt solid #cbd5e1;
-        padding-top: 4pt;
-        width: 100%;
-        text-align: center;
-      }
-    }`;
-      }).join('\n')
-    : '';
-
-  const pageFooterCss = runningHeaders
-    ? `
-      @bottom-center {
-        content: "Page " counter(page) " of " counter(pages);
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Calibri, Arial, sans-serif;
-        font-size: 7.5pt;
-        color: #64748b;
-        border-top: 0.5pt solid #cbd5e1;
-        padding-top: 4pt;
-        width: 100%;
-        text-align: center;
-      }`
-    : `
-      @top-left { content: none; }
-      @top-right { content: none; }
-      @bottom-center { content: none; }`;
-
-  const hasBody = hasMeaningfulContent(sectionsHtml);
   const tocHtml = includeToc
     ? buildTocBlockHtml({
-        safeTitleHtml,
-        subtitleHtml,
         tocEntries: opts.tocEntries,
         caseRegistry,
-        tablesOnly,
-        hasBody,
       })
     : '';
 
   const bodyClassList = [
+    isTight ? 'tight-mode' : '',
     isStandard ? 'standard-mode' : '',
     isTwoCol ? 'two-column-layout' : '',
   ].filter(Boolean).join(' ');
@@ -782,7 +695,8 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
     </div>
     <div class="top-bar-actions">
       <div class="btn-group">
-        <button id="btn-mode-compact" class="btn-toggle${isStandard ? '' : ' active'}" onclick="setLayoutMode('compact')" title="Save pages with compact margins and tight spacing">⚡ Compact (Save Pages)</button>
+        <button id="btn-mode-tight" class="btn-toggle${isTight ? ' active' : ''}" onclick="setLayoutMode('tight')" title="Ultra-dense layout for maximum content per page">⚡ Tight</button>
+        <button id="btn-mode-compact" class="btn-toggle${layoutMode === 'compact' ? ' active' : ''}" onclick="setLayoutMode('compact')" title="Save pages with compact margins and tight spacing">Compact</button>
         <button id="btn-mode-standard" class="btn-toggle${isStandard ? ' active' : ''}" onclick="setLayoutMode('standard')" title="Standard spacious layout">📐 Standard</button>
       </div>
       <div class="btn-group">
@@ -796,52 +710,857 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
     </div>
   </div>`;
 
-  const scriptHtml = embeddedPreview
+  const standaloneControlsScript = embeddedPreview
     ? ''
     : `
-  <script>
     function setLayoutMode(mode) {
-      const container = document.getElementById('document-body');
-      const btnCompact = document.getElementById('btn-mode-compact');
-      const btnStandard = document.getElementById('btn-mode-standard');
-      if (mode === 'compact') {
-        container.classList.remove('standard-mode');
-        btnCompact.classList.add('active');
-        btnStandard.classList.remove('active');
-      } else {
+      var container = document.getElementById('document-body');
+      var btnTight = document.getElementById('btn-mode-tight');
+      var btnCompact = document.getElementById('btn-mode-compact');
+      var btnStandard = document.getElementById('btn-mode-standard');
+      if (!container) return;
+      container.classList.remove('tight-mode', 'standard-mode');
+      if (btnTight) btnTight.classList.remove('active');
+      if (btnCompact) btnCompact.classList.remove('active');
+      if (btnStandard) btnStandard.classList.remove('active');
+      if (mode === 'standard') {
         container.classList.add('standard-mode');
-        btnStandard.classList.add('active');
-        btnCompact.classList.remove('active');
+        if (btnStandard) btnStandard.classList.add('active');
+      } else if (mode === 'compact') {
+        if (btnCompact) btnCompact.classList.add('active');
+      } else {
+        container.classList.add('tight-mode');
+        if (btnTight) btnTight.classList.add('active');
+      }
+      if (typeof window.paginateDocumentIntoPages === 'function') {
+        window.paginateDocumentIntoPages();
       }
     }
 
     function setColumns(cols) {
-      const container = document.getElementById('document-body');
-      const btn1 = document.getElementById('btn-col-1');
-      const btn2 = document.getElementById('btn-col-2');
+      var container = document.getElementById('document-body');
+      var btn1 = document.getElementById('btn-col-1');
+      var btn2 = document.getElementById('btn-col-2');
+      if (!container) return;
       if (cols === 2) {
         container.classList.add('two-column-layout');
-        btn2.classList.add('active');
-        btn1.classList.remove('active');
+        if (btn2) btn2.classList.add('active');
+        if (btn1) btn1.classList.remove('active');
       } else {
         container.classList.remove('two-column-layout');
-        btn1.classList.add('active');
-        btn2.classList.remove('active');
+        if (btn1) btn1.classList.add('active');
+        if (btn2) btn2.classList.remove('active');
+      }
+      if (typeof window.paginateDocumentIntoPages === 'function') {
+        window.paginateDocumentIntoPages();
       }
     }
-    ${autoPrint ? `
-    window.addEventListener('DOMContentLoaded', () => {
-      setTimeout(() => {
-        window.focus();
-        window.print();
-      }, 400);
-    });` : ''}
+    `;
+
+  const scriptHtml = `
+  <script>
+    (function() {
+      var runningHeaders = ${runningHeaders ? 'true' : 'false'};
+      var fallbackPath = ${JSON.stringify(fallbackPath || 'Library')};
+      var docTitle = ${JSON.stringify(pageTitle || 'Legal Print Studio')};
+
+      function isHeadingEl(el) {
+        if (!el || el.nodeType !== 1) return false;
+        var tag = el.tagName;
+        if (/^H[1-6]$/.test(tag)) return true;
+        var cls = el.classList;
+        return cls.contains('case-title') ||
+          cls.contains('section-badge') ||
+          cls.contains('np-banner-hdr') ||
+          cls.contains('folder-header-wrap') ||
+          cls.contains('ps-toc-heading');
+      }
+
+      function hasMeaningfulDom(node) {
+        if (!node) return false;
+        if (node.nodeType === 3) return node.nodeValue.trim().length > 0;
+        if (node.nodeType !== 1) return false;
+        var tag = node.tagName;
+        if (tag === 'IMG' || tag === 'TABLE' || tag === 'HR') return true;
+        if (node.querySelector && node.querySelector('img, table, hr')) return true;
+        return (node.textContent || '').trim().length > 0;
+      }
+
+      function isSplittableContainer(el) {
+        if (!el || el.nodeType !== 1) return false;
+        var cls = el.classList;
+        if (cls.contains('case-section') ||
+            cls.contains('folder-notes-section') ||
+            cls.contains('case-digest-body') ||
+            cls.contains('case-notes-body') ||
+            cls.contains('note-content') ||
+            cls.contains('print-toc-block') ||
+            cls.contains('ps-toc-list')) {
+          return true;
+        }
+        var tag = el.tagName;
+        if (tag === 'BLOCKQUOTE') return true;
+        if (tag === 'DIV' && !isHeadingEl(el) && !cls.contains('ps-toc-row')) {
+          return el.children.length > 0;
+        }
+        return false;
+      }
+
+      function splitTextNodeWords(textNode, targetParent, colEl, maxH) {
+        var text = textNode.nodeValue || '';
+        if (!text.trim()) {
+          var ws = document.createTextNode(text);
+          targetParent.appendChild(ws);
+          return { topNode: ws, restText: '' };
+        }
+        var tokens = text.match(/\\S+\\s*|\\s+/g) || [text];
+        var tn = document.createTextNode('');
+        targetParent.appendChild(tn);
+
+        tn.nodeValue = text;
+        if (colEl.scrollHeight <= maxH) {
+          return { topNode: tn, restText: '' };
+        }
+
+        var lo = 1;
+        var hi = tokens.length - 1;
+        var best = 0;
+        while (lo <= hi) {
+          var mid = (lo + hi) >> 1;
+          tn.nodeValue = tokens.slice(0, mid).join('').replace(/\\s+$/, '');
+          if (colEl.scrollHeight <= maxH) {
+            best = mid;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+
+        if (best === 0) {
+          targetParent.removeChild(tn);
+          return { topNode: null, restText: text };
+        }
+
+        var fitStr = tokens.slice(0, best).join('').replace(/\\s+$/, '');
+        if (!fitStr.trim()) {
+          targetParent.removeChild(tn);
+          return { topNode: null, restText: text };
+        }
+        tn.nodeValue = fitStr;
+        var restText = tokens.slice(best).join('').replace(/^\\s+/, '');
+        return { topNode: tn, restText: restText };
+      }
+
+      function splitInlineChildrenInto(origParent, topParent, restParent, colEl, maxH) {
+        var nodes = Array.from(origParent.childNodes);
+        for (var i = 0; i < nodes.length; i++) {
+          var child = nodes[i];
+          if (child.nodeType === 3 && !(child.nodeValue || '').trim()) {
+            topParent.appendChild(child.cloneNode(true));
+            continue;
+          }
+          var cClone = child.cloneNode(true);
+          topParent.appendChild(cClone);
+          if (colEl.scrollHeight <= maxH) {
+            continue;
+          }
+          topParent.removeChild(cClone);
+
+          if (child.nodeType === 3) {
+            var res = splitTextNodeWords(child, topParent, colEl, maxH);
+            if (res.restText) {
+              restParent.appendChild(document.createTextNode(res.restText));
+            }
+            for (var j = i + 1; j < nodes.length; j++) {
+              restParent.appendChild(nodes[j].cloneNode(true));
+            }
+            return;
+          }
+
+          if (child.nodeType === 1 && child.tagName !== 'IMG' && child.tagName !== 'BR' && child.tagName !== 'HR') {
+            var subTop = child.cloneNode(false);
+            var subRest = child.cloneNode(false);
+            topParent.appendChild(subTop);
+            splitInlineChildrenInto(child, subTop, subRest, colEl, maxH);
+            if (!hasMeaningfulDom(subTop)) {
+              topParent.removeChild(subTop);
+            }
+            if (hasMeaningfulDom(subRest)) {
+              restParent.appendChild(subRest);
+            } else if (!hasMeaningfulDom(subTop)) {
+              restParent.appendChild(child.cloneNode(true));
+            }
+            for (var k = i + 1; k < nodes.length; k++) {
+              restParent.appendChild(nodes[k].cloneNode(true));
+            }
+            return;
+          }
+
+          for (var m = i; m < nodes.length; m++) {
+            restParent.appendChild(nodes[m].cloneNode(true));
+          }
+          return;
+        }
+      }
+
+      function splitInlineBlock(el, parentTarget, colEl, maxH, colWasEmpty) {
+        var remPx = maxH - colEl.scrollHeight;
+        if (!colWasEmpty && remPx < 32) {
+          return { top: null, rest: el };
+        }
+        var topEl = el.cloneNode(false);
+        var restEl = el.cloneNode(false);
+        parentTarget.appendChild(topEl);
+
+        splitInlineChildrenInto(el, topEl, restEl, colEl, maxH);
+
+        if (!hasMeaningfulDom(topEl)) {
+          parentTarget.removeChild(topEl);
+          if (colWasEmpty) {
+            var forced = el.cloneNode(true);
+            parentTarget.appendChild(forced);
+            return { top: forced, rest: null };
+          }
+          return { top: null, rest: el };
+        }
+        if (!hasMeaningfulDom(restEl)) {
+          return { top: topEl, rest: null };
+        }
+        if (el.tagName === 'LI') {
+          restEl.style.listStyleType = 'none';
+        }
+        return { top: topEl, rest: restEl };
+      }
+
+      function splitCellContentInto(origCell, topCell, restCell, colEl, maxH) {
+        var nodes = Array.from(origCell.childNodes);
+        for (var i = 0; i < nodes.length; i++) {
+          var child = nodes[i];
+          if (child.nodeType === 3 && !(child.nodeValue || '').trim()) {
+            topCell.appendChild(child.cloneNode(true));
+            continue;
+          }
+          var cClone = child.cloneNode(true);
+          topCell.appendChild(cClone);
+          if (colEl.scrollHeight <= maxH) {
+            continue;
+          }
+          topCell.removeChild(cClone);
+
+          if (child.nodeType === 3) {
+            var tRes = splitTextNodeWords(child, topCell, colEl, maxH);
+            if (tRes.restText) {
+              restCell.appendChild(document.createTextNode(tRes.restText));
+            }
+            for (var j = i + 1; j < nodes.length; j++) {
+              restCell.appendChild(nodes[j].cloneNode(true));
+            }
+            return;
+          }
+
+          if (child.nodeType === 1) {
+            var subRes = trySplitElement(child, topCell, colEl, maxH, false);
+            if (subRes.top) {
+              if (subRes.rest) restCell.appendChild(subRes.rest);
+              for (var k = i + 1; k < nodes.length; k++) {
+                restCell.appendChild(nodes[k].cloneNode(true));
+              }
+              return;
+            }
+            if (child.tagName !== 'IMG' && child.tagName !== 'TABLE' && child.tagName !== 'BR' && child.tagName !== 'HR') {
+              var subTop = child.cloneNode(false);
+              var subRest = child.cloneNode(false);
+              topCell.appendChild(subTop);
+              splitInlineChildrenInto(child, subTop, subRest, colEl, maxH);
+              if (hasMeaningfulDom(subTop)) {
+                if (hasMeaningfulDom(subRest)) restCell.appendChild(subRest);
+                for (var m = i + 1; m < nodes.length; m++) {
+                  restCell.appendChild(nodes[m].cloneNode(true));
+                }
+                return;
+              }
+              topCell.removeChild(subTop);
+            }
+          }
+
+          for (var n = i; n < nodes.length; n++) {
+            restCell.appendChild(nodes[n].cloneNode(true));
+          }
+          return;
+        }
+      }
+
+      function splitTableRow(tr, topTbody, colEl, maxH, forceFirstRow) {
+        var cells = Array.from(tr.children);
+        if (cells.length === 0) return { trTop: null, trRest: tr };
+        if (cells.some(function(c) { return (c.rowSpan || 1) > 1; })) {
+          return { trTop: null, trRest: tr };
+        }
+
+        var trTop = tr.cloneNode(false);
+        var trRest = tr.cloneNode(false);
+        topTbody.appendChild(trTop);
+
+        var topCells = [];
+        var restCells = [];
+        for (var ci = 0; ci < cells.length; ci++) {
+          var tc = cells[ci].cloneNode(false);
+          var rc = cells[ci].cloneNode(false);
+          trTop.appendChild(tc);
+          trRest.appendChild(rc);
+          topCells.push(tc);
+          restCells.push(rc);
+        }
+
+        var anyCellSplitFailed = false;
+        for (var cIdx = 0; cIdx < cells.length; cIdx++) {
+          var origCell = cells[cIdx];
+          var topCell = topCells[cIdx];
+          var restCell = restCells[cIdx];
+
+          for (var k = 0; k < origCell.childNodes.length; k++) {
+            topCell.appendChild(origCell.childNodes[k].cloneNode(true));
+          }
+          if (colEl.scrollHeight <= maxH) {
+            continue;
+          }
+
+          topCell.innerHTML = '';
+          splitCellContentInto(origCell, topCell, restCell, colEl, maxH);
+          if (hasMeaningfulDom(origCell) && !hasMeaningfulDom(topCell)) {
+            anyCellSplitFailed = true;
+          }
+        }
+
+        if (anyCellSplitFailed && !forceFirstRow) {
+          topTbody.removeChild(trTop);
+          return { trTop: null, trRest: tr };
+        }
+
+        var topHasAny = topCells.some(hasMeaningfulDom);
+        var restHasAny = restCells.some(hasMeaningfulDom);
+
+        if (!topHasAny) {
+          topTbody.removeChild(trTop);
+          return { trTop: null, trRest: tr };
+        }
+        if (!restHasAny) {
+          return { trTop: trTop, trRest: null };
+        }
+        return { trTop: trTop, trRest: trRest };
+      }
+
+      function splitTable(table, parentTarget, colEl, maxH, colWasEmpty) {
+        var colgroup = table.querySelector(':scope > colgroup');
+        var thead = table.querySelector(':scope > thead');
+        var tfoot = table.querySelector(':scope > tfoot');
+
+        var rows = [];
+        var tableChildren = Array.from(table.children);
+        for (var tc = 0; tc < tableChildren.length; tc++) {
+          var ch = tableChildren[tc];
+          if (ch.tagName === 'TBODY') {
+            var bodyRows = Array.from(ch.children);
+            for (var br = 0; br < bodyRows.length; br++) {
+              if (bodyRows[br].tagName === 'TR') rows.push(bodyRows[br]);
+            }
+          } else if (ch.tagName === 'TR') {
+            rows.push(ch);
+          }
+        }
+
+        if (rows.length === 0) {
+          if (colWasEmpty) {
+            var forcedTable = table.cloneNode(true);
+            parentTarget.appendChild(forcedTable);
+            return { top: forcedTable, rest: null };
+          }
+          return { top: null, rest: table };
+        }
+
+        var topTable = table.cloneNode(false);
+        var restTable = table.cloneNode(false);
+        if (colgroup) {
+          topTable.appendChild(colgroup.cloneNode(true));
+          restTable.appendChild(colgroup.cloneNode(true));
+        }
+        if (thead) {
+          topTable.appendChild(thead.cloneNode(true));
+          restTable.appendChild(thead.cloneNode(true));
+        }
+        var topTbody = document.createElement('tbody');
+        var restTbody = document.createElement('tbody');
+        topTable.appendChild(topTbody);
+        restTable.appendChild(restTbody);
+        parentTarget.appendChild(topTable);
+
+        if (!colWasEmpty && colEl.scrollHeight > maxH) {
+          parentTarget.removeChild(topTable);
+          return { top: null, rest: table };
+        }
+
+        var rowsPlaced = 0;
+        for (var r = 0; r < rows.length; r++) {
+          var tr = rows[r];
+          var trClone = tr.cloneNode(true);
+          topTbody.appendChild(trClone);
+          if (colEl.scrollHeight <= maxH) {
+            rowsPlaced++;
+            continue;
+          }
+          topTbody.removeChild(trClone);
+
+          var remPx = maxH - colEl.scrollHeight;
+          if (remPx >= 38 || (colWasEmpty && rowsPlaced === 0)) {
+            var rowRes = splitTableRow(tr, topTbody, colEl, maxH, colWasEmpty && rowsPlaced === 0);
+            if (rowRes.trTop) {
+              rowsPlaced++;
+              if (rowRes.trRest) restTbody.appendChild(rowRes.trRest);
+              for (var r2 = r + 1; r2 < rows.length; r2++) {
+                restTbody.appendChild(rows[r2].cloneNode(true));
+              }
+              break;
+            }
+          }
+
+          if (colWasEmpty && rowsPlaced === 0) {
+            topTbody.appendChild(tr.cloneNode(true));
+            rowsPlaced++;
+            for (var r3 = r + 1; r3 < rows.length; r3++) {
+              restTbody.appendChild(rows[r3].cloneNode(true));
+            }
+            break;
+          }
+
+          for (var r4 = r; r4 < rows.length; r4++) {
+            restTbody.appendChild(rows[r4].cloneNode(true));
+          }
+          break;
+        }
+
+        if (rowsPlaced === 0) {
+          parentTarget.removeChild(topTable);
+          return { top: null, rest: table };
+        }
+
+        if (restTbody.children.length === 0) {
+          if (tfoot) {
+            var tf = tfoot.cloneNode(true);
+            topTable.appendChild(tf);
+            if (!colWasEmpty && colEl.scrollHeight > maxH) {
+              topTable.removeChild(tf);
+              restTable.appendChild(tfoot.cloneNode(true));
+              return { top: topTable, rest: restTable };
+            }
+          }
+          return { top: topTable, rest: null };
+        }
+
+        if (tfoot) {
+          restTable.appendChild(tfoot.cloneNode(true));
+        }
+        return { top: topTable, rest: restTable };
+      }
+
+      function splitList(listEl, parentTarget, colEl, maxH, colWasEmpty) {
+        var isOl = listEl.tagName === 'OL';
+        var startNum = isOl ? (parseInt(listEl.getAttribute('start'), 10) || 1) : 1;
+        var topList = listEl.cloneNode(false);
+        var restList = listEl.cloneNode(false);
+        parentTarget.appendChild(topList);
+
+        var items = Array.from(listEl.children);
+        var placedItems = 0;
+        var splitCurrent = false;
+
+        for (var i = 0; i < items.length; i++) {
+          var item = items[i];
+          var clone = item.cloneNode(true);
+          topList.appendChild(clone);
+          if (colEl.scrollHeight <= maxH) {
+            placedItems++;
+            continue;
+          }
+          topList.removeChild(clone);
+
+          var res = trySplitElement(item, topList, colEl, maxH, colWasEmpty && placedItems === 0);
+          if (res.top) {
+            placedItems++;
+            splitCurrent = Boolean(res.rest);
+            if (res.rest) restList.appendChild(res.rest);
+            for (var j = i + 1; j < items.length; j++) {
+              restList.appendChild(items[j].cloneNode(true));
+            }
+            break;
+          }
+
+          if (colWasEmpty && placedItems === 0) {
+            topList.appendChild(item.cloneNode(true));
+            placedItems++;
+            for (var k = i + 1; k < items.length; k++) {
+              restList.appendChild(items[k].cloneNode(true));
+            }
+            break;
+          }
+
+          for (var m = i; m < items.length; m++) {
+            restList.appendChild(items[m].cloneNode(true));
+          }
+          break;
+        }
+
+        if (placedItems === 0) {
+          parentTarget.removeChild(topList);
+          return { top: null, rest: listEl };
+        }
+        if (restList.children.length === 0) {
+          return { top: topList, rest: null };
+        }
+        if (isOl) {
+          var nextStart = startNum + placedItems - (splitCurrent ? 1 : 0);
+          restList.setAttribute('start', String(Math.max(1, nextStart)));
+        }
+        return { top: topList, rest: restList };
+      }
+
+      function splitContainer(containerEl, parentTarget, colEl, maxH, colWasEmpty) {
+        var topC = containerEl.cloneNode(false);
+        var restC = containerEl.cloneNode(false);
+        if (containerEl.classList.contains('case-section') || containerEl.classList.contains('folder-notes-section')) {
+          restC.classList.add('is-continuation');
+          restC.removeAttribute('data-toc-id');
+        }
+        parentTarget.appendChild(topC);
+
+        if (!colWasEmpty && colEl.scrollHeight > maxH) {
+          parentTarget.removeChild(topC);
+          return { top: null, rest: containerEl };
+        }
+
+        var nodes = Array.from(containerEl.childNodes);
+        for (var i = 0; i < nodes.length; i++) {
+          var child = nodes[i];
+          if (child.nodeType === 3 && !(child.nodeValue || '').trim()) {
+            topC.appendChild(child.cloneNode(true));
+            continue;
+          }
+          var cClone = child.cloneNode(true);
+          topC.appendChild(cClone);
+          if (colEl.scrollHeight <= maxH) {
+            continue;
+          }
+          topC.removeChild(cClone);
+
+          if (child.nodeType === 3) {
+            var tRes = splitTextNodeWords(child, topC, colEl, maxH);
+            if (tRes.restText) {
+              restC.appendChild(document.createTextNode(tRes.restText));
+            }
+            for (var j = i + 1; j < nodes.length; j++) {
+              restC.appendChild(nodes[j].cloneNode(true));
+            }
+            break;
+          }
+
+          if (child.nodeType === 1) {
+            var topStillEmpty = !hasMeaningfulDom(topC);
+            var subRes = trySplitElement(child, topC, colEl, maxH, colWasEmpty && topStillEmpty);
+            if (subRes.top) {
+              if (subRes.rest) restC.appendChild(subRes.rest);
+              for (var k = i + 1; k < nodes.length; k++) {
+                restC.appendChild(nodes[k].cloneNode(true));
+              }
+              break;
+            }
+            if (colWasEmpty && topStillEmpty) {
+              topC.appendChild(child.cloneNode(true));
+              for (var m = i + 1; m < nodes.length; m++) {
+                restC.appendChild(nodes[m].cloneNode(true));
+              }
+              break;
+            }
+          }
+
+          for (var n = i; n < nodes.length; n++) {
+            restC.appendChild(nodes[n].cloneNode(true));
+          }
+          break;
+        }
+
+        if (hasMeaningfulDom(restC)) {
+          while (topC.lastElementChild && isHeadingEl(topC.lastElementChild)) {
+            var nonHeadingExists = Array.from(topC.children).some(function(el) {
+              return !isHeadingEl(el) && hasMeaningfulDom(el);
+            });
+            if (colWasEmpty && !nonHeadingExists) {
+              break;
+            }
+            var moved = topC.lastElementChild;
+            topC.removeChild(moved);
+            restC.insertBefore(moved, restC.firstChild);
+          }
+        }
+
+        if (!hasMeaningfulDom(topC)) {
+          parentTarget.removeChild(topC);
+          if (colWasEmpty) {
+            var forced = containerEl.cloneNode(true);
+            parentTarget.appendChild(forced);
+            return { top: forced, rest: null };
+          }
+          return { top: null, rest: containerEl };
+        }
+        if (!hasMeaningfulDom(restC)) {
+          return { top: topC, rest: null };
+        }
+        return { top: topC, rest: restC };
+      }
+
+      function trySplitElement(el, parentTarget, colEl, maxH, colWasEmpty) {
+        if (!el || el.nodeType !== 1) return { top: null, rest: el };
+        var tag = el.tagName;
+        if (tag === 'TABLE') {
+          return splitTable(el, parentTarget, colEl, maxH, colWasEmpty);
+        }
+        if (tag === 'UL' || tag === 'OL') {
+          return splitList(el, parentTarget, colEl, maxH, colWasEmpty);
+        }
+        if (tag === 'P' || tag === 'LI') {
+          var hasNestedBlocks = el.querySelector && el.querySelector('ul, ol, table, div, p, blockquote');
+          if (hasNestedBlocks) {
+            return splitContainer(el, parentTarget, colEl, maxH, colWasEmpty);
+          }
+          return splitInlineBlock(el, parentTarget, colEl, maxH, colWasEmpty);
+        }
+        if (isSplittableContainer(el)) {
+          return splitContainer(el, parentTarget, colEl, maxH, colWasEmpty);
+        }
+        if ((tag === 'DIV' || tag === 'BLOCKQUOTE') && hasMeaningfulDom(el)) {
+          return splitInlineBlock(el, parentTarget, colEl, maxH, colWasEmpty);
+        }
+        return { top: null, rest: el };
+      }
+
+      window.paginateDocumentIntoPages = function paginateDocumentIntoPages() {
+        var bodyEl = document.getElementById('document-body');
+        var pagesRoot = document.getElementById('ps-pages-root');
+        var flowSource = document.getElementById('ps-flow-source');
+        if (!bodyEl || !pagesRoot || !flowSource) return;
+
+        var prevZoom = bodyEl.style.zoom;
+        bodyEl.style.zoom = '1';
+
+        try {
+          var isTwoCol = bodyEl.classList.contains('two-column-layout');
+          pagesRoot.innerHTML = '';
+          flowSource.style.display = 'none';
+
+          var pages = [];
+          function createPageSheet(pageNum) {
+            var sheet = document.createElement('div');
+            sheet.className = 'ps-page-sheet';
+            sheet.setAttribute('data-page-num', String(pageNum));
+
+            var hdrLeft = null;
+            var hdrRight = null;
+            if (runningHeaders) {
+              var hdr = document.createElement('div');
+              hdr.className = 'ps-page-hdr';
+              hdrLeft = document.createElement('span');
+              hdrLeft.className = 'ps-page-hdr-left';
+              hdrRight = document.createElement('span');
+              hdrRight.className = 'ps-page-hdr-right';
+              hdr.appendChild(hdrLeft);
+              hdr.appendChild(hdrRight);
+              sheet.appendChild(hdr);
+            }
+
+            var body = document.createElement('div');
+            body.className = 'ps-page-body' + (isTwoCol ? ' is-two-col' : '');
+            var cols = [];
+            var colCount = isTwoCol ? 2 : 1;
+            for (var c = 0; c < colCount; c++) {
+              var col = document.createElement('div');
+              col.className = 'ps-page-col';
+              body.appendChild(col);
+              cols.push(col);
+            }
+            sheet.appendChild(body);
+
+            var ftr = null;
+            if (runningHeaders) {
+              ftr = document.createElement('div');
+              ftr.className = 'ps-page-ftr';
+              sheet.appendChild(ftr);
+            }
+
+            pagesRoot.appendChild(sheet);
+            var maxColHeight = cols[0].clientHeight - 2;
+            var pageObj = {
+              pageNum: pageNum,
+              sheet: sheet,
+              cols: cols,
+              hdrLeft: hdrLeft,
+              hdrRight: hdrRight,
+              ftr: ftr,
+              maxColHeight: maxColHeight
+            };
+            pages.push(pageObj);
+            return pageObj;
+          }
+
+          var curPage = createPageSheet(1);
+          var curColIdx = 0;
+
+          function currentSlot() {
+            return {
+              page: curPage,
+              colEl: curPage.cols[curColIdx],
+              maxColHeight: curPage.maxColHeight
+            };
+          }
+
+          function advanceColumn(queue) {
+            var prevCol = curPage.cols[curColIdx];
+            if (queue && prevCol.children.length > 1 && isHeadingEl(prevCol.lastElementChild)) {
+              var trailing = prevCol.lastElementChild;
+              prevCol.removeChild(trailing);
+              queue.unshift(trailing);
+            }
+            if (isTwoCol && curColIdx === 0) {
+              curColIdx = 1;
+            } else {
+              curPage = createPageSheet(pages.length + 1);
+              curColIdx = 0;
+            }
+            return currentSlot();
+          }
+
+          var rawChildren = Array.from(flowSource.childNodes).map(function(n) {
+            return n.cloneNode(true);
+          });
+
+          if (curPage.cols[0].clientHeight <= 20) {
+            for (var fIdx = 0; fIdx < rawChildren.length; fIdx++) {
+              curPage.cols[0].appendChild(rawChildren[fIdx]);
+            }
+          } else {
+            var queue = rawChildren;
+            var cur = currentSlot();
+            var safety = 0;
+
+            while (queue.length > 0 && safety++ < 20000) {
+              var node = queue.shift();
+              if (node.nodeType === 3 && !(node.nodeValue || '').trim()) continue;
+              if (node.nodeType === 3) {
+                var textWrap = document.createElement('div');
+                textWrap.textContent = node.nodeValue;
+                node = textWrap;
+              }
+
+              var colWasEmpty = cur.colEl.children.length === 0;
+              var clone = node.cloneNode(true);
+              cur.colEl.appendChild(clone);
+
+              if (cur.colEl.scrollHeight <= cur.maxColHeight) {
+                if (!colWasEmpty && queue.length > 0 && isHeadingEl(clone)) {
+                  var remAfter = cur.maxColHeight - cur.colEl.scrollHeight;
+                  if (remAfter < 44) {
+                    cur.colEl.removeChild(clone);
+                    cur = advanceColumn(queue);
+                    queue.unshift(node);
+                  }
+                }
+                continue;
+              }
+
+              cur.colEl.removeChild(clone);
+
+              var splitRes = trySplitElement(node, cur.colEl, cur.maxColHeight, colWasEmpty);
+              if (splitRes.top) {
+                if (splitRes.rest) {
+                  queue.unshift(splitRes.rest);
+                }
+                if (queue.length > 0) {
+                  cur = advanceColumn(queue);
+                }
+                continue;
+              }
+
+              if (colWasEmpty) {
+                cur.colEl.appendChild(clone);
+                if (queue.length > 0) {
+                  cur = advanceColumn(queue);
+                }
+              } else {
+                cur = advanceColumn(queue);
+                queue.unshift(node);
+              }
+            }
+          }
+
+          var totalPages = pages.length;
+          var activePath = fallbackPath;
+          var activeName = docTitle;
+          for (var pIdx = 0; pIdx < pages.length; pIdx++) {
+            var p = pages[pIdx];
+            var namedNodes = p.sheet.querySelectorAll('[data-case-name]');
+            var firstNamed = namedNodes.length > 0 ? namedNodes[0] : null;
+            var lastNamed = namedNodes.length > 0 ? namedNodes[namedNodes.length - 1] : null;
+            var hdrPath = firstNamed ? (firstNamed.getAttribute('data-folder-path') || activePath) : activePath;
+            var hdrName = firstNamed ? (firstNamed.getAttribute('data-case-name') || activeName) : activeName;
+            if (runningHeaders) {
+              if (p.hdrLeft) p.hdrLeft.textContent = hdrPath;
+              if (p.hdrRight) p.hdrRight.textContent = hdrName;
+              if (p.ftr) p.ftr.textContent = 'Page ' + p.pageNum + ' of ' + totalPages;
+            }
+            if (lastNamed) {
+              activePath = lastNamed.getAttribute('data-folder-path') || activePath;
+              activeName = lastNamed.getAttribute('data-case-name') || activeName;
+            }
+          }
+
+          var tocRows = pagesRoot.querySelectorAll('.ps-toc-row[data-toc-target]');
+          for (var tIdx = 0; tIdx < tocRows.length; tIdx++) {
+            var row = tocRows[tIdx];
+            var targetId = row.getAttribute('data-toc-target');
+            if (!targetId) continue;
+            var escapedId = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(targetId) : targetId;
+            var targetEl = pagesRoot.querySelector('[data-toc-id="' + escapedId + '"]');
+            var targetSheet = targetEl ? targetEl.closest('.ps-page-sheet') : null;
+            var targetPageNum = targetSheet ? targetSheet.getAttribute('data-page-num') : null;
+            var pageSpan = row.querySelector('.ps-toc-page');
+            if (pageSpan && targetPageNum) {
+              pageSpan.textContent = targetPageNum;
+            }
+          }
+
+          if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ type: 'ps-pagination-done', pageCount: pages.length }, '*');
+          }
+        } finally {
+          bodyEl.style.zoom = prevZoom;
+        }
+      };
+
+      ${standaloneControlsScript}
+      window.paginateDocumentIntoPages();
+      ${(!embeddedPreview && autoPrint) ? `
+      var runPrint = function() {
+        setTimeout(function() {
+          window.focus();
+          window.print();
+        }, 300);
+      };
+      if (document.readyState === 'loading') {
+        window.addEventListener('DOMContentLoaded', runPrint);
+      } else {
+        runPrint();
+      }` : ''}
+    })();
   </script>`;
 
-  const deskBg = embeddedPreview ? '#e2e8f0' : '#f1f5f9';
-  const paperWidthRule = embeddedPreview
-    ? `width: ${width}; min-height: ${minHeight}; margin: 20px auto; padding: ${previewPadding};`
-    : `max-width: ${width}; margin: 18px auto; padding: ${previewPadding};`;
+  const deskBg = embeddedPreview ? '#334155' : '#e2e8f0';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -854,15 +1573,8 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
     }
     @page {
       size: ${paper} ${orient};
-      margin: ${pageMargin};
-      ${pageFooterCss}
+      margin: 0;
     }
-    @page :blank {
-      @top-left { content: none; }
-      @top-right { content: none; }
-      @bottom-center { content: none; }
-    }
-    ${casePageCss}
     * {
       box-sizing: border-box;
     }
@@ -872,7 +1584,6 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       color: #0f172a;
     }
     body {
-      ${firstPageStyle}
       margin: 0;
       padding: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Calibri, Aptos, Arial, Helvetica, sans-serif;
@@ -968,115 +1679,154 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       background: #334155;
     }
     .paper-container {
-      ${paperWidthRule}
-      background: #ffffff;
-      color: #0f172a;
-      box-shadow: 0 4px 24px rgba(15, 23, 42, 0.14);
-      border-radius: 4px;
+      background: transparent;
+      box-shadow: none;
+      margin: 0 auto;
+      padding: 16px 0 32px 0;
+      width: auto;
+      min-height: 0;
       zoom: ${previewZoom};
     }
-
-    /* Cover & Table of Contents */
-    .print-cover-toc {
-      margin: 0 0 12pt 0;
-      padding: 12pt 14pt;
-      border: 1pt solid #cbd5e1;
-      border-top: 3pt solid #0f172a;
-      border-radius: 4pt;
+    .ps-pages-root {
+      display: block;
+    }
+    .ps-flow-source {
+      display: none;
+    }
+    .ps-page-sheet {
+      width: ${width};
+      height: ${minHeight};
+      padding: ${previewPadding};
+      margin: 0 auto 20px auto;
       background: #ffffff;
       color: #0f172a;
+      box-shadow: 0 3px 16px rgba(15, 23, 42, 0.22), 0 0 0 1px rgba(15, 23, 42, 0.08);
+      border-radius: 2px;
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+      overflow: hidden;
+      position: relative;
     }
-    .print-cover-toc.has-page-break {
-      page-break-after: always;
-      break-after: page;
-    }
-    .ps-cover-kicker {
+    .ps-page-hdr {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 12pt;
       font-size: 7pt;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #0369a1;
-      margin-bottom: 4pt;
+      color: #475569;
+      border-bottom: 0.5pt solid #cbd5e1;
+      padding-bottom: 3pt;
+      margin-bottom: 5pt;
+      flex-shrink: 0;
+      line-height: 1.1;
     }
-    .ps-cover-title {
-      margin: 0 0 4pt 0;
-      font-size: 16pt;
+    .ps-page-hdr-left {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ps-page-hdr-right {
       font-weight: 700;
       color: #0f172a;
-      line-height: 1.2;
+      text-align: right;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .ps-cover-sub {
-      font-size: 9pt;
-      color: #475569;
-      margin-bottom: 6pt;
-    }
-    .ps-cover-meta {
+    .ps-page-body {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
       display: flex;
-      flex-wrap: wrap;
-      gap: 6pt;
-      font-size: 8pt;
+      flex-direction: column;
+    }
+    .ps-page-body.is-two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: minmax(0, 1fr);
+      column-gap: 12pt;
+      align-items: stretch;
+    }
+    .ps-page-col {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .ps-page-ftr {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 7.5pt;
       color: #64748b;
-      padding-bottom: 8pt;
-      margin-bottom: 8pt;
-      border-bottom: 0.75pt solid #e2e8f0;
+      border-top: 0.5pt solid #cbd5e1;
+      padding-top: 3pt;
+      margin-top: 5pt;
+      flex-shrink: 0;
+      line-height: 1.1;
+    }
+    .case-section.is-continuation,
+    .folder-notes-section.is-continuation {
+      margin-top: 0 !important;
+      border-top-left-radius: 0 !important;
+      border-top-right-radius: 0 !important;
+    }
+
+    /* Book/Thesis-Style Table of Contents */
+    .print-toc-block {
+      margin: 0 0 8pt 0;
+      padding: 0 0 6pt 0;
+      border-bottom: 0.75pt solid #0f172a;
     }
     .ps-toc-heading {
-      font-size: 8pt;
+      font-size: 9.5pt;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: #334155;
-      margin-bottom: 6pt;
+      letter-spacing: 0.05em;
+      color: #0f172a;
+      margin: 0 0 5pt 0;
+      text-align: center;
     }
     .ps-toc-list {
       display: flex;
       flex-direction: column;
-      gap: 4pt;
     }
     .ps-toc-row {
       display: flex;
       align-items: baseline;
-      gap: 8pt;
-      padding: 3pt 0;
-      border-bottom: 0.5pt dotted #e2e8f0;
-      page-break-inside: avoid;
-      break-inside: avoid;
-    }
-    .ps-toc-num {
-      width: 20pt;
-      flex-shrink: 0;
+      gap: 4pt;
+      padding: 1.5pt 0;
       font-size: 8.5pt;
-      font-weight: 700;
-      color: #475569;
-    }
-    .ps-toc-main {
-      flex: 1;
-      min-width: 0;
-    }
-    .ps-toc-label {
-      font-size: 9pt;
-      font-weight: 600;
       color: #0f172a;
     }
-    .ps-toc-sub {
-      font-size: 7.5pt;
-      color: #64748b;
+    .ps-toc-title-text {
+      font-weight: 500;
+      color: #0f172a;
     }
-    .ps-toc-badge {
-      font-size: 7pt;
+    .ps-toc-leader {
+      flex: 1;
+      border-bottom: 1px dotted #64748b;
+      margin: 0 4pt;
+      position: relative;
+      top: -2px;
+      min-width: 18pt;
+    }
+    .ps-toc-page {
       font-weight: 600;
-      color: #0369a1;
-      background: #f0f9ff;
-      border: 0.5pt solid #bae6fd;
-      border-radius: 3pt;
-      padding: 1pt 5pt;
-      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      color: #0f172a;
+      min-width: 14pt;
+      text-align: right;
       flex-shrink: 0;
     }
     .ps-toc-empty {
       font-size: 8.5pt;
       color: #64748b;
       font-style: italic;
+      text-align: center;
     }
 
     /* Compact Layout Styling */
@@ -1087,8 +1837,6 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       width: 100% !important;
       border-collapse: collapse !important;
       margin: 6pt 0 !important;
-      page-break-inside: avoid;
-      break-inside: avoid;
     }
     th, td {
       border: 1pt solid #cbd5e1 !important;
@@ -1145,6 +1893,9 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       padding-left: 18pt !important;
       list-style-type: disc !important;
     }
+    ol {
+      list-style-type: decimal !important;
+    }
     ul ul, ol ol, ul ol, ol ul {
       margin: 1.5pt 0 !important;
       padding-left: 16pt !important;
@@ -1162,19 +1913,27 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       display: inline !important;
     }
 
-    /* 2-Column Mode */
-    .two-column-layout {
-      column-count: 2;
-      column-gap: 16pt;
+    /* Tight Mode Override */
+    .tight-mode .case-section {
+      margin: 2pt 0 !important;
+      padding: 4pt 6pt !important;
     }
-    .two-column-layout .case-section,
-    .two-column-layout .folder-notes-section {
-      break-inside: avoid;
-      page-break-inside: avoid;
+    .tight-mode .folder-notes-section {
+      margin: 2pt 0 4pt 0 !important;
+      padding: 4pt 6pt !important;
     }
-    .two-column-layout .folder-header-wrap,
-    .two-column-layout .print-cover-toc {
-      column-span: all;
+    .tight-mode .folder-header-wrap {
+      margin-top: 5pt !important;
+      margin-bottom: 2pt !important;
+    }
+    .tight-mode p {
+      margin: 2pt 0 !important;
+    }
+    .tight-mode table {
+      margin: 3pt 0 !important;
+    }
+    .tight-mode th, .tight-mode td {
+      padding: 2.5pt 4.5pt !important;
     }
 
     /* Standard Mode Override */
@@ -1216,70 +1975,49 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         display: none !important;
       }
       html, body {
-        ${firstPageStyle}
         background: #ffffff !important;
         color: #000000 !important;
         margin: 0 !important;
         padding: 0 !important;
-        zoom: 1 !important;
       }
-      .paper-container,
-      #document-body {
-        display: contents !important;
+      .paper-container, #document-body, #ps-pages-root {
+        display: block !important;
         margin: 0 !important;
         padding: 0 !important;
+        zoom: 1 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+      }
+      #ps-flow-source {
+        display: none !important;
+      }
+      .ps-page-sheet {
+        width: ${width} !important;
+        height: ${minHeight} !important;
+        padding: ${previewPadding} !important;
+        margin: 0 !important;
         box-shadow: none !important;
         border: none !important;
-        max-width: none !important;
-        width: 100% !important;
-        min-height: 0 !important;
-        zoom: 1 !important;
-      }
-      .print-cover-toc {
-        border: 0.75pt solid #cbd5e1 !important;
-        border-top: 2.5pt solid #0f172a !important;
-      }
-      .case-section {
-        page-break-inside: auto !important;
-        break-inside: auto !important;
-        margin: 8pt 0 !important;
-      }
-      .case-section:last-child {
-        margin-bottom: 0 !important;
-      }
-      .case-section:last-child > *:last-child {
-        margin-bottom: 0 !important;
-      }
-      .folder-notes-section:last-child {
-        margin-bottom: 0 !important;
-      }
-      .folder-header-wrap:last-child {
-        margin-bottom: 0 !important;
-      }
-      .case-title {
-        page-break-after: avoid !important;
-        break-after: avoid !important;
-      }
-      .section-badge {
-        page-break-after: avoid !important;
-        break-after: avoid !important;
-      }
-      h1, h2, h3, h4 {
-        page-break-after: avoid !important;
-        break-after: avoid !important;
-      }
-      .folder-header-wrap {
-        page-break-after: avoid !important;
-        break-after: avoid !important;
+        border-radius: 0 !important;
+        page-break-after: always !important;
+        break-after: page !important;
         page-break-inside: avoid !important;
         break-inside: avoid !important;
+        overflow: hidden !important;
+      }
+      .ps-page-sheet:last-child {
+        page-break-after: auto !important;
+        break-after: auto !important;
       }
     }
   </style>
 </head>
 <body>
   ${topBarHtml}
-  <div class="paper-container"><div id="document-body"${bodyClassList ? ` class="${bodyClassList}"` : ''}>${tocHtml}${sectionsHtml || ''}</div></div>
+  <div id="document-body" class="paper-container${bodyClassList ? ` ${bodyClassList}` : ''}">
+    <div id="ps-pages-root" class="ps-pages-root"></div>
+    <div id="ps-flow-source" class="ps-flow-source">${tocHtml}${sectionsHtml || ''}</div>
+  </div>
   ${scriptHtml}
 </body>
 </html>`;
@@ -1291,11 +2029,11 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
     subtitleHtml,
     fallbackPath,
     orientation,
-    paperSize: 'letter',
-    layout: 'compact',
+    paperSize: 'a4',
+    layout: 'tight',
     columns: 1,
     includeToc: false,
-    marginPreset: 'normal',
+    marginPreset: 'narrow',
     runningHeaders: true,
     embeddedPreview: false,
     autoPrint: true,

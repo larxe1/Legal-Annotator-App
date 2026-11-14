@@ -1,7 +1,7 @@
 {
-    "version":  "1.20.0",
-    "build":  51,
-    "updatedAt":  "2026-11-14T00:52:12Z",
-    "notes":  "Day Folio and Night Casebook UI overhaul with unboxed Study Desk docket/folios grid, crisp reading bar, annotation/notepad cards, and floating capsule controls.",
+    "version":  "1.21.0",
+    "build":  52,
+    "updatedAt":  "2026-11-14T01:31:33Z",
+    "notes":  "Redesigned Print Studio with preview-first single toolbar, collapsible document drawer, synchronous page-by-page pagination with accurate TOC page numbers, and A4 narrow tight defaults.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
