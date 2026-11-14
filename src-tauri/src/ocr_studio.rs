@@ -1978,12 +1978,18 @@ pub async fn desktop_launch_ocr_studio(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
+    // If a standalone "Legal OCR Studio.exe" exists in the same folder, best-effort sync it
+    // to match the running executable, and always launch `cur_exe --ocr-studio` so auto-updated
+    // builds never spawn a stale sibling binary.
     let studio_exe_candidate = exe_dir.join("Legal OCR Studio.exe");
-    let target_exe = if studio_exe_candidate.exists() {
-        studio_exe_candidate
-    } else {
-        cur_exe
-    };
+    if studio_exe_candidate.exists() && studio_exe_candidate != cur_exe {
+        let cur_len = fs::metadata(&cur_exe).map(|m| m.len()).unwrap_or(0);
+        let stu_len = fs::metadata(&studio_exe_candidate).map(|m| m.len()).unwrap_or(0);
+        if cur_len > 10_000_000 && cur_len != stu_len {
+            let _ = fs::copy(&cur_exe, &studio_exe_candidate);
+        }
+    }
+    let target_exe = cur_exe;
 
     let mut resolved_file = file_path.unwrap_or_default();
     if resolved_file.is_empty() || !PathBuf::from(&resolved_file).exists() {

@@ -1,7 +1,7 @@
 {
-    "version":  "1.22.15",
-    "build":  69,
-    "updatedAt":  "2026-11-14T15:34:15Z",
-    "notes":  "Fix OCR and Compressor Studio window boot, upgrade scanned book OCR and compression sharpness, contrast, and resolution, and fix PDF text-selection ghosting while preserving native text layers.",
-    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
+    "version": "1.22.16",
+    "build": 70,
+    "updatedAt": "2026-11-14T15:39:56Z",
+    "notes": "Fix OCR & Compressor Studio window boot, always launch current updated executable for Studio mode, upgrade scanned book OCR/compression sharpness & resolution, and fix PDF text-selection ghosting.",
+    "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
