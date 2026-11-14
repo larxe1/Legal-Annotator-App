@@ -1,7 +1,7 @@
 {
-    "version": "1.22.10",
-    "build": 64,
-    "updatedAt": "2026-11-14T11:10:07Z",
-    "notes": "Restore automated OS-mouse Gemini model/thinking selection and auto-submit in Subject Notebooks, and default Gemini Digest Studio mode to Replace instead of Append.",
+    "version": "1.22.11",
+    "build": 65,
+    "updatedAt": "2026-11-14T11:17:02Z",
+    "notes": "Keep automated OS-mouse Gemini model/thinking selection and OS Ctrl+V paste in Subject Notebooks, while removing auto-submit so the user submits manually.",
     "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

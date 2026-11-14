@@ -31,7 +31,7 @@ fn default_gemini_prefs() -> serde_json::Value {
         "subjectNotebooks": {},
         "modelLabel": "4 Hydrogen",
         "thinkingLevel": "High",
-        "autoSubmit": true,
+        "autoSubmit": false,
         "digestMode": "replace",
         "autoSendDigest": true
     })
@@ -123,7 +123,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     pinnedNotebookUrl: '',
     modelLabel: '4 Hydrogen',
     thinkingLevel: 'High',
-    autoSubmit: true,
+    autoSubmit: false,
     digestMode: 'replace',
     autoSendDigest: true,
     jobId: 0
@@ -506,9 +506,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       mkEl('button', {
         id: 'la-gemini-autosubmit-btn',
         type: 'button',
-        style: btnStyle,
-        title: 'Toggle whether pasting a case automatically presses Submit',
-        text: '☑ Auto-Submit: ON'
+        style: btnStyle + ';display:none;',
+        title: 'Manual submit enabled — press Enter in Gemini to submit',
+        text: '☐ Auto-Submit: OFF'
       }),
       mkEl('button', {
         id: 'la-gemini-autosend-btn',
@@ -2071,19 +2071,14 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
       }
       armAutoSendWatcher();
-      showStatus(
-        _state.autoSubmit !== false
-          ? 'Clicking prompt box (OS) → waiting 1s → OS Ctrl+V → waiting 1s → OS Enter…'
-          : 'Clicking prompt box (OS) → waiting 1s → OS Ctrl+V…',
-        '#93c5fd'
-      );
+      showStatus('Model selected — pasting prompt & case text via OS Ctrl+V…', '#93c5fd');
 
       sendBridgeMsg({
         action: 'native_paste_and_submit',
         x: pos.cx,
         y: pos.cy,
         dpr: window.devicePixelRatio || 1,
-        autoSubmit: _state.autoSubmit !== false
+        autoSubmit: false
       });
     });
 
@@ -2112,41 +2107,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       emitStudioStatus('error', 'Paste needs focus', 'Could not paste automatically via OS — click inside Ask Gemini and press Ctrl+V.', true);
       return;
     }
-    if (_state.autoSubmit !== false) {
-      showStatus('Submitted via OS Ctrl+V + Enter! Waiting to auto-send to Case Digest…', '#4ade80');
-      setTimeout(function() {
-        if (!isGeminiStillGenerating()) {
-          var box = findGeminiPromptInput();
-          var bLen = getBoxLen(box);
-          if (bLen > 20) {
-            var sendSelectors = [
-              'button[aria-label*="Send" i]:not([disabled])',
-              'button[aria-label*="Submit" i]:not([disabled])',
-              'button.send-button:not([disabled])',
-              'button[data-test-id*="send" i]:not([disabled])',
-              'button[mattooltip*="Send" i]:not([disabled])'
-            ];
-            for (var si = 0; si < sendSelectors.length; si++) {
-              var btns = Array.from(document.querySelectorAll(sendSelectors[si]));
-              for (var bi = 0; bi < btns.length; bi++) {
-                var btn = btns[bi];
-                if (!btn || !btn.isConnected) continue;
-                if (btn.closest('#la-gemini-studio-bar') || btn.closest('#la-gemini-model-popover') || btn.closest('#la-gemini-fab-send') || btn.closest('#la-gemini-click-cursor')) continue;
-                if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
-                var r = btn.getBoundingClientRect();
-                if (r.width <= 0 || r.height <= 0 || r.top < 44) continue;
-                var st = window.getComputedStyle ? window.getComputedStyle(btn) : null;
-                if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
-                nativeOsClickElement(btn, 'Send');
-                return;
-              }
-            }
-          }
-        }
-      }, 900);
-    } else {
-      showStatus('Pasted via OS Ctrl+V! Review prompt and press Enter to submit.', '#4ade80');
-    }
+    showStatus('Model selected & case pasted! Press Enter to submit — will auto-save to Case Digest when done.', '#4ade80');
   };
 
   function extractAndSendDigest() {
@@ -2572,12 +2533,8 @@ pub async fn desktop_open_gemini_studio(
         })
         .unwrap_or_else(|| "High".to_string());
 
-    let eff_auto_submit = auto_submit.unwrap_or_else(|| {
-        disk_prefs
-            .get("autoSubmit")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true)
-    });
+    let _ = auto_submit;
+    let eff_auto_submit = false;
 
     let eff_digest_mode = digest_mode
         .filter(|s| s == "replace" || s == "append")
@@ -2854,10 +2811,6 @@ pub async fn desktop_open_gemini_studio(
                             let css_x = msg_val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let css_y = msg_val.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let js_dpr = msg_val.get("dpr").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let auto_submit = msg_val
-                                .get("autoSubmit")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(true);
                             let (prompt_text, pdf_id_for_paste) = state_for_nav
                                 .lock()
                                 .ok()
@@ -2900,34 +2853,15 @@ pub async fn desktop_open_gemini_studio(
                                                 screen_x, screen_y,
                                             );
                                             std::thread::sleep(std::time::Duration::from_millis(
-                                                1000,
+                                                150,
                                             ));
-                                            let _ = gw.show();
-                                            let _ = gw.unminimize();
                                             let _ = gw.set_focus();
-                                            std::thread::sleep(std::time::Duration::from_millis(50));
-                                            crate::perform_native_os_mouse_click(
-                                                screen_x, screen_y,
-                                            );
-                                            std::thread::sleep(std::time::Duration::from_millis(
-                                                120,
-                                            ));
                                             crate::perform_native_os_ctrl_v();
                                             std::thread::sleep(std::time::Duration::from_millis(
-                                                200,
+                                                150,
                                             ));
                                             let _ = gw.set_focus();
                                             crate::perform_native_os_key_space();
-                                            std::thread::sleep(std::time::Duration::from_millis(
-                                                800,
-                                            ));
-                                            if auto_submit {
-                                                let _ = gw.set_focus();
-                                                std::thread::sleep(
-                                                    std::time::Duration::from_millis(40),
-                                                );
-                                                crate::perform_native_os_key_enter();
-                                            }
                                             ok = true;
                                         }
                                     }
@@ -2941,31 +2875,17 @@ pub async fn desktop_open_gemini_studio(
                                     let _ = gw.eval(&js);
                                 }
                                 if ok {
-                                    if auto_submit {
-                                        emit_gemini_studio_status(
-                                            &app_paste,
-                                            serde_json::json!({
-                                                "action": "studio_status",
-                                                "state": "submitted",
-                                                "stepLabel": "Prompt submitted",
-                                                "message": "Submitted via OS Ctrl+V + Enter — waiting for Gemini response…",
-                                                "pdfId": pdf_id_for_paste,
-                                                "canRetry": false
-                                            }),
-                                        );
-                                    } else {
-                                        emit_gemini_studio_status(
-                                            &app_paste,
-                                            serde_json::json!({
-                                                "action": "studio_status",
-                                                "state": "idle",
-                                                "stepLabel": "Ready in Studio",
-                                                "message": "Pasted via OS Ctrl+V — press Enter in Studio to submit.",
-                                                "pdfId": pdf_id_for_paste,
-                                                "canRetry": false
-                                            }),
-                                        );
-                                    }
+                                    emit_gemini_studio_status(
+                                        &app_paste,
+                                        serde_json::json!({
+                                            "action": "studio_status",
+                                            "state": "streaming",
+                                            "stepLabel": "Ready to Submit",
+                                            "message": "Model selected & case pasted — press Enter to submit! Will auto-save when done.",
+                                            "pdfId": pdf_id_for_paste,
+                                            "canRetry": false
+                                        }),
+                                    );
                                 }
                             });
                         } else if action == "studio_status" || action == "studio_error" {

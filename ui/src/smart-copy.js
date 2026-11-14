@@ -2451,9 +2451,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
     const pinnedNotebookUrl = await getPinnedGeminiNotebookForSubject(subjectId);
     const { modelLabel, thinkingLevel } = await resolveGeminiModelPrefs();
 
-    const autoSubmitPref = opts?.forceAutoSubmit
-      ? true
-      : safeStorageGet('gemini_auto_submit', 'true') !== 'false';
+    const autoSubmitPref = false;
     const digestModePref = safeStorageGet('gemini_digest_mode_v2', 'replace') === 'append' ? 'append' : 'replace';
     const autoSendPref = opts?.forceAutoSend
       ? true
