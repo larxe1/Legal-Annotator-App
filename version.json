@@ -1,7 +1,7 @@
 {
-    "version":  "1.22.4",
-    "build":  58,
-    "updatedAt":  "2026-11-14T07:22:26Z",
-    "notes":  "Fix Gemini and Perplexity Digest Studio auto-paste timing: wait 1.4s for new chat/session and skills to hydrate, type a trailing space keystroke, and wait 750ms after pasting before auto-submitting.",
+    "version":  "1.22.5",
+    "build":  59,
+    "updatedAt":  "2026-11-14T07:35:38Z",
+    "notes":  "Increase Digest Studio delays to 3 seconds across opening new chat/session hydration, focusing prompt box before paste, and committing pasted text + trailing space before auto-submitting.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

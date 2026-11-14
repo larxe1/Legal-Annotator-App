@@ -572,7 +572,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
     document.getElementById('la-gemini-pin-btn').addEventListener('click', function() {
       var homeUrl = getGeminiHomeUrl();
-      _notebookTransitionReadyAt = Date.now() + 1400;
+      _notebookTransitionReadyAt = Date.now() + 3000;
       showStatus('Opening Gemini homepage…', '#93c5fd');
       window.location.href = homeUrl;
     });
@@ -650,11 +650,11 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     updateBarUI();
   }
 
-  var _notebookTransitionReadyAt = Date.now() + 1400;
+  var _notebookTransitionReadyAt = Date.now() + 3000;
 
   function returnToNotebookHome() {
     var homeUrl = getGeminiHomeUrl();
-    _notebookTransitionReadyAt = Date.now() + 1400;
+    _notebookTransitionReadyAt = Date.now() + 3000;
     if (!isNotebookUrl(window.location.href)) {
       try {
         var newChatSelectors = [
@@ -720,7 +720,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         _state.pinnedNotebookUrl = norm;
         syncPrefsToApp();
         updateBarUI();
-        _notebookTransitionReadyAt = Date.now() + 1400;
+        _notebookTransitionReadyAt = Date.now() + 3000;
         showStatus('Matched "' + subj + '" Notebook! Opening…', '#4ade80');
         window.location.href = norm;
         return true;
@@ -745,7 +745,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     });
 
     if (bestCard) {
-      _notebookTransitionReadyAt = Date.now() + 1400;
+      _notebookTransitionReadyAt = Date.now() + 3000;
       showStatus('Opening "' + subj + '" Notebook…', '#4ade80');
       realPointerClick(bestCard);
       return true;
@@ -2046,64 +2046,81 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         activeInput.focus();
       } catch (e) {}
 
-      function finalizePasteAndSubmit(targetInput) {
-        setTimeout(function() {
-          if (!targetInput || !targetInput.isConnected) {
-            _isPasting = false;
-            setTimeout(function() { processActiveJob(); }, 400);
-            return;
-          }
+      showStatus('Prompt ready — waiting 3s before pasting case…', '#93c5fd');
 
-          if (_state.jobId) {
-            sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
-          }
+      setTimeout(function() {
+        var targetEl = findGeminiPromptInput() || activeInput;
+        if (!targetEl || !targetEl.isConnected) {
+          _isPasting = false;
+          setTimeout(function() { processActiveJob(); }, 400);
+          return;
+        }
 
-          typeTrailingSpaceKeystroke(targetInput);
-
+        function finalizePasteAndSubmit(targetInput) {
+          showStatus('Pasted — waiting 3s before sending…', '#93c5fd');
           setTimeout(function() {
-            _isPasting = false;
-            armAutoSendWatcher();
-            if (requireThinkingSwitch) {
-              showStatus('Pasted — switch Gemini Thinking to "' + targetThinkingLbl + '" before clicking Send!', '#f87171');
-              emitStudioStatus('error', 'Set Thinking to ' + targetThinkingLbl, 'Case pasted, but Gemini is not on "' + targetThinkingLbl + '" — switch Thinking level in Studio bottom bar and click Send.', true, true);
-            } else if (_state.autoSubmit) {
-              triggerGeminiSubmit(targetInput);
-              _awaitingLastChangeAt = Date.now();
-              _awaitingStoppedAt = 0;
-              if (_state.autoSendDigest !== false) {
-                showStatus('Submitted (' + getModelPillText() + ')! Waiting to auto-send to Case Digest…', '#4ade80');
-              } else {
-                showStatus('Submitted (' + getModelPillText() + ')! Click "Send to Case Digest" when done.', '#4ade80');
-              }
-              emitStudioStatus('submitted', 'Prompt submitted', 'Submitted (' + getModelPillText() + ') — waiting for Gemini response…', false, true);
-            } else {
-              showStatus('Pasted (' + getModelPillText() + ')! Review prompt and press Enter to submit.', '#4ade80');
-              emitStudioStatus('idle', 'Ready in Studio', 'Pasted (' + getModelPillText() + ') — press Enter in Studio to submit.', false, true);
+            if (!targetInput || !targetInput.isConnected) {
+              _isPasting = false;
+              setTimeout(function() { processActiveJob(); }, 400);
+              return;
             }
-          }, 450);
-        }, 300);
-      }
 
-      if (setGeminiInputText(activeInput, fullText)) {
-        finalizePasteAndSubmit(activeInput);
-      } else {
-        setTimeout(function() {
-          var retryInput = findGeminiPromptInput() || activeInput;
-          try {
-            if (retryInput) {
-              realPointerClick(retryInput);
-              retryInput.focus();
+            if (_state.jobId) {
+              sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
             }
-          } catch (e) {}
-          if (retryInput && setGeminiInputText(retryInput, fullText)) {
-            finalizePasteAndSubmit(retryInput);
-          } else {
-            _isPasting = false;
-            showStatus('Click inside Ask Gemini and press Ctrl+V (or click Paste Case).', '#fbbf24');
-            emitStudioStatus('error', 'Paste needs focus', 'Could not paste automatically — click inside Ask Gemini and press Ctrl+V (case is already copied).', true);
-          }
-        }, 220);
-      }
+
+            typeTrailingSpaceKeystroke(targetInput);
+
+            setTimeout(function() {
+              _isPasting = false;
+              armAutoSendWatcher();
+              if (requireThinkingSwitch) {
+                showStatus('Pasted — switch Gemini Thinking to "' + targetThinkingLbl + '" before clicking Send!', '#f87171');
+                emitStudioStatus('error', 'Set Thinking to ' + targetThinkingLbl, 'Case pasted, but Gemini is not on "' + targetThinkingLbl + '" — switch Thinking level in Studio bottom bar and click Send.', true, true);
+              } else if (_state.autoSubmit) {
+                triggerGeminiSubmit(targetInput);
+                _awaitingLastChangeAt = Date.now();
+                _awaitingStoppedAt = 0;
+                if (_state.autoSendDigest !== false) {
+                  showStatus('Submitted (' + getModelPillText() + ')! Waiting to auto-send to Case Digest…', '#4ade80');
+                } else {
+                  showStatus('Submitted (' + getModelPillText() + ')! Click "Send to Case Digest" when done.', '#4ade80');
+                }
+                emitStudioStatus('submitted', 'Prompt submitted', 'Submitted (' + getModelPillText() + ') — waiting for Gemini response…', false, true);
+              } else {
+                showStatus('Pasted (' + getModelPillText() + ')! Review prompt and press Enter to submit.', '#4ade80');
+                emitStudioStatus('idle', 'Ready in Studio', 'Pasted (' + getModelPillText() + ') — press Enter in Studio to submit.', false, true);
+              }
+            }, 1500);
+          }, 1500);
+        }
+
+        try {
+          realPointerClick(targetEl);
+          targetEl.focus();
+        } catch (e) {}
+
+        if (setGeminiInputText(targetEl, fullText)) {
+          finalizePasteAndSubmit(targetEl);
+        } else {
+          setTimeout(function() {
+            var retryInput = findGeminiPromptInput() || targetEl;
+            try {
+              if (retryInput) {
+                realPointerClick(retryInput);
+                retryInput.focus();
+              }
+            } catch (e) {}
+            if (retryInput && setGeminiInputText(retryInput, fullText)) {
+              finalizePasteAndSubmit(retryInput);
+            } else {
+              _isPasting = false;
+              showStatus('Click inside Ask Gemini and press Ctrl+V (or click Paste Case).', '#fbbf24');
+              emitStudioStatus('error', 'Paste needs focus', 'Could not paste automatically — click inside Ask Gemini and press Ctrl+V (case is already copied).', true);
+            }
+          }, 220);
+        }
+      }, 3000);
     }, false);
 
     return true;
@@ -2205,7 +2222,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     var attempts = 0;
     _jobTimer = setInterval(function() {
       if (Date.now() < _notebookTransitionReadyAt) {
-        showStatus('Waiting for Gemini session & skills to initialize…', '#93c5fd');
+        showStatus('Waiting 3s for Gemini session & skills to initialize…', '#93c5fd');
         return;
       }
       attempts++;
@@ -2247,6 +2264,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
       sessionStorage.removeItem('la_gemini_auto_opened_job_id');
       _isPasting = false;
+      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 3000);
     }
     saveStateCache();
     ensureStudioBar();
@@ -2278,7 +2296,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         _lastHref = window.location.href;
         _studioBlockerReported = false;
         updateBarUI();
-        _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1400);
+        _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 3000);
         processActiveJob();
       }
     } catch (e) {
@@ -2288,7 +2306,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   function bootGeminiStudio() {
     try {
-      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1400);
+      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 3000);
       ensureStudioBar();
       emitStudioStatus('extracting', 'Studio ready', 'Gemini Studio loaded.', false);
       processActiveJob();

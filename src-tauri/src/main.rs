@@ -1844,7 +1844,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     updateBarUI();
   }
 
-  var _spaceTransitionReadyAt = Date.now() + 1400;
+  var _spaceTransitionReadyAt = Date.now() + 3000;
 
   function returnToLawSpaceHome() {
     var spaceLinks = Array.from(document.querySelectorAll('a[href*="/spaces/"], a[href*="/collections/"]')).filter(function(a) {
@@ -1864,12 +1864,12 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         saveStateCache();
         updateBarUI();
       }
-      _spaceTransitionReadyAt = Date.now() + 1400;
+      _spaceTransitionReadyAt = Date.now() + 3000;
       lawLink.click();
       return true;
     }
     if (isSpaceOrCollectionUrl(_state.pinnedProjectUrl)) {
-      _spaceTransitionReadyAt = Date.now() + 1400;
+      _spaceTransitionReadyAt = Date.now() + 3000;
       window.location.href = _state.pinnedProjectUrl;
       return true;
     }
@@ -2825,60 +2825,77 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         activeInput.focus();
       } catch (e) {}
 
-      setInputText(activeInput, fullText);
+      showStatus('🤖 Prompt ready — waiting 3s before pasting case…', '#fbbf24');
 
       setTimeout(function() {
-        // Verify the input element didn't unmount mid-paste during a Space page transition
-        if (!activeInput.isConnected) {
+        var targetEl = findPromptInput() || activeInput;
+        if (!targetEl || !targetEl.isConnected) {
           _isPasting = false;
           setTimeout(function() { processActiveJob(); }, 400);
           return;
         }
 
-        // Mark job as handled ONLY after confirming the paste landed in a live connected Space input
-        if (_state.jobId) {
-          sessionStorage.setItem('la_pplx_handled_job_id', String(_state.jobId));
-        }
+        try {
+          realPointerClick(targetEl);
+          targetEl.focus();
+        } catch (e) {}
 
-        // If Perplexity converted the large paste into a "Pasted text" file chip, activeInput may now be empty.
-        // Put the subfolder instruction (or a short digest prompt) in the text box so Submit is enabled!
-        var currentVal = (activeInput.value !== undefined ? activeInput.value : activeInput.textContent) || '';
-        if (!currentVal.trim()) {
-          var shortPrompt = (_state.instructionText || '').trim() || 'Digest this case following the Law project instructions.';
-          if (activeInput.tagName === 'TEXTAREA' || activeInput.tagName === 'INPUT') {
-            var proto = window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(activeInput);
-            var setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-            if (setter) setter.call(activeInput, shortPrompt);
-            else activeInput.value = shortPrompt;
-            activeInput.dispatchEvent(new Event('input', { bubbles: true }));
-          } else {
-            activeInput.focus();
-            document.execCommand('insertText', false, shortPrompt);
-            activeInput.dispatchEvent(new Event('input', { bubbles: true }));
-          }
-        }
-
-        typeTrailingSpaceKeystroke(activeInput);
+        setInputText(targetEl, fullText);
+        showStatus('📋 Pasted — waiting 3s before sending…', '#fbbf24');
 
         setTimeout(function() {
-          _isPasting = false;
-          armAutoSendWatcher();
-          if (_state.autoSubmit) {
-            triggerSubmit(activeInput);
-            _awaitingLastChangeAt = Date.now();
-            _awaitingStoppedAt = 0;
-            if (_state.autoSendDigest !== false) {
-              showStatus('🚀 Submitted with Claude Sonnet! Waiting 1–2 mins to auto-send to Case Digest…', '#4ade80');
-            } else {
-              showStatus('🚀 Submitted with Claude Sonnet! Click "Send to Case Digest" when done.', '#4ade80');
-            }
-            emitStudioStatus('submitted', 'Prompt submitted', 'Submitted with Claude Sonnet — waiting for Perplexity response…', false, true);
-          } else {
-            showStatus('✅ Pasted with Claude Sonnet! Review prompt and press Enter to submit.', '#4ade80');
-            emitStudioStatus('idle', 'Ready in Studio', 'Pasted with Claude Sonnet — press Enter in Studio to submit.', false, true);
+          // Verify the input element didn't unmount mid-paste during a Space page transition
+          if (!targetEl.isConnected) {
+            _isPasting = false;
+            setTimeout(function() { processActiveJob(); }, 400);
+            return;
           }
-        }, 450);
-      }, 300);
+
+          // Mark job as handled ONLY after confirming the paste landed in a live connected Space input
+          if (_state.jobId) {
+            sessionStorage.setItem('la_pplx_handled_job_id', String(_state.jobId));
+          }
+
+          // If Perplexity converted the large paste into a "Pasted text" file chip, targetEl may now be empty.
+          // Put the subfolder instruction (or a short digest prompt) in the text box so Submit is enabled!
+          var currentVal = (targetEl.value !== undefined ? targetEl.value : targetEl.textContent) || '';
+          if (!currentVal.trim()) {
+            var shortPrompt = (_state.instructionText || '').trim() || 'Digest this case following the Law project instructions.';
+            if (targetEl.tagName === 'TEXTAREA' || targetEl.tagName === 'INPUT') {
+              var proto = window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(targetEl);
+              var setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+              if (setter) setter.call(targetEl, shortPrompt);
+              else targetEl.value = shortPrompt;
+              targetEl.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
+              targetEl.focus();
+              document.execCommand('insertText', false, shortPrompt);
+              targetEl.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+          }
+
+          typeTrailingSpaceKeystroke(targetEl);
+
+          setTimeout(function() {
+            _isPasting = false;
+            armAutoSendWatcher();
+            if (_state.autoSubmit) {
+              triggerSubmit(targetEl);
+              _awaitingLastChangeAt = Date.now();
+              _awaitingStoppedAt = 0;
+              if (_state.autoSendDigest !== false) {
+                showStatus('🚀 Submitted with Claude Sonnet! Waiting 1–2 mins to auto-send to Case Digest…', '#4ade80');
+              } else {
+                showStatus('🚀 Submitted with Claude Sonnet! Click "Send to Case Digest" when done.', '#4ade80');
+              }
+              emitStudioStatus('submitted', 'Prompt submitted', 'Submitted with Claude Sonnet — waiting for Perplexity response…', false, true);
+            } else {
+              showStatus('✅ Pasted with Claude Sonnet! Review prompt and press Enter to submit.', '#4ade80');
+              emitStudioStatus('idle', 'Ready in Studio', 'Pasted with Claude Sonnet — press Enter in Studio to submit.', false, true);
+            }
+          }, 1500);
+        }, 1500);
+      }, 3000);
     }, false);
 
     return true;
@@ -2993,7 +3010,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     var attempts = 0;
     _jobTimer = setInterval(function() {
       if (Date.now() < _spaceTransitionReadyAt) {
-        showStatus('⏳ Waiting for Perplexity session & skills to initialize…', '#fbbf24');
+        showStatus('⏳ Waiting 3s for Perplexity session & skills to initialize…', '#fbbf24');
         return;
       }
       attempts++;
@@ -3034,6 +3051,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       sessionStorage.removeItem('la_pplx_awaiting_autosend_job_id');
       sessionStorage.removeItem('la_pplx_claude_verified_job');
       _isPasting = false;
+      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 3000);
     }
     saveStateCache();
     ensureStudioBar();
@@ -3064,7 +3082,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (window.location.href !== _lastHref) {
       _lastHref = window.location.href;
       _studioBlockerReported = false;
-      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1400);
+      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 3000);
       updateBarUI();
       if (isSpaceOrCollectionUrl(_lastHref)) {
         processActiveJob();
@@ -3076,13 +3094,13 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     document.addEventListener('DOMContentLoaded', function() {
       ensureStudioBar();
       emitStudioStatus('extracting', 'Studio ready', 'Perplexity Studio loaded.', false);
-      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1400);
+      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 3000);
       processActiveJob();
     });
   } else {
     ensureStudioBar();
     emitStudioStatus('extracting', 'Studio ready', 'Perplexity Studio loaded.', false);
-    _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1400);
+    _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 3000);
     processActiveJob();
   }
 })();
