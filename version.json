@@ -1,7 +1,7 @@
 {
-    "version":  "1.22.12",
-    "build":  66,
-    "updatedAt":  "2026-11-14T11:28:01Z",
-    "notes":  "Paste case first, then auto-select Gemini model/thinking (4 Hydrogen to High) via OS mouse, and click Submit via OS mouse with a new Auto-Submit toggle in Settings and Studio bar.",
+    "version":  "1.22.13",
+    "build":  67,
+    "updatedAt":  "2026-11-14T11:44:20Z",
+    "notes":  "Remove automatic model clicking and automatic submit from Gemini Digest Studio; automatically paste case prompt only, let user select model and submit manually, and keep automatic Case Digest import once done.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

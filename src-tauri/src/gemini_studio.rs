@@ -31,7 +31,7 @@ fn default_gemini_prefs() -> serde_json::Value {
         "subjectNotebooks": {},
         "modelLabel": "4 Hydrogen",
         "thinkingLevel": "High",
-        "autoSubmit": true,
+        "autoSubmit": false,
         "digestMode": "replace",
         "autoSendDigest": true
     })
@@ -123,7 +123,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     pinnedNotebookUrl: '',
     modelLabel: '4 Hydrogen',
     thinkingLevel: 'High',
-    autoSubmit: true,
+    autoSubmit: false,
     digestMode: 'replace',
     autoSendDigest: true,
     jobId: 0
@@ -506,9 +506,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       mkEl('button', {
         id: 'la-gemini-autosubmit-btn',
         type: 'button',
-        style: btnStyle,
-        title: 'Toggle whether Gemini Studio clicks the Submit button with the mouse after pasting & selecting model',
-        text: '☑ Auto-Submit: ON'
+        style: btnStyle + ';display:none;',
+        title: 'Manual submit enabled — select model and submit manually in Gemini',
+        text: '☐ Auto-Submit: OFF'
       }),
       mkEl('button', {
         id: 'la-gemini-autosend-btn',
@@ -528,7 +528,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         id: 'la-gemini-paste-btn',
         type: 'button',
         style: btnStyle,
-        title: 'Select Model/Thinking and paste Subfolder Instruction + PDF Text into Gemini'
+        title: 'Paste Subfolder Instruction + PDF Text into Gemini'
       }, [makeSvgCopy(), 'Paste Case']),
       mkEl('span', {
         id: 'la-gemini-status',
@@ -2160,7 +2160,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       return true;
     }
 
-    showStatus('Step 1/3: Pasting prompt & case text via OS Ctrl+V…', '#93c5fd');
+    showStatus('Pasting prompt & case text via OS Ctrl+V…', '#93c5fd');
     sendBridgeMsg({
       action: 'native_paste_and_submit',
       x: pos.cx,
@@ -2172,6 +2172,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   }
 
   window.__onNativePasteSubmitDone = function(ok) {
+    _isPasting = false;
     _awaitingLastChangeAt = Date.now();
     _awaitingStoppedAt = 0;
     _hasSeenGenerationForJob = false;
@@ -2188,54 +2189,11 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       }
     }
     if (!ok && boxLen <= 20) {
-      _isPasting = false;
       showStatus('Click inside Ask Gemini and press Ctrl+V (OS paste failed).', '#fbbf24');
       emitStudioStatus('error', 'Paste needs focus', 'Could not paste automatically via OS — click inside Ask Gemini and press Ctrl+V.', true);
       return;
     }
-
-    showStatus('Step 2/3: Selecting ' + getModelPillText() + ' with OS mouse…', '#93c5fd');
-    setTimeout(function() {
-      var inputForModel = findGeminiPromptInput();
-      ensureGeminiModelSelected(inputForModel, function(modelVerified) {
-        if (_state.autoSubmit === false) {
-          _isPasting = false;
-          showStatus('Case pasted & ' + getModelPillText() + ' selected! Click Send or press Enter to submit.', '#4ade80');
-          emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted & ' + getModelPillText() + ' selected — click Send to submit!', false, true);
-          return;
-        }
-
-        showStatus('Step 3/3: Locating Submit button for OS mouse click…', '#93c5fd');
-        var submitAttempts = 0;
-        function tryClickSubmitBtn() {
-          submitAttempts++;
-          if (document.querySelector('.cdk-overlay-pane [role="menu"], .cdk-overlay-pane [role="listbox"], .cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane [role="menuitemradio"]')) {
-            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-            if (submitAttempts < 10) {
-              setTimeout(tryClickSubmitBtn, 220);
-              return;
-            }
-          }
-          var pInput = findGeminiPromptInput();
-          var sendBtn = findGeminiSendButton(pInput);
-          if (sendBtn) {
-            _isPasting = false;
-            showStatus('Step 3/3: Clicking Submit with OS mouse…', '#4ade80');
-            nativeOsClickElement(sendBtn, 'Clicking Submit');
-            emitStudioStatus('streaming', 'Submitted to Gemini', 'Clicked Submit with OS mouse — waiting for Gemini response…', false, true);
-            return;
-          }
-          if (submitAttempts < 10) {
-            setTimeout(tryClickSubmitBtn, 220);
-            return;
-          }
-          _isPasting = false;
-          showStatus('Case pasted & ' + getModelPillText() + ' selected! Click Send to submit.', '#fbbf24');
-          emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted & model selected — click Send in Gemini to submit.', false, true);
-        }
-        setTimeout(tryClickSubmitBtn, 420);
-      });
-    }, 350);
+    showStatus('Case pasted! Select model & submit manually — will auto-save to Case Digest when done.', '#4ade80');
   };
 
   function extractAndSendDigest() {
@@ -2661,12 +2619,8 @@ pub async fn desktop_open_gemini_studio(
         })
         .unwrap_or_else(|| "High".to_string());
 
-    let eff_auto_submit = auto_submit.unwrap_or_else(|| {
-        disk_prefs
-            .get("autoSubmit")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true)
-    });
+    let _ = auto_submit;
+    let eff_auto_submit = false;
 
     let eff_digest_mode = digest_mode
         .filter(|s| s == "replace" || s == "append")
@@ -3012,8 +2966,8 @@ pub async fn desktop_open_gemini_studio(
                                         serde_json::json!({
                                             "action": "studio_status",
                                             "state": "streaming",
-                                            "stepLabel": "Step 2/3: Selecting model",
-                                            "message": "Case pasted — selecting model & preparing submit...",
+                                            "stepLabel": "Ready to Submit",
+                                            "message": "Case pasted — select model & submit manually! Will auto-save when done.",
                                             "pdfId": pdf_id_for_paste,
                                             "canRetry": false
                                         }),
