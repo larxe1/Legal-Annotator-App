@@ -1844,7 +1844,7 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     updateBarUI();
   }
 
-  var _spaceTransitionReadyAt = 0;
+  var _spaceTransitionReadyAt = Date.now() + 1400;
 
   function returnToLawSpaceHome() {
     var spaceLinks = Array.from(document.querySelectorAll('a[href*="/spaces/"], a[href*="/collections/"]')).filter(function(a) {
@@ -1864,12 +1864,12 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
         saveStateCache();
         updateBarUI();
       }
-      _spaceTransitionReadyAt = Date.now() + 900;
+      _spaceTransitionReadyAt = Date.now() + 1400;
       lawLink.click();
       return true;
     }
     if (isSpaceOrCollectionUrl(_state.pinnedProjectUrl)) {
-      _spaceTransitionReadyAt = Date.now() + 900;
+      _spaceTransitionReadyAt = Date.now() + 1400;
       window.location.href = _state.pinnedProjectUrl;
       return true;
     }
@@ -2302,6 +2302,79 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       return true;
     } catch (e) {}
     return false;
+  }
+
+  function typeTrailingSpaceKeystroke(inputEl) {
+    if (!inputEl || !inputEl.isConnected) return;
+    try { inputEl.focus(); } catch (e) {}
+
+    if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+      var cur = inputEl.value || '';
+      if (typeof inputEl.setSelectionRange === 'function') {
+        try { inputEl.setSelectionRange(cur.length, cur.length); } catch (e) {}
+      }
+      try {
+        inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true }));
+      } catch (e) {}
+      var inserted = false;
+      try { inserted = document.execCommand('insertText', false, ' '); } catch (e) {}
+      if (!inserted && (inputEl.value || '') === cur) {
+        try {
+          var proto = inputEl.tagName === 'INPUT'
+            ? (window.HTMLInputElement ? window.HTMLInputElement.prototype : Object.getPrototypeOf(inputEl))
+            : (window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(inputEl));
+          var setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+          if (setter) setter.call(inputEl, cur + ' ');
+          else inputEl.value = cur + ' ';
+        } catch (e) {
+          inputEl.value = cur + ' ';
+        }
+      }
+      try {
+        inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ' ' }));
+      } catch (e) {
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      try {
+        inputEl.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true }));
+      } catch (e) {}
+      return;
+    }
+
+    try {
+      var sel = window.getSelection ? window.getSelection() : null;
+      if (sel) {
+        var range = document.createRange();
+        range.selectNodeContents(inputEl);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    } catch (e) {}
+    try {
+      inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true }));
+    } catch (e) {}
+    try {
+      inputEl.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: ' ' }));
+    } catch (e) {}
+    var ceInserted = false;
+    try { ceInserted = document.execCommand('insertText', false, ' '); } catch (e) {}
+    if (!ceInserted) {
+      try {
+        var target = inputEl.lastChild || inputEl;
+        target.appendChild(document.createTextNode(' '));
+      } catch (e) {
+        try { inputEl.appendChild(document.createTextNode(' ')); } catch (e2) {}
+      }
+    }
+    try {
+      inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ' ' }));
+    } catch (e) {
+      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    try {
+      inputEl.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true }));
+    } catch (e) {}
   }
 
   function triggerSubmit(inputEl) {
@@ -2785,6 +2858,8 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
           }
         }
 
+        typeTrailingSpaceKeystroke(activeInput);
+
         setTimeout(function() {
           _isPasting = false;
           armAutoSendWatcher();
@@ -2802,8 +2877,8 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
             showStatus('✅ Pasted with Claude Sonnet! Review prompt and press Enter to submit.', '#4ade80');
             emitStudioStatus('idle', 'Ready in Studio', 'Pasted with Claude Sonnet — press Enter in Studio to submit.', false, true);
           }
-        }, 380);
-      }, 280);
+        }, 450);
+      }, 300);
     }, false);
 
     return true;
@@ -2917,7 +2992,10 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     if (_jobTimer) clearInterval(_jobTimer);
     var attempts = 0;
     _jobTimer = setInterval(function() {
-      if (Date.now() < _spaceTransitionReadyAt) return;
+      if (Date.now() < _spaceTransitionReadyAt) {
+        showStatus('⏳ Waiting for Perplexity session & skills to initialize…', '#fbbf24');
+        return;
+      }
       attempts++;
       if (sessionStorage.getItem('la_pplx_handled_job_id') === String(_state.jobId)) {
         clearInterval(_jobTimer);
@@ -2984,14 +3062,11 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
       if (detectStudioPageBlocker()) _studioBlockerReported = true;
     }
     if (window.location.href !== _lastHref) {
-      var prevHref = _lastHref;
       _lastHref = window.location.href;
       _studioBlockerReported = false;
+      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1400);
       updateBarUI();
       if (isSpaceOrCollectionUrl(_lastHref)) {
-        if (!isSpaceOrCollectionUrl(prevHref)) {
-          _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 850);
-        }
         processActiveJob();
       }
     }
@@ -3001,11 +3076,13 @@ const PERPLEXITY_INIT_SCRIPT: &str = r#"
     document.addEventListener('DOMContentLoaded', function() {
       ensureStudioBar();
       emitStudioStatus('extracting', 'Studio ready', 'Perplexity Studio loaded.', false);
+      _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1400);
       processActiveJob();
     });
   } else {
     ensureStudioBar();
     emitStudioStatus('extracting', 'Studio ready', 'Perplexity Studio loaded.', false);
+    _spaceTransitionReadyAt = Math.max(_spaceTransitionReadyAt, Date.now() + 1400);
     processActiveJob();
   }
 })();

@@ -572,7 +572,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
     document.getElementById('la-gemini-pin-btn').addEventListener('click', function() {
       var homeUrl = getGeminiHomeUrl();
-      _notebookTransitionReadyAt = Date.now() + 700;
+      _notebookTransitionReadyAt = Date.now() + 1400;
       showStatus('Opening Gemini homepage…', '#93c5fd');
       window.location.href = homeUrl;
     });
@@ -650,11 +650,38 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     updateBarUI();
   }
 
-  var _notebookTransitionReadyAt = 0;
+  var _notebookTransitionReadyAt = Date.now() + 1400;
 
   function returnToNotebookHome() {
     var homeUrl = getGeminiHomeUrl();
-    _notebookTransitionReadyAt = Date.now() + 800;
+    _notebookTransitionReadyAt = Date.now() + 1400;
+    if (!isNotebookUrl(window.location.href)) {
+      try {
+        var newChatSelectors = [
+          'a[aria-label*="New chat" i]',
+          'button[aria-label*="New chat" i]',
+          '[data-test-id*="new-chat" i]',
+          '[mattooltip*="New chat" i]',
+          'a[href="/app"]',
+          'a[href$="/app"]'
+        ];
+        for (var si = 0; si < newChatSelectors.length; si++) {
+          var candidates = Array.from(document.querySelectorAll(newChatSelectors[si]));
+          for (var ci = 0; ci < candidates.length; ci++) {
+            var nc = candidates[ci];
+            if (!nc || !nc.isConnected) continue;
+            if (nc.closest('#la-gemini-studio-bar') || nc.closest('#la-gemini-model-popover') || nc.closest('#la-gemini-fab-send')) continue;
+            if (nc.disabled || nc.getAttribute('aria-disabled') === 'true') continue;
+            var r = nc.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) continue;
+            var st = window.getComputedStyle ? window.getComputedStyle(nc) : null;
+            if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
+            realPointerClick(nc);
+            return true;
+          }
+        }
+      } catch (e) {}
+    }
     window.location.href = homeUrl;
     return true;
   }
@@ -693,7 +720,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         _state.pinnedNotebookUrl = norm;
         syncPrefsToApp();
         updateBarUI();
-        _notebookTransitionReadyAt = Date.now() + 900;
+        _notebookTransitionReadyAt = Date.now() + 1400;
         showStatus('Matched "' + subj + '" Notebook! Opening…', '#4ade80');
         window.location.href = norm;
         return true;
@@ -718,7 +745,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     });
 
     if (bestCard) {
-      _notebookTransitionReadyAt = Date.now() + 900;
+      _notebookTransitionReadyAt = Date.now() + 1400;
       showStatus('Opening "' + subj + '" Notebook…', '#4ade80');
       realPointerClick(bestCard);
       return true;
@@ -1479,6 +1506,106 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     return false;
   }
 
+  function typeTrailingSpaceKeystroke(inputEl) {
+    if (!inputEl || !inputEl.isConnected) return;
+    try { inputEl.focus(); } catch (e) {}
+
+    if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+      try {
+        var cur = inputEl.value || '';
+        if (typeof inputEl.setSelectionRange === 'function') {
+          inputEl.setSelectionRange(cur.length, cur.length);
+        }
+        inputEl.dispatchEvent(new KeyboardEvent('keydown', {
+          key: ' ',
+          code: 'Space',
+          keyCode: 32,
+          which: 32,
+          bubbles: true,
+          cancelable: true
+        }));
+        var insertedInput = false;
+        try {
+          insertedInput = document.execCommand('insertText', false, ' ');
+        } catch (ec) {}
+        if (!insertedInput || (inputEl.value || '').length <= cur.length) {
+          var proto = window.HTMLTextAreaElement && inputEl.tagName === 'TEXTAREA'
+            ? window.HTMLTextAreaElement.prototype
+            : Object.getPrototypeOf(inputEl);
+          var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+          var setter = desc && desc.set;
+          var nextVal = cur + ' ';
+          if (setter) setter.call(inputEl, nextVal);
+          else inputEl.value = nextVal;
+        }
+        try {
+          inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ' ' }));
+        } catch (ie) {
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        inputEl.dispatchEvent(new KeyboardEvent('keyup', {
+          key: ' ',
+          code: 'Space',
+          keyCode: 32,
+          which: 32,
+          bubbles: true
+        }));
+      } catch (e) {}
+      return;
+    }
+
+    try {
+      if (window.getSelection && document.createRange) {
+        var sel = window.getSelection();
+        var range = document.createRange();
+        range.selectNodeContents(inputEl);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      inputEl.dispatchEvent(new KeyboardEvent('keydown', {
+        key: ' ',
+        code: 'Space',
+        keyCode: 32,
+        which: 32,
+        bubbles: true,
+        cancelable: true
+      }));
+      try {
+        inputEl.dispatchEvent(new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: ' '
+        }));
+      } catch (bi) {}
+      var insertedCe = false;
+      try {
+        insertedCe = document.execCommand('insertText', false, ' ');
+      } catch (ec2) {}
+      if (!insertedCe) {
+        var targetNode = inputEl.lastChild || inputEl;
+        if (targetNode && targetNode.nodeType === 1) {
+          targetNode.appendChild(document.createTextNode(' '));
+        } else {
+          inputEl.appendChild(document.createTextNode(' '));
+        }
+      }
+      try {
+        inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ' ' }));
+      } catch (ie2) {
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      inputEl.dispatchEvent(new KeyboardEvent('keyup', {
+        key: ' ',
+        code: 'Space',
+        keyCode: 32,
+        which: 32,
+        bubbles: true
+      }));
+    } catch (e2) {}
+  }
+
   function triggerGeminiSubmit(inputEl) {
     var container = (inputEl && (inputEl.closest('form') || inputEl.closest('.input-area, .text-input-field, rich-textarea')?.parentElement?.parentElement)) || document;
     var btnSelectors = [
@@ -1931,6 +2058,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
             sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
           }
 
+          typeTrailingSpaceKeystroke(targetInput);
+
           setTimeout(function() {
             _isPasting = false;
             armAutoSendWatcher();
@@ -1951,8 +2080,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
               showStatus('Pasted (' + getModelPillText() + ')! Review prompt and press Enter to submit.', '#4ade80');
               emitStudioStatus('idle', 'Ready in Studio', 'Pasted (' + getModelPillText() + ') — press Enter in Studio to submit.', false, true);
             }
-          }, 380);
-        }, 280);
+          }, 450);
+        }, 300);
       }
 
       if (setGeminiInputText(activeInput, fullText)) {
@@ -2075,7 +2204,10 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     if (_jobTimer) clearInterval(_jobTimer);
     var attempts = 0;
     _jobTimer = setInterval(function() {
-      if (Date.now() < _notebookTransitionReadyAt) return;
+      if (Date.now() < _notebookTransitionReadyAt) {
+        showStatus('Waiting for Gemini session & skills to initialize…', '#93c5fd');
+        return;
+      }
       attempts++;
       if (sessionStorage.getItem('la_gemini_handled_job_id') === String(_state.jobId)) {
         clearInterval(_jobTimer);
@@ -2143,13 +2275,10 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         if (detectStudioPageBlocker()) _studioBlockerReported = true;
       }
       if (window.location.href !== _lastHref) {
-        var prevHref = _lastHref;
         _lastHref = window.location.href;
         _studioBlockerReported = false;
         updateBarUI();
-        if (isNotebookUrl(prevHref) && !isNotebookUrl(_lastHref)) {
-          _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 700);
-        }
+        _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1400);
         processActiveJob();
       }
     } catch (e) {
@@ -2159,6 +2288,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   function bootGeminiStudio() {
     try {
+      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1400);
       ensureStudioBar();
       emitStudioStatus('extracting', 'Studio ready', 'Gemini Studio loaded.', false);
       processActiveJob();
