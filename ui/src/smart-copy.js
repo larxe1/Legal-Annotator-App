@@ -91,6 +91,9 @@ export function getDefaultDigestInstructionForFolder(folderId) {
   return 'Create a digest for this case.';
 }
 
+export const DEFAULT_DIGEST_FOOTER_INSTRUCTION =
+  '---\nApply both the ph-case-digest and strict-source-verification skills. Begin Line 1 with "I have accessed the text from..." followed immediately by "### 1. Recit-Ready Summary Table" (no case title banner above it), and end with "### 6. Sources, Syllabus Note & Self-QA Verification (exclude)".';
+
 /**
  * Combines the automatic Topic/Subtopic Main Instruction with any optional extra
  * subfolder instruction added via "+ Add Instruction".
@@ -133,11 +136,11 @@ export function updateCopyInstructionButtonState() {
     btn.classList.add('has-instr');
     btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Instruction</span>';
     const preview = instr.length > 140 ? instr.slice(0, 140) + '…' : instr;
-    btn.title = `Main Instruction: ${autoMain}\nExtra Subfolder Instruction for "${breadcrumb}" (click to edit):\n${preview}`;
+    btn.title = `Main Instruction: ${autoMain}\nExtra Subfolder Instruction for "${breadcrumb}" (click to edit):\n${preview}\n\nBottom Footer (auto-included):\n${DEFAULT_DIGEST_FOOTER_INSTRUCTION}`;
   } else {
     btn.classList.remove('has-instr');
     btn.innerHTML = '<span>+ Add Instruction</span>';
-    btn.title = `Main Instruction (auto-included): ${autoMain}\nClick to add extra instructions for "${breadcrumb}"`;
+    btn.title = `Main Instruction (auto-included): ${autoMain}\nBottom Footer (auto-included): ${DEFAULT_DIGEST_FOOTER_INSTRUCTION}\nClick to add extra instructions for "${breadcrumb}"`;
   }
 
   // Lazy one-time cloud sync check for this subfolder if local is empty
@@ -170,7 +173,10 @@ export function openCopyInstructionModal() {
 
   const breadcrumb = getFolderBreadcrumb(folderId);
   if (lbl) lbl.textContent = `Subfolder: ${breadcrumb}`;
-  if (autoPreview) autoPreview.textContent = getDefaultDigestInstructionForFolder(folderId);
+  if (autoPreview) {
+    autoPreview.style.whiteSpace = 'pre-line';
+    autoPreview.textContent = `${getDefaultDigestInstructionForFolder(folderId)}\n\nBottom Instruction (Always Appended at End):\n${DEFAULT_DIGEST_FOOTER_INSTRUCTION}`;
+  }
   textarea.value = getSubfolderCopyInstruction(folderId);
   modal.dataset.folderId = folderId;
   modal.classList.add('open');
@@ -726,7 +732,7 @@ export async function copyEntirePdfTextSmart() {
     const activeFolderId = getActiveSubfolderId();
     const fullInstruction = buildFullCopyInstruction(activeFolderId);
     const extraInstr = activeFolderId ? getSubfolderCopyInstruction(activeFolderId).trim() : '';
-    const finalCopyText = `${fullInstruction}\n\n${fullText}`;
+    const finalCopyText = `${fullInstruction}\n\n${fullText}\n\n${DEFAULT_DIGEST_FOOTER_INSTRUCTION}`;
 
     const ok = await copyToClipboard(finalCopyText);
     if (!ok) {
@@ -1183,7 +1189,7 @@ async function extractPdfDigestPromptPayload({ doc, total, pdfObj, isCancelled }
   const activeFolderId = getActiveSubfolderId();
   const subfolderName = activeFolderId ? getFolderBreadcrumb(activeFolderId) : '';
   const instructionText = buildFullCopyInstruction(activeFolderId);
-  const fullPromptText = `${instructionText}\n\n${pdfText}`;
+  const fullPromptText = `${instructionText}\n\n${pdfText}\n\n${DEFAULT_DIGEST_FOOTER_INSTRUCTION}`;
 
   return {
     ok: true,

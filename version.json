@@ -1,7 +1,7 @@
 {
-    "version":  "1.22.1",
-    "build":  55,
-    "updatedAt":  "2026-11-14T06:05:02Z",
-    "notes":  "Deduplicate Google Calendar weekly schedule cards so one-off class extensions, makeup sessions, and dropped past classes no longer duplicate on the Study Desk Weekly Docket.",
+    "version":  "1.22.2",
+    "build":  56,
+    "updatedAt":  "2026-11-14T06:29:26Z",
+    "notes":  "Append the ph-case-digest and strict-source-verification formatting footer to Copy Text and digest prompts.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
