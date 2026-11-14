@@ -2454,7 +2454,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
     const autoSubmitPref = opts?.forceAutoSubmit
       ? true
       : safeStorageGet('gemini_auto_submit', 'true') !== 'false';
-    const digestModePref = safeStorageGet('gemini_digest_mode', 'append') === 'replace' ? 'replace' : 'append';
+    const digestModePref = safeStorageGet('gemini_digest_mode_v2', 'replace') === 'append' ? 'append' : 'replace';
     const autoSendPref = opts?.forceAutoSend
       ? true
       : safeStorageGet('gemini_auto_send', 'true') !== 'false';
@@ -2970,6 +2970,7 @@ if (typeof window !== 'undefined') {
     }
     if (prefs.digestMode === 'replace' || prefs.digestMode === 'append') {
       safeStorageSet('gemini_digest_mode', prefs.digestMode);
+      safeStorageSet('gemini_digest_mode_v2', prefs.digestMode);
     }
     if (typeof prefs.autoSendDigest === 'boolean') {
       safeStorageSet('gemini_auto_send', prefs.autoSendDigest ? 'true' : 'false');
@@ -2987,7 +2988,7 @@ if (typeof window !== 'undefined') {
       msg.pdfId || '',
       msg.html || '',
       msg.text || '',
-      msg.digestMode === 'replace' ? 'replace' : 'append',
+      msg.digestMode === 'append' ? 'append' : 'replace',
       'Gemini'
     );
     if (ok) {

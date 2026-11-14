@@ -1,7 +1,7 @@
 {
-    "version": "1.22.9",
-    "build": 63,
-    "updatedAt": "2026-11-14T11:00:19Z",
-    "notes": "Base Gemini Digest Studio on pinned Subject Notebooks instead of the general homepage, restore Subject Notebook URL settings, and remove bot-fingerprint/XHR-interrupting navigation calls so Notebook skills load reliably.",
+    "version": "1.22.10",
+    "build": 64,
+    "updatedAt": "2026-11-14T11:10:07Z",
+    "notes": "Restore automated OS-mouse Gemini model/thinking selection and auto-submit in Subject Notebooks, and default Gemini Digest Studio mode to Replace instead of Append.",
     "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
