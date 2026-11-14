@@ -23,6 +23,7 @@ import {
 const PREFS_STORAGE_KEY = 'la_print_studio_prefs_v2';
 const DEFAULT_PRESET_STORAGE_KEY = 'la_print_studio_default_v2';
 const JOB_STORAGE_PREFIX = 'la_print_job_';
+const LATEST_JOB_STORAGE_KEY = 'la_print_latest_job';
 const PRINT_CHANNEL_NAME = 'la_print_studio';
 const REALTIME_CHANNEL_NAME = 'legal_annotator_realtime';
 
@@ -121,7 +122,29 @@ function pruneOldLocalJobs(keepCount = 3) {
 function saveLocalJob(jobId, payload) {
   if (!jobId) return;
   pruneOldLocalJobs(3);
-  safeStorageSet(JOB_STORAGE_PREFIX + jobId, JSON.stringify(payload));
+  const savedFull = safeStorageSet(JOB_STORAGE_PREFIX + jobId, JSON.stringify(payload));
+  if (!savedFull) {
+    safeStorageSet(JOB_STORAGE_PREFIX + jobId, JSON.stringify({ ...payload, librarySnapshot: null }));
+  }
+  const latestPointer = {
+    id: jobId,
+    jobId,
+    title: payload?.title || 'Legal Print Studio',
+    targetType: payload?.targetType || 'library',
+    folderIds: Array.isArray(payload?.folderIds) ? payload.folderIds : [],
+    pdfIds: Array.isArray(payload?.pdfIds) ? payload.pdfIds : [],
+    defaultMode: payload?.defaultMode || 'all',
+    orientation: payload?.orientation || null,
+    includeFolderDocs: typeof payload?.includeFolderDocs === 'boolean' ? payload.includeFolderDocs : undefined,
+    options: {
+      defaultMode: payload?.defaultMode || 'all',
+      orientation: payload?.orientation || null,
+      targetType: payload?.targetType || 'library',
+      includeFolderDocs: typeof payload?.includeFolderDocs === 'boolean' ? payload.includeFolderDocs : undefined,
+    },
+    createdAt: payload?.createdAt || Date.now(),
+  };
+  safeStorageSet(LATEST_JOB_STORAGE_KEY, JSON.stringify(latestPointer));
 }
 
 function loadLocalJob(jobId) {
@@ -139,9 +162,19 @@ function loadLocalJob(jobId) {
   return null;
 }
 
+async function ensureDesktopPrintStudioBridge() {
+  try {
+    if (typeof window !== 'undefined' && !window.__DESKTOP_PRINT_STUDIO__ && (window.__TAURI_INTERNALS__ || window.__TAURI__)) {
+      await import('./desktop-bridge.js');
+    }
+  } catch (err) {
+    console.warn('[print-studio] desktop-bridge import skipped:', err);
+  }
+}
+
 async function loadPrintJobPayload(jobId) {
-  if (!jobId) return null;
-  if (typeof window !== 'undefined' && window.__DESKTOP_PRINT_STUDIO__?.loadJob) {
+  await ensureDesktopPrintStudioBridge();
+  if (jobId && typeof window !== 'undefined' && window.__DESKTOP_PRINT_STUDIO__?.loadJob) {
     try {
       const deskJob = await window.__DESKTOP_PRINT_STUDIO__.loadJob(jobId);
       if (deskJob && typeof deskJob === 'object') return deskJob;
@@ -149,7 +182,25 @@ async function loadPrintJobPayload(jobId) {
       console.warn('[PrintStudio] desktop loadJob failed:', err);
     }
   }
-  return loadLocalJob(jobId);
+  const localJob = loadLocalJob(jobId);
+  if (localJob) return localJob;
+
+  try {
+    const rawLatest = safeStorageGet(LATEST_JOB_STORAGE_KEY, null);
+    if (rawLatest) {
+      const latest = JSON.parse(rawLatest);
+      if (latest && typeof latest === 'object') {
+        const latestId = latest.id || latest.jobId;
+        const createdAt = Number(latest.createdAt || 0);
+        const within60s = createdAt > 0 && (Date.now() - createdAt) <= 60_000;
+        if ((jobId && latestId === jobId) || (!jobId && within60s)) {
+          return latest;
+        }
+      }
+    }
+  } catch {}
+
+  return null;
 }
 
 function applyLibrarySnapshot(snap) {
@@ -189,8 +240,16 @@ async function hydrateLibraryState(job, requestedIds = {}) {
     } catch {}
   }
 
-  const missingRequestedDoc = requestedIds.docId && !S.pdfs?.some(p => p.id === requestedIds.docId);
-  const missingRequestedFolder = requestedIds.folderId && !S.folders?.some(f => f.id === requestedIds.folderId);
+  const reqFolderIds = [
+    ...(requestedIds.folderId ? [requestedIds.folderId] : []),
+    ...(Array.isArray(requestedIds.folderIds) ? requestedIds.folderIds : []),
+  ];
+  const reqPdfIds = [
+    ...(requestedIds.docId ? [requestedIds.docId] : []),
+    ...(Array.isArray(requestedIds.pdfIds) ? requestedIds.pdfIds : []),
+  ];
+  const missingRequestedDoc = reqPdfIds.some(id => !S.pdfs?.some(p => p.id === id));
+  const missingRequestedFolder = reqFolderIds.some(id => !S.folders?.some(f => f.id === id));
   const needsSyncDb = (!S.folders?.length && !S.pdfs?.length) || missingRequestedDoc || missingRequestedFolder;
 
   const tryRemoteLoad = async () => {
@@ -266,13 +325,17 @@ function buildQueueFromJobOrMode(job, modeInfo = {}) {
   const seenFolders = new Set();
   const seenPdfs = new Set();
 
-  const rawFolderIds = Array.isArray(job?.folderIds) && job.folderIds.length
-    ? job.folderIds
-    : (modeInfo.folderId ? [modeInfo.folderId] : []);
+  const rawFolderIds = Array.from(new Set([
+    ...(Array.isArray(job?.folderIds) ? job.folderIds : []),
+    ...(Array.isArray(modeInfo?.folderIds) ? modeInfo.folderIds : []),
+    ...(modeInfo?.folderId ? [modeInfo.folderId] : []),
+  ].filter(Boolean)));
 
-  const rawPdfIds = Array.isArray(job?.pdfIds) && job.pdfIds.length
-    ? job.pdfIds
-    : (modeInfo.docId ? [modeInfo.docId] : []);
+  const rawPdfIds = Array.from(new Set([
+    ...(Array.isArray(job?.pdfIds) ? job.pdfIds : []),
+    ...(Array.isArray(modeInfo?.pdfIds) ? modeInfo.pdfIds : []),
+    ...(modeInfo?.docId ? [modeInfo.docId] : []),
+  ].filter(Boolean)));
 
   // Deduplicate folders where an ancestor is already included
   const folderIdSet = new Set(rawFolderIds);
@@ -313,14 +376,21 @@ function buildQueueFromJobOrMode(job, modeInfo = {}) {
 
 export async function checkAndBootPrintStudioApp() {
   if (typeof window === 'undefined') return false;
+  await ensureDesktopPrintStudioBridge();
   const params = new URLSearchParams(window.location.search);
   const isUrlStudio = params.get('print-studio') === '1';
+
+  const parseCsvIds = (val) => (val ? String(val).split(',').map(s => s.trim()).filter(Boolean) : []);
+  const urlFolderIds = parseCsvIds(params.get('folders'));
+  const urlPdfIds = parseCsvIds(params.get('pdfs'));
 
   let modeInfo = {
     isPrintStudio: isUrlStudio,
     jobId: params.get('job') || params.get('jobId') || null,
     docId: params.get('docId') || params.get('doc') || null,
     folderId: params.get('folderId') || params.get('folder') || null,
+    folderIds: urlFolderIds,
+    pdfIds: urlPdfIds,
   };
 
   if (window.__DESKTOP_PRINT_STUDIO__?.getMode) {
@@ -332,6 +402,12 @@ export async function checkAndBootPrintStudioApp() {
           jobId: deskMode.jobId || modeInfo.jobId || null,
           docId: deskMode.docId || modeInfo.docId || null,
           folderId: deskMode.folderId || modeInfo.folderId || null,
+          folderIds: Array.isArray(deskMode.folderIds) && deskMode.folderIds.length
+            ? deskMode.folderIds
+            : modeInfo.folderIds,
+          pdfIds: Array.isArray(deskMode.pdfIds) && deskMode.pdfIds.length
+            ? deskMode.pdfIds
+            : modeInfo.pdfIds,
         };
       }
     } catch (err) {
@@ -346,7 +422,12 @@ export async function checkAndBootPrintStudioApp() {
   document.body.innerHTML = '<div id="print-studio-app"></div>';
 
   const job = await loadPrintJobPayload(modeInfo.jobId);
-  await hydrateLibraryState(job, { docId: modeInfo.docId, folderId: modeInfo.folderId });
+  await hydrateLibraryState(job, {
+    docId: modeInfo.docId,
+    folderId: modeInfo.folderId,
+    folderIds: modeInfo.folderIds,
+    pdfIds: modeInfo.pdfIds,
+  });
 
   const mountEl = document.getElementById('print-studio-app');
   _studioController = mountPrintStudioUI(mountEl, { job, modeInfo, isOverlay: false });
@@ -388,6 +469,7 @@ export async function checkAndBootPrintStudioApp() {
 }
 
 export async function openPrintStudio(jobSpec = {}) {
+  await ensureDesktopPrintStudioBridge();
   const folderIds = Array.isArray(jobSpec.folderIds) ? jobSpec.folderIds.filter(Boolean) : [];
   const pdfIds = Array.isArray(jobSpec.pdfIds) ? jobSpec.pdfIds.filter(Boolean) : [];
   const targetType = jobSpec.targetType || (folderIds.length ? 'folder' : (pdfIds.length ? 'pdf' : 'library'));
@@ -397,6 +479,7 @@ export async function openPrintStudio(jobSpec = {}) {
   const orientation = jobSpec.orientation === 'landscape'
     ? 'landscape'
     : (jobSpec.orientation === 'portrait' ? 'portrait' : null);
+  const includeFolderDocs = typeof jobSpec.includeFolderDocs === 'boolean' ? jobSpec.includeFolderDocs : undefined;
 
   const buildPayload = () => ({
     jobId,
@@ -407,6 +490,7 @@ export async function openPrintStudio(jobSpec = {}) {
     pdfIds,
     defaultMode,
     orientation,
+    includeFolderDocs,
     librarySnapshot: {
       subjects: Array.isArray(S.subjects) ? S.subjects : [],
       folders: Array.isArray(S.folders) ? S.folders : [],
@@ -421,7 +505,7 @@ export async function openPrintStudio(jobSpec = {}) {
   if (!desktopStudio) {
     const initialPayload = buildPayload();
     saveLocalJob(jobId, initialPayload);
-    const targetUrl = `?print-studio=1&job=${encodeURIComponent(jobId)}`;
+    const targetUrl = `?print-studio=1&job=${encodeURIComponent(jobId)}&folders=${encodeURIComponent(folderIds.join(','))}&pdfs=${encodeURIComponent(pdfIds.join(','))}`;
     try {
       preOpenedWin = window.open(targetUrl, 'la_print_studio');
     } catch {
@@ -511,6 +595,9 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
   if (job?.orientation === 'landscape' || job?.orientation === 'portrait') {
     prefs.orientation = job.orientation;
   }
+  if (typeof job?.includeFolderDocs === 'boolean') {
+    prefs.includeFolderDocs = job.includeFolderDocs;
+  }
 
   const queueItems = buildQueueFromJobOrMode(job, modeInfo);
 
@@ -544,6 +631,7 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
       if (item.kind === 'folder') {
         const fold = (S.folders || []).find(f => f.id === item.id);
         if (!fold) continue;
+        state.collapsedFolders.delete(fold.id);
         const ancestors = getAncestorFolderIds(fold.parent_folder_id);
         for (const aid of ancestors) state.collapsedFolders.delete(aid);
         const rootId = ancestors.length ? ancestors[ancestors.length - 1] : fold.id;
@@ -977,8 +1065,38 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
       computeBranchPdfCount(f.id);
     }
 
+    const folderHasPrintableCache = new Map();
+    const hasPrintableContent = (folderId, visiting = new Set()) => {
+      if (folderHasPrintableCache.has(folderId)) return folderHasPrintableCache.get(folderId);
+      if (visiting.has(folderId)) return false;
+      visiting.add(folderId);
+
+      let printable = (branchPdfCounts.get(folderId) || 0) > 0;
+      if (!printable) {
+        const fold = folderById.get(folderId);
+        if (fold) {
+          const rawNotes = fold.notesHtml || fold.notes || safeStorageGet('local_folder_notes_' + fold.id, '') || '';
+          if (hasMeaningfulContent(rawNotes)) {
+            printable = true;
+          } else {
+            for (const sub of (childrenByParent.get(folderId) || [])) {
+              if (hasPrintableContent(sub.id, visiting)) {
+                printable = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      visiting.delete(folderId);
+      folderHasPrintableCache.set(folderId, printable);
+      return printable;
+    };
+
     const folderMatchesCache = new Map();
     function folderOrDescMatches(folderId) {
+      if (!hasPrintableContent(folderId)) return false;
       if (!q) return true;
       if (folderMatchesCache.has(folderId)) return folderMatchesCache.get(folderId);
       const fold = folderById.get(folderId);
@@ -1004,9 +1122,10 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
     elTree.innerHTML = '';
 
     function renderFolderNode(folder, containerEl, depth = 0) {
+      if (!hasPrintableContent(folder.id)) return;
       if (!folderOrDescMatches(folder.id)) return;
       const isCollapsed = !q && state.collapsedFolders.has(folder.id);
-      const subFolders = childrenByParent.get(folder.id) || [];
+      const subFolders = (childrenByParent.get(folder.id) || []).filter(sf => hasPrintableContent(sf.id));
       const folderPdfs = pdfsByFolder.get(folder.id) || [];
 
       const hasChildren = subFolders.length > 0 || folderPdfs.length > 0;
@@ -1126,7 +1245,7 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
 
       const subjNameMatches = q && (subj.name || '').toLowerCase().includes(q);
       const visibleFolders = subjNameMatches
-        ? rootFolders
+        ? rootFolders.filter(f => hasPrintableContent(f.id))
         : rootFolders.filter(f => folderOrDescMatches(f.id));
       if (!visibleFolders.length) continue;
 
@@ -1789,6 +1908,9 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
       else if (newJob.defaultMode === 'all') state.prefs.tablesOnly = false;
       if (newJob.orientation === 'landscape' || newJob.orientation === 'portrait') {
         state.prefs.orientation = newJob.orientation;
+      }
+      if (typeof newJob.includeFolderDocs === 'boolean') {
+        state.prefs.includeFolderDocs = newJob.includeFolderDocs;
       }
       savePrefs(state.prefs);
       syncInspectorControls();

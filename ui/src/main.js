@@ -148,7 +148,10 @@ async function init() {
   });
   document.getElementById('btn-print-studio')?.addEventListener('click', async () => {
     try {
-      const { openPrintStudio } = await import('./print-studio.js');
+      const [{ openPrintStudio }, { stripEmojis }] = await Promise.all([
+        import('./print-studio.js'),
+        import('./export.js'),
+      ]);
       const selectedFolders = [...(S.selectedIds || [])]
         .map(id => S.folders.find(f => f.id === id))
         .filter(Boolean);
@@ -172,23 +175,30 @@ async function init() {
             ? `${selectedPdfs.length} Cases — Print Studio`
             : `${(selectedPdfs[0].name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
         });
-      } else if (S.curPDF) {
-        await openPrintStudio({
-          targetType: 'pdf',
-          pdfIds: [S.curPDF.id],
-          title: `${(S.curPDF.name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
-        });
       } else {
-        const fdv = document.getElementById('folder-doc-viewer');
+        const folderViewer = document.getElementById('folder-doc-viewer');
+        const isFolderViewerOpen = Boolean(
+          folderViewer &&
+          (folderViewer.classList.contains('open') || (folderViewer.style.display && folderViewer.style.display !== 'none'))
+        );
         const fTitle = document.getElementById('folder-doc-title')?.textContent?.trim();
-        const activeFolder = (fdv && fdv.style.display !== 'none' && fTitle)
-          ? S.folders.find(f => f.name === fTitle)
+        const activeFolder = isFolderViewerOpen
+          ? ((S.activeFolderId && S.folders.find(f => f.id === S.activeFolderId)) ||
+             (fTitle ? S.folders.find(f => stripEmojis(f.name).trim() === stripEmojis(fTitle || '').trim()) : null))
           : null;
+
         if (activeFolder) {
           await openPrintStudio({
             targetType: 'folder',
             folderIds: [activeFolder.id],
+            includeFolderDocs: true,
             title: `${activeFolder.name} — Print Studio`,
+          });
+        } else if (S.curPDF) {
+          await openPrintStudio({
+            targetType: 'pdf',
+            pdfIds: [S.curPDF.id],
+            title: `${(S.curPDF.name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
           });
         } else {
           await openPrintStudio({ targetType: 'library', title: 'Legal Print Studio' });

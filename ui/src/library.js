@@ -1291,6 +1291,11 @@ function buildFolderEl(fold) {
       ch.style.display = S.expandedFold[fold.id] ? 'flex' : 'none';
     } else {
       // Clicking the folder immediately opens the folder's general notes
+      S.activeFolderId = fold.id;
+      S.selectedIds = new Set([fold.id]);
+      S.lastClickedId = fold.id;
+      S.lastSelectedId = fold.id;
+      updateSelectionUI();
       openFolderDoc(fold);
       closeSidebar();
     }

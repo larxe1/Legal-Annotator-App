@@ -331,7 +331,7 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
       seenPdfIds: opts.seenPdfIds,
       tocCollector: opts.tocCollector,
     });
-    if (pdfHtml) {
+    if (pdfHtml && hasMeaningfulContent(pdfHtml)) {
       hasAnyContent = true;
       casesHtml += pdfHtml;
     }
@@ -345,7 +345,7 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
 
     for (const sf of subfolders) {
       const subHtml = await buildFolderHTML(sf.id, depth + 1, caseRegistry, opts);
-      if (subHtml) {
+      if (subHtml && hasMeaningfulContent(subHtml)) {
         subfoldersHtml += subHtml;
         hasAnyContent = true;
       }
@@ -401,14 +401,18 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
     }
   }
 
-  if (!hasAnyContent) return '';
+  const hasNotes = Boolean(folderNotesHtml && hasMeaningfulContent(folderNotesHtml));
+  const hasCases = Boolean(casesHtml && hasMeaningfulContent(casesHtml));
+  const hasSubs = Boolean(subfoldersHtml && hasMeaningfulContent(subfoldersHtml));
+
+  if (!hasAnyContent || (!hasNotes && !hasCases && !hasSubs)) return '';
 
   // 4. Folder Header:
   // Depth=1 is the top-level exported folder — its name is already in the running header,
   // so we skip the h1 to avoid duplicate titles.
-  // Subfolders (depth >= 2) get an hN section divider.
+  // Subfolders (depth >= 2) get an hN section divider ONLY if this folder has direct notes or cases.
   let headerHtml = '';
-  if (depth >= 2) {
+  if (depth >= 2 && (hasNotes || hasCases)) {
     const safeFolderName = escapeHtml(folderName);
     const hSize = depth === 2 ? '11.5pt' : '10.5pt';
     const hTag = depth === 2 ? 'h2' : 'h3';
@@ -761,8 +765,91 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
   <script>
     (function() {
       var runningHeaders = ${runningHeaders ? 'true' : 'false'};
+      var SHOW_TOC = ${includeToc ? 'true' : 'false'};
       var fallbackPath = ${JSON.stringify(fallbackPath || 'Library')};
       var docTitle = ${JSON.stringify(pageTitle || 'Legal Print Studio')};
+
+      function renumberPagesAndToc() {
+        var pagesRoot = document.getElementById('ps-pages-root');
+        if (!pagesRoot) return;
+        var sheets = Array.from(pagesRoot.querySelectorAll('.ps-page-sheet'));
+        var total = sheets.length;
+        var activePath = fallbackPath;
+        var activeName = docTitle;
+        var lastSec = docTitle;
+
+        for (var i = 0; i < total; i++) {
+          var sheet = sheets[i];
+          var pageNum = i + 1;
+          sheet.setAttribute('data-page-num', String(pageNum));
+
+          var namedNodes = sheet.querySelectorAll('[data-case-name]');
+          var firstNamed = namedNodes.length > 0 ? namedNodes[0] : null;
+          var lastNamed = namedNodes.length > 0 ? namedNodes[namedNodes.length - 1] : null;
+          var hdrPath = firstNamed ? (firstNamed.getAttribute('data-folder-path') || activePath) : activePath;
+          var hdrName = firstNamed ? (firstNamed.getAttribute('data-case-name') || activeName) : activeName;
+
+          var secNodes = sheet.querySelectorAll('[data-section-title]');
+          var firstSec = secNodes.length > 0 ? secNodes[0] : null;
+          var lastSecNode = secNodes.length > 0 ? secNodes[secNodes.length - 1] : null;
+          var hdrSecText = firstSec ? (firstSec.getAttribute('data-section-title') || lastSec) : lastSec;
+
+          if (runningHeaders) {
+            var hdrLeft = sheet.querySelector('.ps-page-hdr-left');
+            var hdrRight = sheet.querySelector('.ps-page-hdr-right');
+            var hdrSec = sheet.querySelector('.ps-hdr-sec');
+            var ftr = sheet.querySelector('.ps-page-ftr');
+            if (hdrLeft) hdrLeft.textContent = hdrPath;
+            if (hdrRight) hdrRight.textContent = hdrName;
+            if (hdrSec) hdrSec.textContent = hdrSecText;
+            if (ftr) ftr.textContent = 'Page ' + pageNum + ' of ' + total;
+          }
+
+          if (lastNamed) {
+            activePath = lastNamed.getAttribute('data-folder-path') || activePath;
+            activeName = lastNamed.getAttribute('data-case-name') || activeName;
+          }
+          if (lastSecNode) {
+            lastSec = lastSecNode.getAttribute('data-section-title') || lastSec;
+          }
+
+          var toolsLabel = sheet.querySelector('.ps-page-tools-label');
+          if (toolsLabel) {
+            toolsLabel.textContent = 'Page ' + pageNum + ' of ' + total + ' • Click text to edit';
+          }
+        }
+
+        if (SHOW_TOC) {
+          var tocRows = pagesRoot.querySelectorAll('.ps-toc-row[data-toc-target]');
+          var visibleCount = 0;
+          for (var tIdx = 0; tIdx < tocRows.length; tIdx++) {
+            var row = tocRows[tIdx];
+            var targetId = row.getAttribute('data-toc-target');
+            if (!targetId) continue;
+            var escapedId = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(targetId) : targetId;
+            var targetEl = pagesRoot.querySelector('[data-toc-id="' + escapedId + '"]');
+            var targetSheet = targetEl ? targetEl.closest('.ps-page-sheet') : null;
+            if (targetSheet) {
+              visibleCount++;
+              row.style.display = '';
+              var numSpan = row.querySelector('.ps-toc-num');
+              if (numSpan) numSpan.textContent = visibleCount + '.';
+              var pageSpan = row.querySelector('.ps-toc-page');
+              var targetPageNum = targetSheet.getAttribute('data-page-num');
+              if (pageSpan && targetPageNum) {
+                pageSpan.textContent = targetPageNum;
+              }
+            } else {
+              row.style.display = 'none';
+            }
+          }
+        }
+
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: 'ps-pagination-done', pageCount: total }, '*');
+        }
+      }
+      window.renumberPagesAndToc = renumberPagesAndToc;
 
       function isHeadingEl(el) {
         if (!el || el.nodeType !== 1) return false;
@@ -1382,6 +1469,8 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             for (var c = 0; c < colCount; c++) {
               var col = document.createElement('div');
               col.className = 'ps-page-col';
+              col.setAttribute('contenteditable', 'true');
+              col.setAttribute('spellcheck', 'false');
               body.appendChild(col);
               cols.push(col);
             }
@@ -1393,6 +1482,37 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
               ftr.className = 'ps-page-ftr';
               sheet.appendChild(ftr);
             }
+
+            var tools = document.createElement('div');
+            tools.className = 'ps-page-tools no-print';
+            tools.setAttribute('contenteditable', 'false');
+
+            var toolsLabel = document.createElement('span');
+            toolsLabel.className = 'ps-page-tools-label';
+            toolsLabel.textContent = 'Page ' + pageNum + ' • Click text to edit';
+
+            var delBtn = document.createElement('button');
+            delBtn.type = 'button';
+            delBtn.className = 'ps-page-del-btn';
+            delBtn.title = 'Delete this page';
+            delBtn.textContent = '\\u2715 Delete Page';
+            delBtn.addEventListener('click', function(ev) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              var allSheets = pagesRoot.querySelectorAll('.ps-page-sheet');
+              if (allSheets.length > 1) {
+                sheet.remove();
+              } else {
+                for (var ci = 0; ci < cols.length; ci++) {
+                  cols[ci].innerHTML = '';
+                }
+              }
+              renumberPagesAndToc();
+            });
+
+            tools.appendChild(toolsLabel);
+            tools.appendChild(delBtn);
+            sheet.appendChild(tools);
 
             pagesRoot.appendChild(sheet);
             var maxColHeight = cols[0].clientHeight - 2;
@@ -1420,20 +1540,41 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             };
           }
 
+          function isColEmptyOrBlank(colEl) {
+            if (!colEl) return true;
+            return colEl.children.length === 0 || !hasMeaningfulDom(colEl);
+          }
+
           function advanceColumn(queue) {
             var prevCol = curPage.cols[curColIdx];
-            if (queue && prevCol.children.length > 1 && isHeadingEl(prevCol.lastElementChild)) {
-              var trailing = prevCol.lastElementChild;
-              prevCol.removeChild(trailing);
-              queue.unshift(trailing);
+            var trailingHeadings = [];
+            if (queue) {
+              while (prevCol.lastElementChild && isHeadingEl(prevCol.lastElementChild)) {
+                var trailing = prevCol.lastElementChild;
+                prevCol.removeChild(trailing);
+                trailingHeadings.unshift(trailing);
+              }
             }
+            var prevPage = curPage;
             if (isTwoCol && curColIdx === 0) {
               curColIdx = 1;
             } else {
               curPage = createPageSheet(pages.length + 1);
               curColIdx = 0;
+              var prevPageEmpty = prevPage.cols.every(isColEmptyOrBlank);
+              if (prevPageEmpty) {
+                var prevIdx = pages.indexOf(prevPage);
+                if (prevIdx !== -1) pages.splice(prevIdx, 1);
+                if (prevPage.sheet && prevPage.sheet.parentNode) {
+                  prevPage.sheet.parentNode.removeChild(prevPage.sheet);
+                }
+              }
             }
-            return currentSlot();
+            var next = currentSlot();
+            for (var th = 0; th < trailingHeadings.length; th++) {
+              next.colEl.appendChild(trailingHeadings[th]);
+            }
+            return next;
           }
 
           var rawChildren = Array.from(flowSource.childNodes).map(function(n) {
@@ -1476,7 +1617,8 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
 
               cur.colEl.removeChild(clone);
 
-              var splitRes = trySplitElement(node, cur.colEl, cur.maxColHeight, colWasEmpty);
+              var colEffectivelyEmpty = colWasEmpty || (cur.colEl.children.length > 0 && Array.from(cur.colEl.children).every(isHeadingEl));
+              var splitRes = trySplitElement(node, cur.colEl, cur.colEl, cur.maxColHeight, colEffectivelyEmpty);
               if (splitRes.top) {
                 if (splitRes.rest) {
                   queue.unshift(splitRes.rest);
@@ -1487,7 +1629,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
                 continue;
               }
 
-              if (colWasEmpty) {
+              if (colWasEmpty || colEffectivelyEmpty) {
                 cur.colEl.appendChild(clone);
                 if (queue.length > 0) {
                   cur = advanceColumn(queue);
@@ -1499,49 +1641,68 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             }
           }
 
-          var totalPages = pages.length;
-          var activePath = fallbackPath;
-          var activeName = docTitle;
-          for (var pIdx = 0; pIdx < pages.length; pIdx++) {
-            var p = pages[pIdx];
-            var namedNodes = p.sheet.querySelectorAll('[data-case-name]');
-            var firstNamed = namedNodes.length > 0 ? namedNodes[0] : null;
-            var lastNamed = namedNodes.length > 0 ? namedNodes[namedNodes.length - 1] : null;
-            var hdrPath = firstNamed ? (firstNamed.getAttribute('data-folder-path') || activePath) : activePath;
-            var hdrName = firstNamed ? (firstNamed.getAttribute('data-case-name') || activeName) : activeName;
-            if (runningHeaders) {
-              if (p.hdrLeft) p.hdrLeft.textContent = hdrPath;
-              if (p.hdrRight) p.hdrRight.textContent = hdrName;
-              if (p.ftr) p.ftr.textContent = 'Page ' + p.pageNum + ' of ' + totalPages;
-            }
-            if (lastNamed) {
-              activePath = lastNamed.getAttribute('data-folder-path') || activePath;
-              activeName = lastNamed.getAttribute('data-case-name') || activeName;
-            }
+          function pageHasMeaningfulNonHeading(pageObj) {
+            if (!pageObj || !pageObj.cols) return false;
+            return pageObj.cols.some(function(col) {
+              return Array.from(col.childNodes).some(function(child) {
+                if (child.nodeType === 3) return (child.nodeValue || '').trim().length > 0;
+                if (child.nodeType === 1) return !isHeadingEl(child) && hasMeaningfulDom(child);
+                return false;
+              });
+            });
           }
 
-          var tocRows = pagesRoot.querySelectorAll('.ps-toc-row[data-toc-target]');
-          for (var tIdx = 0; tIdx < tocRows.length; tIdx++) {
-            var row = tocRows[tIdx];
-            var targetId = row.getAttribute('data-toc-target');
-            if (!targetId) continue;
-            var escapedId = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(targetId) : targetId;
-            var targetEl = pagesRoot.querySelector('[data-toc-id="' + escapedId + '"]');
-            var targetSheet = targetEl ? targetEl.closest('.ps-page-sheet') : null;
-            var targetPageNum = targetSheet ? targetSheet.getAttribute('data-page-num') : null;
-            var pageSpan = row.querySelector('.ps-toc-page');
-            if (pageSpan && targetPageNum) {
-              pageSpan.textContent = targetPageNum;
+          var cleanIdx = 0;
+          while (cleanIdx < pages.length) {
+            if (pages.length <= 1) break;
+            var checkPage = pages[cleanIdx];
+            if (!pageHasMeaningfulNonHeading(checkPage)) {
+              if (cleanIdx + 1 < pages.length) {
+                var nextFirstCol = pages[cleanIdx + 1].cols[0];
+                if (nextFirstCol) {
+                  var headingsToMove = [];
+                  for (var hc = 0; hc < checkPage.cols.length; hc++) {
+                    var colKids = Array.from(checkPage.cols[hc].children);
+                    for (var hk = 0; hk < colKids.length; hk++) {
+                      if (isHeadingEl(colKids[hk])) {
+                        headingsToMove.push(colKids[hk]);
+                      }
+                    }
+                  }
+                  var insertAnchor = nextFirstCol.firstChild;
+                  for (var hm = 0; hm < headingsToMove.length; hm++) {
+                    if (headingsToMove[hm].parentNode) {
+                      headingsToMove[hm].parentNode.removeChild(headingsToMove[hm]);
+                    }
+                    nextFirstCol.insertBefore(headingsToMove[hm], insertAnchor);
+                  }
+                }
+              }
+              if (checkPage.sheet && checkPage.sheet.parentNode) {
+                checkPage.sheet.parentNode.removeChild(checkPage.sheet);
+              }
+              pages.splice(cleanIdx, 1);
+              continue;
             }
+            cleanIdx++;
           }
 
-          if (window.parent && window.parent !== window) {
-            window.parent.postMessage({ type: 'ps-pagination-done', pageCount: pages.length }, '*');
-          }
+          renumberPagesAndToc();
         } finally {
           bodyEl.style.zoom = prevZoom;
         }
       };
+
+      var editDebounceTimer = null;
+      var pagesRootForEdit = document.getElementById('ps-pages-root');
+      if (pagesRootForEdit) {
+        pagesRootForEdit.addEventListener('input', function() {
+          clearTimeout(editDebounceTimer);
+          editDebounceTimer = setTimeout(function() {
+            renumberPagesAndToc();
+          }, 250);
+        });
+      }
 
       ${standaloneControlsScript}
       window.paginateDocumentIntoPages();
@@ -1755,6 +1916,62 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       min-width: 0;
       min-height: 0;
       overflow: hidden;
+    }
+    .ps-page-col[contenteditable="true"] {
+      outline: none;
+      cursor: text;
+    }
+    .ps-page-col[contenteditable="true"]:focus {
+      box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
+      border-radius: 2px;
+    }
+    .ps-page-tools {
+      position: absolute;
+      top: 6px;
+      right: 8px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.88);
+      color: #e2e8f0;
+      font-size: 10px;
+      font-weight: 500;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.25);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease;
+      user-select: none;
+    }
+    .ps-page-sheet:hover .ps-page-tools,
+    .ps-page-sheet:focus-within .ps-page-tools {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .ps-page-tools-label {
+      color: #cbd5e1;
+      white-space: nowrap;
+      padding: 0 2px;
+    }
+    .ps-page-del-btn {
+      appearance: none;
+      border: 1px solid rgba(248, 113, 113, 0.45);
+      background: rgba(220, 38, 38, 0.18);
+      color: #fecaca;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      line-height: 1.3;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+    .ps-page-del-btn:hover {
+      background: #dc2626;
+      border-color: #ef4444;
+      color: #ffffff;
     }
     .ps-page-ftr {
       display: flex;
@@ -1971,8 +2188,12 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
     }
 
     @media print {
-      .no-print {
+      .no-print,
+      .ps-page-tools {
         display: none !important;
+      }
+      .ps-page-col[contenteditable="true"]:focus {
+        box-shadow: none !important;
       }
       html, body {
         background: #ffffff !important;
