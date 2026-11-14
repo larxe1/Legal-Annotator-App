@@ -31,7 +31,7 @@ fn default_gemini_prefs() -> serde_json::Value {
         "subjectNotebooks": {},
         "modelLabel": "4 Hydrogen",
         "thinkingLevel": "High",
-        "autoSubmit": false,
+        "autoSubmit": true,
         "digestMode": "replace",
         "autoSendDigest": true
     })
@@ -123,7 +123,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     pinnedNotebookUrl: '',
     modelLabel: '4 Hydrogen',
     thinkingLevel: 'High',
-    autoSubmit: false,
+    autoSubmit: true,
     digestMode: 'replace',
     autoSendDigest: true,
     jobId: 0
@@ -506,9 +506,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       mkEl('button', {
         id: 'la-gemini-autosubmit-btn',
         type: 'button',
-        style: btnStyle + ';display:none;',
-        title: 'Manual submit enabled — press Enter in Gemini to submit',
-        text: '☐ Auto-Submit: OFF'
+        style: btnStyle,
+        title: 'Toggle whether Gemini Studio clicks the Submit button with the mouse after pasting & selecting model',
+        text: '☑ Auto-Submit: ON'
       }),
       mkEl('button', {
         id: 'la-gemini-autosend-btn',
@@ -805,6 +805,103 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       }
     }
     return null;
+  }
+
+  function findGeminiSendButton(inputEl) {
+    var ir = (inputEl && inputEl.isConnected) ? inputEl.getBoundingClientRect() : null;
+    var container = null;
+    if (inputEl && inputEl.closest) {
+      container = inputEl.closest('input-area-v2, input-container, .input-area, .text-input-container, .text-input-field, form');
+      if (!container) {
+        var rich = inputEl.closest('rich-textarea');
+        if (rich && rich.parentElement && rich.parentElement.parentElement) {
+          container = rich.parentElement.parentElement;
+        }
+      }
+    }
+
+    var rawCandidates = [];
+    function addNode(n) {
+      if (!n) return;
+      var btn = n.closest ? (n.closest('button, [role="button"]') || n) : n;
+      if (btn && rawCandidates.indexOf(btn) === -1) rawCandidates.push(btn);
+    }
+
+    var selectors = [
+      'button.send-button',
+      'button.submit',
+      '.send-button-container button',
+      'button[aria-label*="Send message" i]',
+      'button[aria-label*="Send prompt" i]',
+      'button[aria-label="Send" i]',
+      'button[aria-label*="Send" i]',
+      'button[aria-label*="Submit" i]',
+      'button[mattooltip*="Send" i]',
+      'button[data-test-id*="send" i]',
+      '[role="button"][aria-label*="Send message" i]',
+      '[role="button"][aria-label*="Send prompt" i]',
+      '[role="button"][aria-label="Send" i]',
+      '[role="button"][aria-label*="Submit" i]',
+      'mat-icon[data-mat-icon-name*="send" i]',
+      'mat-icon[fonticon*="send" i]'
+    ];
+
+    for (var s = 0; s < selectors.length; s++) {
+      var found = document.querySelectorAll(selectors[s]);
+      for (var k = 0; k < found.length; k++) addNode(found[k]);
+    }
+
+    var best = null;
+    var bestScore = -9999;
+
+    for (var i = 0; i < rawCandidates.length; i++) {
+      var btn = rawCandidates[i];
+      if (!btn || !btn.isConnected) continue;
+      if (btn.closest('#la-gemini-studio-bar') || btn.closest('#la-gemini-model-popover') || btn.closest('#la-gemini-fab-send') || btn.closest('#la-gemini-click-cursor')) continue;
+      if (btn.closest('.cdk-overlay-pane')) continue;
+      if (btn.disabled || btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true') continue;
+      if (btn.classList && btn.classList.contains('mat-mdc-button-disabled')) continue;
+
+      try {
+        var st = window.getComputedStyle(btn);
+        if (st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') <= 0.05)) continue;
+      } catch (e) {}
+
+      var r = btn.getBoundingClientRect();
+      if (r.width < 20 || r.height < 20 || r.top < 44 || r.bottom > window.innerHeight + 8 || r.right <= 0 || r.left >= window.innerWidth) continue;
+
+      var aria = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.getAttribute('mattooltip') || '') + ' ' + (btn.getAttribute('data-test-id') || '')).toLowerCase();
+      var cls = String(btn.className || '').toLowerCase();
+      var txt = cleanVisibleUiText(btn).toLowerCase();
+      var iconEl = btn.querySelector ? btn.querySelector('mat-icon, .mat-icon, .google-symbols') : null;
+      var iconTxt = iconEl ? ((iconEl.getAttribute('data-mat-icon-name') || '') + ' ' + (iconEl.getAttribute('fonticon') || '') + ' ' + (iconEl.textContent || '')).toLowerCase() : '';
+      var combined = (aria + ' ' + cls + ' ' + txt + ' ' + iconTxt).trim();
+
+      if (/\b(stop|cancel|pause|feedback|share|copy|menu|upload|attach|mic|microphone|voice|dictat|add files|tools|deep research|canvas|image|video|guided|case digest|new chat)\b/i.test(combined)) continue;
+
+      var score = 0;
+      if (container && container.contains(btn)) score += 300;
+      if (/\bsend-button\b|\bsend-button-container\b/i.test(cls) || (btn.closest && btn.closest('.send-button-container'))) score += 200;
+      if (/\bsend\s*(?:message|prompt)?\b|\bsubmit\b/i.test(aria)) score += 160;
+      if (/\bsend\b/i.test(iconTxt)) score += 120;
+      if (/\bsend\b|\bsubmit\b/i.test(txt)) score += 80;
+
+      if (ir && ir.width > 40) {
+        if (r.top >= ir.top - 50 && r.bottom <= ir.bottom + 150) {
+          score += 120;
+        } else if (Math.abs(r.top - ir.bottom) > 260) {
+          score -= 400;
+        }
+        if (r.left >= ir.left) score += 40;
+      }
+
+      if (score >= 100 && score > bestScore) {
+        bestScore = score;
+        best = btn;
+      }
+    }
+
+    return best;
   }
 
   function showClickCursorAt(x, y, labelText) {
@@ -2048,45 +2145,33 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     _isPasting = true;
-    showStatus('Verifying ' + getModelPillText() + ' with OS mouse…', '#93c5fd');
+    try { activeInput.scrollIntoView({ block: 'center' }); } catch (e) {}
+    var pos = getElementScreenCenter(activeInput);
 
-    ensureGeminiModelSelected(activeInput, function(modelVerified) {
-      var targetInput = findGeminiPromptInput() || activeInput;
-      if (!targetInput || !targetInput.isConnected) {
-        _isPasting = false;
-        setTimeout(function() { processActiveJob(); }, 400);
-        return;
-      }
+    if (_state.jobId) {
+      sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
+    }
+    armAutoSendWatcher();
 
-      try { targetInput.scrollIntoView({ block: 'center' }); } catch (e) {}
-      var pos = getElementScreenCenter(targetInput);
-      if (!pos || pos.cy < 44) {
-        var fallbackOk = setGeminiInputText(targetInput, fullText);
-        if (fallbackOk) typeTrailingSpaceKeystroke(targetInput);
-        window.__onNativePasteSubmitDone(fallbackOk);
-        return;
-      }
+    if (!pos || pos.cy < 44) {
+      var fallbackOk = setGeminiInputText(activeInput, fullText);
+      if (fallbackOk) typeTrailingSpaceKeystroke(activeInput);
+      window.__onNativePasteSubmitDone(fallbackOk);
+      return true;
+    }
 
-      if (_state.jobId) {
-        sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
-      }
-      armAutoSendWatcher();
-      showStatus('Model selected — pasting prompt & case text via OS Ctrl+V…', '#93c5fd');
-
-      sendBridgeMsg({
-        action: 'native_paste_and_submit',
-        x: pos.cx,
-        y: pos.cy,
-        dpr: window.devicePixelRatio || 1,
-        autoSubmit: false
-      });
+    showStatus('Step 1/3: Pasting prompt & case text via OS Ctrl+V…', '#93c5fd');
+    sendBridgeMsg({
+      action: 'native_paste_and_submit',
+      x: pos.cx,
+      y: pos.cy,
+      dpr: window.devicePixelRatio || 1
     });
 
     return true;
   }
 
   window.__onNativePasteSubmitDone = function(ok) {
-    _isPasting = false;
     _awaitingLastChangeAt = Date.now();
     _awaitingStoppedAt = 0;
     _hasSeenGenerationForJob = false;
@@ -2103,11 +2188,54 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       }
     }
     if (!ok && boxLen <= 20) {
+      _isPasting = false;
       showStatus('Click inside Ask Gemini and press Ctrl+V (OS paste failed).', '#fbbf24');
       emitStudioStatus('error', 'Paste needs focus', 'Could not paste automatically via OS — click inside Ask Gemini and press Ctrl+V.', true);
       return;
     }
-    showStatus('Model selected & case pasted! Press Enter to submit — will auto-save to Case Digest when done.', '#4ade80');
+
+    showStatus('Step 2/3: Selecting ' + getModelPillText() + ' with OS mouse…', '#93c5fd');
+    setTimeout(function() {
+      var inputForModel = findGeminiPromptInput();
+      ensureGeminiModelSelected(inputForModel, function(modelVerified) {
+        if (_state.autoSubmit === false) {
+          _isPasting = false;
+          showStatus('Case pasted & ' + getModelPillText() + ' selected! Click Send or press Enter to submit.', '#4ade80');
+          emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted & ' + getModelPillText() + ' selected — click Send to submit!', false, true);
+          return;
+        }
+
+        showStatus('Step 3/3: Locating Submit button for OS mouse click…', '#93c5fd');
+        var submitAttempts = 0;
+        function tryClickSubmitBtn() {
+          submitAttempts++;
+          if (document.querySelector('.cdk-overlay-pane [role="menu"], .cdk-overlay-pane [role="listbox"], .cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane [role="menuitemradio"]')) {
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+            if (submitAttempts < 10) {
+              setTimeout(tryClickSubmitBtn, 220);
+              return;
+            }
+          }
+          var pInput = findGeminiPromptInput();
+          var sendBtn = findGeminiSendButton(pInput);
+          if (sendBtn) {
+            _isPasting = false;
+            showStatus('Step 3/3: Clicking Submit with OS mouse…', '#4ade80');
+            nativeOsClickElement(sendBtn, 'Clicking Submit');
+            emitStudioStatus('streaming', 'Submitted to Gemini', 'Clicked Submit with OS mouse — waiting for Gemini response…', false, true);
+            return;
+          }
+          if (submitAttempts < 10) {
+            setTimeout(tryClickSubmitBtn, 220);
+            return;
+          }
+          _isPasting = false;
+          showStatus('Case pasted & ' + getModelPillText() + ' selected! Click Send to submit.', '#fbbf24');
+          emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted & model selected — click Send in Gemini to submit.', false, true);
+        }
+        setTimeout(tryClickSubmitBtn, 420);
+      });
+    }, 350);
   };
 
   function extractAndSendDigest() {
@@ -2533,8 +2661,12 @@ pub async fn desktop_open_gemini_studio(
         })
         .unwrap_or_else(|| "High".to_string());
 
-    let _ = auto_submit;
-    let eff_auto_submit = false;
+    let eff_auto_submit = auto_submit.unwrap_or_else(|| {
+        disk_prefs
+            .get("autoSubmit")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    });
 
     let eff_digest_mode = digest_mode
         .filter(|s| s == "replace" || s == "append")
@@ -2880,8 +3012,8 @@ pub async fn desktop_open_gemini_studio(
                                         serde_json::json!({
                                             "action": "studio_status",
                                             "state": "streaming",
-                                            "stepLabel": "Ready to Submit",
-                                            "message": "Model selected & case pasted — press Enter to submit! Will auto-save when done.",
+                                            "stepLabel": "Step 2/3: Selecting model",
+                                            "message": "Case pasted — selecting model & preparing submit...",
                                             "pdfId": pdf_id_for_paste,
                                             "canRetry": false
                                         }),

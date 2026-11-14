@@ -1,7 +1,7 @@
 {
-    "version": "1.22.11",
-    "build": 65,
-    "updatedAt": "2026-11-14T11:17:02Z",
-    "notes": "Keep automated OS-mouse Gemini model/thinking selection and OS Ctrl+V paste in Subject Notebooks, while removing auto-submit so the user submits manually.",
-    "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
+    "version":  "1.22.12",
+    "build":  66,
+    "updatedAt":  "2026-11-14T11:28:01Z",
+    "notes":  "Paste case first, then auto-select Gemini model/thinking (4 Hydrogen to High) via OS mouse, and click Submit via OS mouse with a new Auto-Submit toggle in Settings and Studio bar.",
+    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

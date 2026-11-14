@@ -1128,14 +1128,16 @@ export async function setPinnedGeminiNotebookForSubject(subjectId, url) {
 export function getGeminiModelPrefs() {
   const rawModel = safeStorageGet('gemini_model_label', '4 Hydrogen');
   const rawThinking = safeStorageGet('gemini_thinking_level', 'High');
+  const autoSubmit = safeStorageGet('gemini_auto_submit', 'true') !== 'false';
   const modelLabel = (rawModel && String(rawModel).trim()) || '4 Hydrogen';
   const thinkingLevel = (rawThinking && String(rawThinking).trim()) || 'High';
-  return { modelLabel, thinkingLevel };
+  return { modelLabel, thinkingLevel, autoSubmit };
 }
 
 async function resolveGeminiModelPrefs() {
   let modelLabel = safeStorageGet('gemini_model_label', '');
   let thinkingLevel = safeStorageGet('gemini_thinking_level', '');
+  let rawAutoSub = safeStorageGet('gemini_auto_submit', '');
   if (!modelLabel) {
     try {
       const cloudModel = await dbGetSetting('gemini_model_label');
@@ -1154,7 +1156,16 @@ async function resolveGeminiModelPrefs() {
       }
     } catch {}
   }
-  if (!modelLabel || !thinkingLevel) {
+  if (!rawAutoSub) {
+    try {
+      const cloudAutoSub = await dbGetSetting('gemini_auto_submit');
+      if (cloudAutoSub === 'true' || cloudAutoSub === 'false') {
+        rawAutoSub = cloudAutoSub;
+        safeStorageSet('gemini_auto_submit', rawAutoSub);
+      }
+    } catch {}
+  }
+  if (!modelLabel || !thinkingLevel || !rawAutoSub) {
     try {
       const tauriInvoke = getTauriInvoke();
       const prefs = typeof window.desktopGetGeminiPrefs === 'function'
@@ -1168,32 +1179,45 @@ async function resolveGeminiModelPrefs() {
         thinkingLevel = String(prefs.thinkingLevel).trim();
         if (thinkingLevel) safeStorageSet('gemini_thinking_level', thinkingLevel);
       }
+      if (!rawAutoSub && typeof prefs?.autoSubmit === 'boolean') {
+        rawAutoSub = prefs.autoSubmit ? 'true' : 'false';
+        safeStorageSet('gemini_auto_submit', rawAutoSub);
+      }
     } catch {}
   }
   return {
     modelLabel: (modelLabel && String(modelLabel).trim()) || '4 Hydrogen',
     thinkingLevel: (thinkingLevel && String(thinkingLevel).trim()) || 'High',
+    autoSubmit: rawAutoSub !== 'false',
   };
 }
 
-export async function saveGeminiModelPrefs({ modelLabel, thinkingLevel } = {}) {
+export async function saveGeminiModelPrefs({ modelLabel, thinkingLevel, autoSubmit } = {}) {
   const cleanModel = String(modelLabel || '').trim() || '4 Hydrogen';
   const cleanThinking = String(thinkingLevel || '').trim() || 'High';
   safeStorageSet('gemini_model_label', cleanModel);
   safeStorageSet('gemini_thinking_level', cleanThinking);
   dbSetSetting('gemini_model_label', cleanModel).catch(() => {});
   dbSetSetting('gemini_thinking_level', cleanThinking).catch(() => {});
-  syncGeminiPrefsToDesktop({ modelLabel: cleanModel, thinkingLevel: cleanThinking });
-  return { modelLabel: cleanModel, thinkingLevel: cleanThinking };
+  const patch = { modelLabel: cleanModel, thinkingLevel: cleanThinking };
+  if (typeof autoSubmit === 'boolean') {
+    const autoSubStr = autoSubmit ? 'true' : 'false';
+    safeStorageSet('gemini_auto_submit', autoSubStr);
+    dbSetSetting('gemini_auto_submit', autoSubStr).catch(() => {});
+    patch.autoSubmit = autoSubmit;
+  }
+  syncGeminiPrefsToDesktop(patch);
+  return patch;
 }
 
 export async function refreshGeminiDigestSettingsCard() {
   const modelInp = document.getElementById('settings-gemini-model');
   const thinkingSel = document.getElementById('settings-gemini-thinking');
+  const autoSubSel = document.getElementById('settings-gemini-autosubmit');
   const listEl = document.getElementById('settings-gemini-notebooks-list');
-  if (!modelInp && !thinkingSel && !listEl) return;
+  if (!modelInp && !thinkingSel && !autoSubSel && !listEl) return;
 
-  const [{ modelLabel, thinkingLevel }, notebooksMap] = await Promise.all([
+  const [{ modelLabel, thinkingLevel, autoSubmit }, notebooksMap] = await Promise.all([
     resolveGeminiModelPrefs(),
     hydrateGeminiNotebooksMapFromCloud(),
   ]);
@@ -1202,6 +1226,9 @@ export async function refreshGeminiDigestSettingsCard() {
   if (thinkingSel) {
     const validOptions = Array.from(thinkingSel.options || []).map(o => o.value);
     thinkingSel.value = validOptions.includes(thinkingLevel) ? thinkingLevel : 'High';
+  }
+  if (autoSubSel) {
+    autoSubSel.value = autoSubmit === false ? 'false' : 'true';
   }
 
   if (listEl) {
@@ -1254,10 +1281,14 @@ export async function refreshGeminiDigestSettingsCard() {
 async function saveGeminiDigestSettingsFromCard() {
   const modelInp = document.getElementById('settings-gemini-model');
   const thinkingSel = document.getElementById('settings-gemini-thinking');
+  const autoSubSel = document.getElementById('settings-gemini-autosubmit');
   const listEl = document.getElementById('settings-gemini-notebooks-list');
 
   const modelLabel = (modelInp?.value || '').trim() || '4 Hydrogen';
   const thinkingLevel = (thinkingSel?.value || '').trim() || 'High';
+  const autoSubmit = autoSubSel
+    ? autoSubSel.value !== 'false'
+    : (safeStorageGet('gemini_auto_submit', 'true') !== 'false');
 
   const nextMap = { ...readLocalGeminiNotebooksMap() };
   if (listEl) {
@@ -1281,11 +1312,12 @@ async function saveGeminiDigestSettingsFromCard() {
   }
 
   const cleanMap = writeLocalGeminiNotebooksMap(nextMap);
-  await saveGeminiModelPrefs({ modelLabel, thinkingLevel });
+  await saveGeminiModelPrefs({ modelLabel, thinkingLevel, autoSubmit });
   dbSetSetting('gemini_subject_notebooks', JSON.stringify(cleanMap)).catch(() => {});
   syncGeminiPrefsToDesktop({
     modelLabel,
     thinkingLevel,
+    autoSubmit,
     subjectNotebooks: cleanMap,
   });
   toast('✓ Gemini Case Digest settings saved');
@@ -2449,9 +2481,11 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
 
     const { subjectId, subjectName } = getSubjectInfoForFolder(activeFolderId);
     const pinnedNotebookUrl = await getPinnedGeminiNotebookForSubject(subjectId);
-    const { modelLabel, thinkingLevel } = await resolveGeminiModelPrefs();
+    const { modelLabel, thinkingLevel, autoSubmit } = await resolveGeminiModelPrefs();
 
-    const autoSubmitPref = false;
+    const autoSubmitPref = opts?.forceAutoSubmit
+      ? true
+      : (typeof autoSubmit === 'boolean' ? autoSubmit : safeStorageGet('gemini_auto_submit', 'true') !== 'false');
     const digestModePref = safeStorageGet('gemini_digest_mode_v2', 'replace') === 'append' ? 'append' : 'replace';
     const autoSendPref = opts?.forceAutoSend
       ? true
@@ -2810,6 +2844,18 @@ export function initSmartCopy() {
     });
   }
 
+  const autoSubGeminiSel = document.getElementById('settings-gemini-autosubmit');
+  if (autoSubGeminiSel) {
+    autoSubGeminiSel.addEventListener('change', () => {
+      const autoSubmit = autoSubGeminiSel.value !== 'false';
+      const autoSubStr = autoSubmit ? 'true' : 'false';
+      safeStorageSet('gemini_auto_submit', autoSubStr);
+      dbSetSetting('gemini_auto_submit', autoSubStr).catch(() => {});
+      syncGeminiPrefsToDesktop({ autoSubmit });
+      toast(autoSubmit ? '✓ Gemini Auto-Submit (Mouse) enabled' : 'Gemini Auto-Submit disabled (manual)');
+    });
+  }
+
   document.getElementById('focusPplxBtn')?.addEventListener('click', (e) => {
     e.stopPropagation();
     if (_pplxMonitorState.provider === 'gemini') {
@@ -2964,7 +3010,9 @@ if (typeof window !== 'undefined') {
       dbSetSetting('gemini_thinking_level', cleanThinking).catch(() => {});
     }
     if (typeof prefs.autoSubmit === 'boolean') {
-      safeStorageSet('gemini_auto_submit', prefs.autoSubmit ? 'true' : 'false');
+      const autoSubStr = prefs.autoSubmit ? 'true' : 'false';
+      safeStorageSet('gemini_auto_submit', autoSubStr);
+      dbSetSetting('gemini_auto_submit', autoSubStr).catch(() => {});
     }
     if (prefs.digestMode === 'replace' || prefs.digestMode === 'append') {
       safeStorageSet('gemini_digest_mode', prefs.digestMode);
