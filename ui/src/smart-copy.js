@@ -2333,15 +2333,12 @@ export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
       }
 
       if (i + 1 < pdfQueue.length && !_batchDigestState.cancelled) {
-        for (let cd = 5; cd >= 1; cd--) {
-          if (_batchDigestState.cancelled) break;
-          updateBatchDigestBanner(
-            `Saved "${pdfItem.name}"! Starting next case (${i + 2}/${pdfQueue.length}) in ${cd}s…`,
-            true,
-            { provider: 'gemini', state: 'awaiting', countLabel: stepLabel }
-          );
-          await new Promise(r => setTimeout(r, 1000));
-        }
+        updateBatchDigestBanner(
+          `Saved "${pdfItem.name}"! Starting next case (${i + 2}/${pdfQueue.length}) in 1.5s…`,
+          true,
+          { provider: 'gemini', state: 'awaiting', countLabel: stepLabel }
+        );
+        await new Promise(r => setTimeout(r, 1500));
       }
     }
 

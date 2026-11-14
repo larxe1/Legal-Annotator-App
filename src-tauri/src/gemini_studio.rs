@@ -700,13 +700,13 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   }
 
   var _verifiedModelKeyOnCurrentPage = '';
-  var _notebookTransitionReadyAt = Date.now() + 1000;
+  var _notebookTransitionReadyAt = Date.now() + 500;
 
   function returnToNotebookHome() {
     var clean = normalizeNotebookUrl(_state.pinnedNotebookUrl) || normalizeNotebookUrl(window.location.href);
     if (clean) {
       _verifiedModelKeyOnCurrentPage = '';
-      _notebookTransitionReadyAt = Date.now() + 1500;
+      _notebookTransitionReadyAt = Date.now() + 600;
       window.location.href = clean;
       return true;
     }
@@ -2116,9 +2116,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     var stableMs = Date.now() - _autoSendStableSince;
-    if (stableMs < 3500) {
-      var secsLeft = Math.max(1, Math.ceil((3500 - stableMs) / 1000));
-      showStatus('Digest complete (' + snap.wordCount + ' words) — auto-sending in ' + secsLeft + 's…', '#4ade80');
+    if (stableMs < 1500) {
+      showStatus('Digest complete (' + snap.wordCount + ' words) — auto-sending in 1.5s…', '#4ade80');
       return;
     }
 
@@ -2267,13 +2266,13 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           if (el) el.textContent = 'Send to Case Digest';
         }, 2400);
       }
-      // Return to pinned normalized Notebook URL after 900ms for batch/next case readiness
+      // Return to pinned normalized Notebook URL after 200ms for batch/next case readiness
       setTimeout(function() {
         var pinnedNorm = normalizeNotebookUrl(_state.pinnedNotebookUrl);
         if (pinnedNorm && window.location.href.replace(/\/+$/, '') !== pinnedNorm) {
           returnToNotebookHome();
         }
-      }, 900);
+      }, 200);
     }
   };
 
@@ -2336,8 +2335,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         _jobTimer = null;
         setTimeout(function() {
           pasteAndMaybeSubmit(false);
-        }, 250);
-      } else if (attempts >= 25) {
+        }, 50);
+      } else if (attempts >= 45) {
         clearInterval(_jobTimer);
         _jobTimer = null;
         sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
@@ -2346,7 +2345,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           emitStudioStatus('error', 'Prompt box missing', 'Gemini "Ask Gemini" box not found — focus Studio and click Paste Case.', true);
         }
       }
-    }, 350);
+    }, 150);
   }
 
   window.__GEMINI_STUDIO_RECEIVE_JOB = function(job) {
@@ -2369,7 +2368,6 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         clearInterval(_jobTimer);
         _jobTimer = null;
       }
-      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1500);
     }
     saveStateCache();
     ensureStudioBar();
@@ -2386,12 +2384,16 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       if (targetPinned && (!isNotebookUrl(window.location.href) || curNorm !== targetPinned || curClean !== targetPinned || hasExistingChat)) {
         if (sessionStorage.getItem('la_gemini_nav_once_job_id') !== String(_state.jobId)) {
           sessionStorage.setItem('la_gemini_nav_once_job_id', String(_state.jobId));
+          _notebookTransitionReadyAt = Date.now() + 600;
           showStatus('Opening "' + (_state.subjectName || 'Subject') + '" Notebook…', '#93c5fd');
           if (returnToNotebookHome()) {
-            setTimeout(function() { processActiveJob(); }, 1600);
+            setTimeout(function() { processActiveJob(); }, 650);
             return;
           }
         }
+      } else {
+        // Already sitting cleanly on the pinned Notebook with no existing chat — paste right away
+        _notebookTransitionReadyAt = 0;
       }
     }
 
@@ -2414,7 +2416,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         updateBarUI();
         if (isNotebookUrl(_lastHref)) {
           if (!isNotebookUrl(prevHref) || normalizeNotebookUrl(prevHref) !== normalizeNotebookUrl(_lastHref)) {
-            _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1500);
+            _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 500);
           }
           processActiveJob();
         }
@@ -2422,11 +2424,11 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     } catch (e) {
       try { console.warn('[GeminiStudio] interval tick error:', e); } catch (_e) {}
     }
-  }, 800);
+  }, 300);
 
   function bootGeminiStudio() {
     try {
-      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 1800);
+      _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 500);
       ensureStudioBar();
       processActiveJob();
     } catch (e) {
@@ -2927,7 +2929,7 @@ pub async fn desktop_open_gemini_studio(
                                         let _ = gw.show();
                                         let _ = gw.unminimize();
                                         let _ = gw.set_focus();
-                                        std::thread::sleep(std::time::Duration::from_millis(80));
+                                        std::thread::sleep(std::time::Duration::from_millis(40));
                                         if let Ok(inner_pos) = gw.inner_position() {
                                             let win_scale = gw.scale_factor().unwrap_or(1.0);
                                             let scale = if js_dpr > 0.2 { js_dpr } else { win_scale };
@@ -2939,12 +2941,12 @@ pub async fn desktop_open_gemini_studio(
                                                 screen_x, screen_y,
                                             );
                                             std::thread::sleep(std::time::Duration::from_millis(
-                                                150,
+                                                70,
                                             ));
                                             let _ = gw.set_focus();
                                             crate::perform_native_os_ctrl_v();
                                             std::thread::sleep(std::time::Duration::from_millis(
-                                                150,
+                                                80,
                                             ));
                                             let _ = gw.set_focus();
                                             crate::perform_native_os_key_space();
@@ -2952,7 +2954,7 @@ pub async fn desktop_open_gemini_studio(
                                         }
                                     }
                                 }
-                                std::thread::sleep(std::time::Duration::from_millis(100));
+                                std::thread::sleep(std::time::Duration::from_millis(40));
                                 if let Some(gw) = app_paste.get_webview_window("gemini-studio") {
                                     let js = format!(
                                         "window.__onNativePasteSubmitDone && window.__onNativePasteSubmitDone({});",
