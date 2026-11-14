@@ -1389,6 +1389,429 @@ body.sidebar-collapsed #app:not(.sidebar-autohide):not([data-rail-autohide="true
   line-height: 1.3;
   overflow-wrap: break-word;
 }
+
+/* ── Study Desk Calendar View Toggle & Google Calendar Grid ── */
+.cal-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+[data-skin="casebook"] .cal-view-toggle {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.cal-view-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 5px 10px;
+  border-radius: calc(var(--radius-s) - 1px);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out);
+}
+.cal-view-btn:hover {
+  color: var(--ink);
+  background: var(--surface);
+}
+.cal-view-btn.is-active {
+  background: var(--surface-paper);
+  color: var(--accent, var(--gold));
+  border-color: var(--border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+[data-skin="casebook"] .cal-view-btn.is-active {
+  background: var(--surface);
+  color: var(--accent);
+  border-color: var(--border-strong);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+#btn-sync-gcal {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.gcal-sync-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-subtle, var(--ink-muted));
+  opacity: 0.65;
+  flex-shrink: 0;
+  transition: background var(--dur-fast), box-shadow var(--dur-fast), opacity var(--dur-fast);
+}
+.gcal-sync-dot.is-connected {
+  background: var(--green, #4ade80);
+  opacity: 1;
+  box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.22);
+}
+[data-skin="casebook"] .gcal-sync-dot.is-connected {
+  background: var(--cb-sage, #7fa389);
+  box-shadow: 0 0 0 2px rgba(127, 163, 137, 0.25);
+}
+
+.gcal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+}
+[data-skin="casebook"] .gcal-toolbar {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.gcal-nav-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.gcal-nav-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: var(--radius-s);
+  background: var(--surface-paper);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--dur-fast), color var(--dur-fast), background var(--dur-fast);
+}
+[data-skin="casebook"] .gcal-nav-btn {
+  background: var(--surface-2);
+}
+.gcal-nav-btn:hover {
+  border-color: var(--accent, var(--gold));
+  color: var(--accent, var(--gold));
+  background: var(--accent-soft);
+}
+.gcal-range-title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.gcal-span-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.gcal-span-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: calc(var(--radius-s) - 1px);
+  cursor: pointer;
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
+}
+.gcal-span-btn:hover {
+  color: var(--ink);
+}
+.gcal-span-btn.is-active {
+  background: var(--surface-paper);
+  color: var(--accent, var(--gold));
+  border-color: var(--border);
+}
+[data-skin="casebook"] .gcal-span-btn.is-active {
+  background: var(--surface);
+  color: var(--accent);
+  border-color: var(--border-strong);
+}
+.gcal-filter-pill {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  color: var(--accent, var(--gold));
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--dur-fast), background var(--dur-fast), color var(--dur-fast);
+}
+.gcal-filter-pill:hover {
+  border-color: var(--accent, var(--gold));
+}
+[data-skin="casebook"] .gcal-filter-pill {
+  background: var(--cb-accent-tint, var(--accent-soft));
+  border-color: var(--cb-accent-rule, var(--border));
+  color: var(--cb-accent-text, var(--accent));
+}
+
+.cal-grid.gcal-grid,
+.gcal-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--gcal-cols, 5), minmax(0, 1fr));
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+  background: var(--surface-paper);
+}
+[data-skin="casebook"] .cal-grid.gcal-grid,
+[data-skin="casebook"] .gcal-grid {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.gcal-day-hdr {
+  padding: 7px 8px;
+  text-align: center;
+  font-family: var(--font-num);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-muted);
+  background: var(--surface);
+  box-shadow: inset -1px -1px 0 var(--border);
+}
+[data-skin="casebook"] .gcal-day-hdr {
+  background: var(--surface-2);
+  color: var(--ink-muted);
+}
+.gcal-cell {
+  min-width: 0;
+  min-height: 108px;
+  padding: 6px 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--surface-paper);
+  box-shadow: inset -1px -1px 0 var(--border);
+  transition: background var(--dur-fast);
+}
+[data-skin="casebook"] .gcal-cell {
+  background: var(--surface);
+}
+.gcal-cell--outside {
+  background: var(--surface-2);
+  opacity: 0.68;
+}
+[data-skin="casebook"] .gcal-cell--outside {
+  background: var(--cb-receded-bg, var(--surface-2));
+  opacity: 0.62;
+}
+.gcal-cell--today {
+  background: var(--accent-soft);
+}
+[data-skin="casebook"] .gcal-cell--today {
+  background: rgba(221, 108, 69, 0.09);
+}
+.gcal-date-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  line-height: 1;
+}
+.gcal-cell--today .gcal-date-num {
+  background: var(--accent, var(--gold));
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.gcal-cell--outside .gcal-date-num {
+  color: var(--ink-subtle, var(--ink-muted));
+}
+.gcal-cell-events {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cal-item.gcal-chip,
+[data-skin="casebook"] .cal-item.gcal-chip {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 5px;
+  margin-bottom: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--spine, var(--accent));
+  border-top: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  box-shadow: none;
+  font-size: 11px;
+  line-height: 1.25;
+  transform: none;
+}
+[data-skin="casebook"] .cal-item.gcal-chip {
+  background: var(--surface-2);
+  border-color: var(--border);
+  border-left: 3px solid var(--spine, var(--accent));
+}
+.cal-item.gcal-chip:hover,
+.cal-item.gcal-chip:focus-within {
+  transform: none;
+  border-color: var(--border-strong);
+  background: var(--surface-paper);
+}
+[data-skin="casebook"] .cal-item.gcal-chip:hover,
+[data-skin="casebook"] .cal-item.gcal-chip:focus-within {
+  background: var(--surface-pressed, var(--surface-2));
+  border-color: var(--border-strong);
+}
+.gcal-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--spine, var(--accent));
+  flex: 0 0 auto;
+}
+.gcal-chip-time {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent, var(--gold));
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.cal-item.gcal-chip strong.gcal-chip-title,
+.cal-item.gcal-chip > strong {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cal-item.gcal-chip .gn-cal-actions.gcal-chip-acts {
+  flex: 0 0 100%;
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out),
+              max-height var(--dur-fast) var(--ease-out),
+              margin-top var(--dur-fast) var(--ease-out),
+              padding-top var(--dur-fast) var(--ease-out);
+}
+.cal-item.gcal-chip:hover .gn-cal-actions.gcal-chip-acts,
+.cal-item.gcal-chip:focus-within .gn-cal-actions.gcal-chip-acts {
+  max-height: 44px;
+  opacity: 1;
+  pointer-events: auto;
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.cal-item.gcal-chip .gn-cal-actions.gcal-chip-acts .gn-cal-open-binder,
+.cal-item.gcal-chip .gn-cal-actions.gcal-chip-acts .gn-cal-open-syllabus {
+  font-size: 10px;
+  padding: 1px 4px;
+}
+.cal-item.gcal-chip .gn-cal-actions.gcal-chip-acts .gn-cal-note-btn {
+  font-size: 10px;
+  padding: 1px 5px;
+}
+.cal-item.gcal-chip .gn-cal-actions.gcal-chip-acts .cal-edit-btn {
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+}
+
+@container studydesk (max-width: 760px) {
+  .cal-grid.gcal-grid,
+  .gcal-grid {
+    grid-template-columns: repeat(var(--gcal-cols, 5), minmax(120px, 1fr));
+    overflow-x: auto;
+  }
+  .gcal-cell {
+    min-height: 92px;
+    padding: 5px 5px 7px;
+  }
+  .gcal-toolbar {
+    padding: 7px 8px;
+    gap: 8px;
+  }
+}
+@media (max-width: 760px) {
+  .cal-grid.gcal-grid,
+  .gcal-grid {
+    grid-template-columns: repeat(var(--gcal-cols, 5), minmax(120px, 1fr));
+    overflow-x: auto;
+  }
+  .gcal-cell {
+    min-height: 92px;
+    padding: 5px 5px 7px;
+  }
+  .gcal-toolbar {
+    padding: 7px 8px;
+    gap: 8px;
+  }
+}
 .cal-quote {
   margin: 22px auto 0;
   font-size: 0.86rem;

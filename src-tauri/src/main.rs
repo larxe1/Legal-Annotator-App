@@ -49,6 +49,9 @@ pub(crate) struct AppState {
     pub(crate) syllabus_oauth_path: PathBuf,
     pub(crate) syllabus_oauth_token: Arc<Mutex<Option<String>>>,
     pub(crate) syllabus_oauth_status: Arc<Mutex<String>>,
+    pub(crate) calendar_oauth_path: PathBuf,
+    pub(crate) calendar_oauth_token: Arc<Mutex<Option<String>>>,
+    pub(crate) calendar_oauth_status: Arc<Mutex<String>>,
 }
 
 #[derive(Serialize)]
@@ -1182,20 +1185,42 @@ async fn desktop_start_google_oauth(
     state: tauri::State<'_, AppState>,
     silent: Option<bool>,
     for_syllabus: Option<bool>,
+    for_calendar: Option<bool>,
     login_hint: Option<String>,
     force_refresh: Option<bool>,
 ) -> Result<OAuthPollResponse, String> {
     let is_syllabus = for_syllabus.unwrap_or(false);
+    let is_calendar = for_calendar.unwrap_or(false);
     let is_silent = silent.unwrap_or(false);
     let is_force = force_refresh.unwrap_or(false);
 
-    let (target_path, target_token_arc, target_status_arc, default_email, win_label) = if is_syllabus {
+    let (
+        target_path,
+        target_token_arc,
+        target_status_arc,
+        default_email,
+        win_label,
+        oauth_scope,
+        win_title,
+    ) = if is_calendar {
+        (
+            state.calendar_oauth_path.clone(),
+            Arc::clone(&state.calendar_oauth_token),
+            Arc::clone(&state.calendar_oauth_status),
+            "ec.mataac@gmail.com",
+            "google-auth-calendar",
+            "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.readonly%20email%20profile",
+            "Sign in with Google Calendar — Legal Annotator",
+        )
+    } else if is_syllabus {
         (
             state.syllabus_oauth_path.clone(),
             Arc::clone(&state.syllabus_oauth_token),
             Arc::clone(&state.syllabus_oauth_status),
             "ermataac@up.edu.ph",
             "google-auth-syllabus",
+            "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile",
+            "Sign in with UP Mail / Gmail for Syllabus Links — Legal Annotator",
         )
     } else {
         (
@@ -1204,6 +1229,8 @@ async fn desktop_start_google_oauth(
             Arc::clone(&state.oauth_status),
             "ec.mataac@gmail.com",
             "google-auth",
+            "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile",
+            "Sign in with Google (Database Drive) — Legal Annotator",
         )
     };
 
@@ -1247,7 +1274,8 @@ async fn desktop_start_google_oauth(
     };
 
     let auth_url_str = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=3&client_id=572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fnotetaking-app.pages.dev%3Fid%3Dauth123456&prompt={}&login_hint={}&response_type=token&include_granted_scopes=true",
+        "https://accounts.google.com/o/oauth2/v2/auth?gsiwebsdk=3&client_id=572567924584-qj0m9fkkkjsrgva6dj32or7esbgkqvql.apps.googleusercontent.com&scope={}&redirect_uri=storagerelay%3A%2F%2Fhttps%2Fnotetaking-app.pages.dev%3Fid%3Dauth123456&prompt={}&login_hint={}&response_type=token&include_granted_scopes=true",
+        oauth_scope,
         prompt_param,
         url_encode_param(&hint_email)
     );
@@ -1261,11 +1289,7 @@ async fn desktop_start_google_oauth(
     let hint_for_save = hint_email.clone();
 
     let mut builder = WebviewWindowBuilder::new(&app, win_label, WebviewUrl::External(parsed_url))
-        .title(if is_syllabus {
-            "Sign in with UP Mail / Gmail for Syllabus Links — Legal Annotator"
-        } else {
-            "Sign in with Google (Database Drive) — Legal Annotator"
-        })
+        .title(win_title)
         .inner_size(520.0, 680.0)
         .center()
         .visible(!is_silent)
@@ -1356,9 +1380,17 @@ async fn desktop_poll_google_oauth(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     for_syllabus: Option<bool>,
+    for_calendar: Option<bool>,
 ) -> Result<OAuthPollResponse, String> {
     let is_syllabus = for_syllabus.unwrap_or(false);
-    let (target_token_arc, target_status_arc, win_label) = if is_syllabus {
+    let is_calendar = for_calendar.unwrap_or(false);
+    let (target_token_arc, target_status_arc, win_label) = if is_calendar {
+        (
+            &state.calendar_oauth_token,
+            &state.calendar_oauth_status,
+            "google-auth-calendar",
+        )
+    } else if is_syllabus {
         (
             &state.syllabus_oauth_token,
             &state.syllabus_oauth_status,
@@ -1402,8 +1434,17 @@ async fn desktop_poll_google_oauth(
 async fn desktop_clear_google_oauth(
     state: tauri::State<'_, AppState>,
     for_syllabus: Option<bool>,
+    for_calendar: Option<bool>,
 ) -> Result<bool, String> {
-    if for_syllabus.unwrap_or(false) {
+    if for_calendar.unwrap_or(false) {
+        if let Ok(mut g) = state.calendar_oauth_token.lock() {
+            *g = None;
+        }
+        if let Ok(mut st) = state.calendar_oauth_status.lock() {
+            *st = "idle".into();
+        }
+        let _ = fs::remove_file(&state.calendar_oauth_path);
+    } else if for_syllabus.unwrap_or(false) {
         if let Ok(mut g) = state.syllabus_oauth_token.lock() {
             *g = None;
         }
@@ -1442,6 +1483,32 @@ async fn desktop_open_url(url: String) -> Result<bool, String> {
     {
         Err("Unsupported OS".into())
     }
+}
+
+#[tauri::command]
+async fn desktop_fetch_ical_url(url: String) -> Result<String, String> {
+    let trimmed = url.trim().to_string();
+    if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
+        return Err("Only http/https iCal URLs are allowed".into());
+    }
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+    cmd.args(["-L", "--silent", "--show-error", "--max-time", "20", &trimmed]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let out = cmd.output().map_err(|e| format!("Failed to run curl: {}", e))?;
+    if !out.status.success() {
+        let err_str = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err_str.is_empty() { "Failed to fetch iCal URL".into() } else { err_str });
+    }
+    let body = String::from_utf8_lossy(&out.stdout).to_string();
+    if !body.contains("BEGIN:VCALENDAR") {
+        return Err("The URL did not return a valid iCal (.ics) calendar feed.".into());
+    }
+    Ok(body)
 }
 
 static PPLX_JOB_STATE: std::sync::OnceLock<Arc<Mutex<serde_json::Value>>> = std::sync::OnceLock::new();
@@ -4785,6 +4852,7 @@ fn main() {
     let page_vault_dir = data_dir.join("page_vault");
     let oauth_path = data_dir.join("google_oauth.json");
     let syllabus_oauth_path = data_dir.join("syllabus_oauth.json");
+    let calendar_oauth_path = data_dir.join("calendar_oauth.json");
     let _ = fs::create_dir_all(&pdf_cache_dir);
     let _ = fs::create_dir_all(&page_vault_dir);
     let _ = init_sqlite_mirror(&sqlite_path);
@@ -4803,6 +4871,13 @@ fn main() {
         "idle".to_string()
     };
 
+    let initial_cal_tok = load_saved_oauth_token(&calendar_oauth_path);
+    let initial_cal_status = if initial_cal_tok.is_some() {
+        "success".to_string()
+    } else {
+        "idle".to_string()
+    };
+
     let app_state = AppState {
         pdfium: Mutex::new(PdfiumHolder::new(&data_dir)),
         sqlite_path,
@@ -4814,6 +4889,9 @@ fn main() {
         syllabus_oauth_path,
         syllabus_oauth_token: Arc::new(Mutex::new(initial_syl_tok)),
         syllabus_oauth_status: Arc::new(Mutex::new(initial_syl_status)),
+        calendar_oauth_path,
+        calendar_oauth_token: Arc::new(Mutex::new(initial_cal_tok)),
+        calendar_oauth_status: Arc::new(Mutex::new(initial_cal_status)),
     };
 
     tauri::Builder::default()
@@ -4860,6 +4938,7 @@ fn main() {
             desktop_poll_google_oauth,
             desktop_clear_google_oauth,
             desktop_open_url,
+            desktop_fetch_ical_url,
             desktop_get_perplexity_prefs,
             desktop_save_perplexity_prefs,
             desktop_open_perplexity_studio,

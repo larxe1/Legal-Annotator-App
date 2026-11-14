@@ -1,7 +1,7 @@
 {
-    "version":  "1.21.1",
-    "build":  53,
-    "updatedAt":  "2026-11-14T01:59:44Z",
-    "notes":  "Fix Print Studio multi-page case splitting, open selected folder directly in Print Studio, exclude empty folders, and add direct page editing and page deletion with automatic page and TOC renumbering.",
+    "version":  "1.22.0",
+    "build":  54,
+    "updatedAt":  "2026-11-14T05:55:04Z",
+    "notes":  "Add Study Desk Google Calendar sync (OAuth and iCal feed with smart college-class filter) and Weekly Docket / Calendar Grid view toggle, and remove obsolete 113: Labor 1 default classes.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

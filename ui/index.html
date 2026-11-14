@@ -600,11 +600,6 @@
                   <div class="cal-time">10:00 - 12:00 PM</div>
                   Atty. Jose Martin Loon<br>127
                 </div>
-                <div class="cal-item">
-                  <strong>113: Labor 1</strong>
-                  <div class="cal-time">3:00 - 4:30 PM</div>
-                  Atty. E. Leo Battad<br>221
-                </div>
               </div>
               <div class="cal-day">
                 <div class="cal-day-title">WED</div>
@@ -620,11 +615,6 @@
                   <strong>104: Torts and Damages</strong>
                   <div class="cal-time">8:00 - 9:30 AM</div>
                   Atty. Ramon Quintin Allado<br>321
-                </div>
-                <div class="cal-item">
-                  <strong>113: Labor 1</strong>
-                  <div class="cal-time">3:00 - 4:30 PM</div>
-                  Atty. E. Leo Battad<br>221
                 </div>
               </div>
               <div class="cal-day">
@@ -1110,6 +1100,76 @@
 
     <div class="modal-acts" style="margin-top:12px; display:flex; justify-content:flex-end;">
       <button class="btn-sec" data-close="mo-edit-schedule">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sync Google Calendar Modal -->
+<div class="modal-ov" id="mo-sync-gcal">
+  <div class="modal-box" style="width:540px; max-width:94vw; max-height:90vh; display:flex; flex-direction:column;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--gold); display:flex; align-items:center; gap:8px;">
+        <svg class="icon" aria-hidden="true"><use href="#i-sync"/></svg>
+        <span>Sync Google Calendar</span>
+      </h3>
+      <button type="button" class="btn-sec" data-close="mo-sync-gcal" style="padding:4px 8px;" aria-label="Close">
+        <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+      </button>
+    </div>
+
+    <div id="gcal-sync-status-banner" style="background:var(--surface-2); border:1px solid var(--border, var(--rule)); border-radius:7px; padding:10px 12px; font-size:12px; color:var(--ink-muted, var(--muted)); margin-bottom:12px;">
+      Not connected to Google Calendar yet. Sign in with Google or link a private iCal (.ics) feed below.
+    </div>
+
+    <!-- Google OAuth Sync -->
+    <div style="background:var(--surface-2); border:1px solid var(--border, var(--rule)); border-radius:8px; padding:12px; margin-bottom:10px;">
+      <div style="font-size:11px; font-weight:700; color:var(--ink-muted, var(--muted)); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Google Account (Live Sync)</div>
+      <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+        <button type="button" id="gcal-btn-oauth-sync" class="btn-gold" style="font-size:12px; padding:7px 12px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">
+          <svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg>
+          <span>Sign in &amp; Sync Google Calendar</span>
+        </button>
+        <button type="button" id="gcal-btn-sync-now" class="btn-sec" style="font-size:11.5px; padding:7px 10px; display:inline-flex; align-items:center; gap:5px;">
+          <svg class="icon" aria-hidden="true"><use href="#i-sync"/></svg>
+          <span>Sync Now</span>
+        </button>
+        <button type="button" id="gcal-btn-disconnect" class="btn-sec" style="font-size:11.5px; padding:7px 10px; color:var(--red);">Disconnect</button>
+      </div>
+    </div>
+
+    <!-- iCal URL / .ics File Fallback -->
+    <div style="background:var(--surface-2); border:1px solid var(--border, var(--rule)); border-radius:8px; padding:12px; margin-bottom:10px;">
+      <label for="gcal-input-ical-url" style="display:block; font-size:11px; font-weight:700; color:var(--ink-muted, var(--muted)); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Secret iCal (.ics) URL or Local File</label>
+      <div style="display:flex; gap:6px; margin-bottom:8px;">
+        <input type="url" id="gcal-input-ical-url" placeholder="https://calendar.google.com/calendar/ical/.../basic.ics" style="flex:1; min-width:0; padding:7px 9px; font-size:12px; background:var(--surface-paper); border:1px solid var(--border, var(--rule)); color:var(--ink); border-radius:5px; box-sizing:border-box;">
+        <button type="button" id="gcal-btn-save-ical" class="btn-sec" style="font-size:11.5px; padding:7px 10px; white-space:nowrap;">Save &amp; Sync URL</button>
+      </div>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <button type="button" id="gcal-btn-import-ics" class="btn-sec" style="font-size:11.5px; padding:6px 10px; display:inline-flex; align-items:center; gap:5px;">
+          <svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>
+          <span>Import .ics File</span>
+        </button>
+        <input type="file" id="gcal-input-ics-file" accept=".ics,text/calendar" style="display:none;">
+        <span style="font-size:11px; color:var(--ink-muted, var(--muted));">Supports Google Calendar secret address or exported .ics</span>
+      </div>
+    </div>
+
+    <!-- College-Only Filter -->
+    <div style="background:var(--surface-2); border:1px solid var(--border, var(--rule)); border-radius:8px; padding:12px; margin-bottom:10px;">
+      <label style="display:flex; align-items:flex-start; gap:8px; font-size:12px; color:var(--ink); cursor:pointer; margin-bottom:8px;">
+        <input type="checkbox" id="gcal-chk-college-only" checked style="margin-top:2px; accent-color:var(--accent, var(--gold));">
+        <span>Ignore non-college events (holidays, birthdays, personal events)</span>
+      </label>
+      <label for="gcal-input-extra-ignore" style="display:block; font-size:11px; font-weight:600; color:var(--ink-muted, var(--muted)); margin-bottom:4px;">Extra Keywords to Ignore (comma-separated, optional)</label>
+      <input type="text" id="gcal-input-extra-ignore" placeholder="e.g. org meeting, webinar, gym" style="width:100%; padding:6px 8px; font-size:12px; background:var(--surface-paper); border:1px solid var(--border, var(--rule)); color:var(--ink); border-radius:5px; box-sizing:border-box;">
+    </div>
+
+    <!-- Sync Preview -->
+    <div style="font-size:11px; font-weight:700; color:var(--ink-muted, var(--muted)); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Sync Summary</div>
+    <div id="gcal-sync-preview" style="flex:1; overflow-y:auto; min-height:72px; max-height:170px; background:var(--surface-paper); border:1px solid var(--border, var(--rule)); border-radius:7px; padding:9px 11px; font-size:11.5px; color:var(--ink-muted, var(--muted)); line-height:1.45;"></div>
+
+    <div class="modal-acts" style="margin-top:12px; display:flex; justify-content:flex-end;">
+      <button type="button" class="btn-sec" data-close="mo-sync-gcal">Done</button>
     </div>
   </div>
 </div>
