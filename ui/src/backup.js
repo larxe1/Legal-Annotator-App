@@ -64,6 +64,18 @@ async function _ensureBackupFolder() {
   return data.id;
 }
 
+// ── Paginated query helper (prevents PostgREST 1,000-row truncation) ──
+async function _fetchAllRows(makeQuery, pageSize = 1000) {
+  const all = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await makeQuery().range(from, from + pageSize - 1);
+    if (error) return { data: all, error };
+    if (data && data.length) all.push(...data);
+    if (!data || data.length < pageSize) break;
+  }
+  return { data: all, error: null };
+}
+
 // ── Collect ALL data from Supabase ──
 async function _collectData() {
   const [
@@ -79,17 +91,17 @@ async function _collectData() {
     { data: dictionary },
     appSettingsRes,
   ] = await Promise.all([
-    _db.from('subjects').select('*').order('created_at'),
-    _db.from('folders').select('*').order('created_at'),
-    _db.from('pdf_files').select('*').order('created_at'),
-    _db.from('color_categories').select('*').order('created_at'),
-    _db.from('annotations').select('*').order('created_at'),
-    _db.from('annotation_notes').select('*').order('order_index'),
-    _db.from('drawings').select('*'),
-    _db.from('pdf_bookmarks').select('*').order('page'),
-    _db.from('pdf_notes').select('*'),
-    _db.from('dictionary').select('*').order('word'),
-    _db.from('app_settings').select('*').then(r => r, () => ({ data: [] })),
+    _fetchAllRows(() => _db.from('subjects').select('*').order('created_at').order('id')),
+    _fetchAllRows(() => _db.from('folders').select('*').order('created_at').order('id')),
+    _fetchAllRows(() => _db.from('pdf_files').select('*').order('created_at').order('id')),
+    _fetchAllRows(() => _db.from('color_categories').select('*').order('created_at').order('id')),
+    _fetchAllRows(() => _db.from('annotations').select('*').order('created_at').order('id')),
+    _fetchAllRows(() => _db.from('annotation_notes').select('*').order('order_index').order('id')),
+    _fetchAllRows(() => _db.from('drawings').select('*').order('id')),
+    _fetchAllRows(() => _db.from('pdf_bookmarks').select('*').order('page').order('id')),
+    _fetchAllRows(() => _db.from('pdf_notes').select('*').order('pdf_id')),
+    _fetchAllRows(() => _db.from('dictionary').select('*').order('word')),
+    _fetchAllRows(() => _db.from('app_settings').select('*').order('key')).then(r => r, () => ({ data: [] })),
   ]);
 
   const appSettings = Array.isArray(appSettingsRes?.data) ? [...appSettingsRes.data] : [];

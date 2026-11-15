@@ -27,6 +27,22 @@ export const db = supabase.createClient(SURL, SKEY);
 
 const ARCHIVED_SUBJECTS_SETTING_KEY = 'archived_subjects_v1';
 
+/**
+ * Fetch every row from a Supabase select query by paging in 1,000-row slices
+ * so PostgREST's default max_rows=1000 never silently truncates large tables.
+ * Callers should include a deterministic .order(...) on makeQuery().
+ */
+export async function dbFetchAll(makeQuery, pageSize = 1000) {
+  const all = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await makeQuery().range(from, from + pageSize - 1);
+    if (error) return { data: null, error };
+    if (data && data.length) all.push(...data);
+    if (!data || data.length < pageSize) break;
+  }
+  return { data: all, error: null };
+}
+
 /** Replace S.archivedSubjects from an array of IDs and cache to localStorage. */
 export function applyArchivedSubjectsList(ids) {
   const cleanIds = Array.isArray(ids)
@@ -63,10 +79,10 @@ export async function dbLoad(retries = 3) {
   try {
     if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
     const [s, f, p, c, arch] = await Promise.all([
-      db.from('subjects').select('*').order('created_at'),
-      db.from('folders').select('*').order('sort_order').order('created_at'),
-      db.from('pdf_files').select('*').order('created_at'),
-      db.from('color_categories').select('*').order('created_at'),
+      dbFetchAll(() => db.from('subjects').select('*').order('created_at').order('id')),
+      dbFetchAll(() => db.from('folders').select('*').order('sort_order').order('created_at').order('id')),
+      dbFetchAll(() => db.from('pdf_files').select('*').order('created_at').order('id')),
+      dbFetchAll(() => db.from('color_categories').select('*').order('created_at').order('id')),
       db.from('app_settings').select('value').eq('key', ARCHIVED_SUBJECTS_SETTING_KEY).maybeSingle().then(r => r, err => ({ error: err })),
     ]);
     const firstErr = s.error || f.error || p.error || c.error;
@@ -82,9 +98,14 @@ export async function dbLoad(retries = 3) {
       !remoteFolders.some(rf => rf.id === lf.id) &&
       (Date.now() - (lf._created_locally_at || 0) < 60000)
     );
+    const remotePdfs = p.data || [];
+    const localPendingPdfs = (S.pdfs || []).filter(lp =>
+      !remotePdfs.some(rp => rp.id === lp.id) &&
+      (Date.now() - (lp._created_locally_at || 0) < 60000)
+    );
     S.subjects   = s.data || [];
     S.folders    = [...remoteFolders, ...localPendingFolds];
-    S.pdfs       = p.data || [];
+    S.pdfs       = [...remotePdfs, ...localPendingPdfs];
     S.colorCats  = c.data || [];
 
     if (arch && !arch.error && arch.data && typeof arch.data.value === 'string') {
@@ -182,8 +203,8 @@ export async function dbLoadAnnCounts() {
   try {
     if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
     const [annRes, notesRes] = await Promise.all([
-      db.from('annotations').select('pdf_file_id'),
-      db.from('pdf_notes').select('pdf_id, digest').not('digest', 'is', null).neq('digest', ''),
+      dbFetchAll(() => db.from('annotations').select('pdf_file_id').order('id')),
+      dbFetchAll(() => db.from('pdf_notes').select('pdf_id, digest').not('digest', 'is', null).neq('digest', '').order('pdf_id')),
     ]);
     if (annRes.error || notesRes.error) throw annRes.error || notesRes.error;
     if (annRes.data) {
@@ -414,9 +435,15 @@ export async function dbRegisterPDF(folder_id, name, drive_file_id, linked_pdf_i
   const m2 = sibPdfs.reduce((max, p) => Math.max(max, p.sort_order || 0), -1);
   const sort_order = Math.max(m1, m2) + 1;
 
-  const rec = { id, folder_id, name, drive_file_id, linked_pdf_id, storage_path: '', sort_order };
-  await safeDbWrite(db, 'pdf_files', 'upsert', rec);
+  const dbPayload = { id, folder_id, name, drive_file_id, linked_pdf_id, storage_path: '', sort_order };
+  const rec = { ...dbPayload, _created_locally_at: Date.now() };
   S.pdfs.push(rec);
+  try {
+    const snap = JSON.parse(safeStorageGet('local_lib_snapshot', '{}') || '{}');
+    snap.pdfs = S.pdfs;
+    safeStorageSet('local_lib_snapshot', JSON.stringify(snap));
+  } catch {}
+  await safeDbWrite(db, 'pdf_files', 'upsert', dbPayload);
   broadcastSync({ type: 'LIBRARY_CHANGED' });
   if (linked_pdf_id) {
     driveSyncPdfLocation(rec).catch(() => {});

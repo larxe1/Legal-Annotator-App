@@ -6,7 +6,7 @@
 // ═══════════════════════════════════════════════
 
 import { S } from './state.js';
-import { db, dbLoad } from './db.js';
+import { db, dbLoad, dbFetchAll } from './db.js';
 import { driveFetchPDF } from './drive.js';
 import { isPDFCached, deleteCachedPDF } from './pdfcache.js';
 import {
@@ -240,16 +240,16 @@ async function _downloadNotesBatch(targetPdfIds = null, onProgress = null) {
 
   // Helper to fetch in chunks if filtering by IDs, or full table if downloading all
   const CHUNK = 150;
-  async function fetchRows(table, col, selectCols = '*') {
+  async function fetchRows(table, col, selectCols = '*', orderCol = 'id') {
     if (!targetPdfIds) {
-      const { data, error } = await db.from(table).select(selectCols);
+      const { data, error } = await dbFetchAll(() => db.from(table).select(selectCols).order(orderCol));
       if (error) throw error;
       return data || [];
     }
     const out = [];
     for (let i = 0; i < queryIds.length; i += CHUNK) {
       const slice = queryIds.slice(i, i + CHUNK);
-      const { data, error } = await db.from(table).select(selectCols).in(col, slice);
+      const { data, error } = await dbFetchAll(() => db.from(table).select(selectCols).in(col, slice).order(orderCol));
       if (error) throw error;
       if (data) out.push(...data);
     }
@@ -259,31 +259,31 @@ async function _downloadNotesBatch(targetPdfIds = null, onProgress = null) {
   // 2. Fetch pdf_notes (with fallback if digest column doesn't exist)
   let notesRows = [];
   try {
-    notesRows = await fetchRows('pdf_notes', 'pdf_id', 'pdf_id, content, digest');
+    notesRows = await fetchRows('pdf_notes', 'pdf_id', 'pdf_id, content, digest', 'pdf_id');
   } catch {
-    notesRows = await fetchRows('pdf_notes', 'pdf_id', 'pdf_id, content').catch(() => []);
+    notesRows = await fetchRows('pdf_notes', 'pdf_id', 'pdf_id, content', 'pdf_id').catch(() => []);
   }
 
   if (onProgress) onProgress('Downloading highlights & annotation notes…');
-  const annRows = await fetchRows('annotations', 'pdf_file_id', '*').catch(() => []);
+  const annRows = await fetchRows('annotations', 'pdf_file_id', '*', 'id').catch(() => []);
   const annIds = annRows.map(a => a.id).filter(Boolean);
   let annNoteRows = [];
   if (annIds.length) {
     if (!targetPdfIds) {
-      const { data } = await db.from('annotation_notes').select('*').order('order_index');
+      const { data } = await dbFetchAll(() => db.from('annotation_notes').select('*').order('order_index').order('id'));
       annNoteRows = data || [];
     } else {
       for (let i = 0; i < annIds.length; i += CHUNK) {
         const slice = annIds.slice(i, i + CHUNK);
-        const { data } = await db.from('annotation_notes').select('*').in('annotation_id', slice).order('order_index');
+        const { data } = await dbFetchAll(() => db.from('annotation_notes').select('*').in('annotation_id', slice).order('order_index').order('id'));
         if (data) annNoteRows.push(...data);
       }
     }
   }
 
   if (onProgress) onProgress('Downloading bookmarks & drawings…');
-  const bmRows = await fetchRows('pdf_bookmarks', 'pdf_file_id', '*').catch(() => []);
-  const drawRows = await fetchRows('drawings', 'pdf_file_id', '*').catch(() => []);
+  const bmRows = await fetchRows('pdf_bookmarks', 'pdf_file_id', '*', 'id').catch(() => []);
+  const drawRows = await fetchRows('drawings', 'pdf_file_id', '*', 'id').catch(() => []);
 
   // Group by pdfId
   const notesByPdf = new Map();
