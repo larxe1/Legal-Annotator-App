@@ -2241,12 +2241,10 @@ export async function runGeminiDigestForPdf(pdfItem) {
 }
 
 /**
- * Right-click handler for a Folder/Subfolder in the Library sidebar:
- * Automatically processes every PDF in the folder one-by-one in the Subject's
- * Gemini Notebook, waits for each digest to finish and save into Case Digest,
- * and moves to the next PDF automatically.
+ * Shared batch Gemini Digest runner for an ordered list of PDFs.
+ * Processes each PDF sequentially in Gemini Studio / Web, waiting for save before advancing.
  */
-export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
+async function _runBatchGeminiDigestQueue(pdfQueue, startToastMsg) {
   if (_batchDigestState.running) {
     toast(_batchDigestState.provider === 'gemini'
       ? 'A Batch Gemini Digest is already running.'
@@ -2261,13 +2259,7 @@ export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
     toast('A Gemini Case Digest is already in progress.');
     return;
   }
-  const { folders, pdfQueue } = collectPdfQueueForFolders(foldersOrFolder);
-  if (!folders.length) return;
-
-  if (!pdfQueue.length) {
-    toast('No PDFs found inside this folder/subfolder to digest.');
-    return;
-  }
+  if (!Array.isArray(pdfQueue) || !pdfQueue.length) return;
 
   const sharedWebWin = preOpenGeminiWebWindow();
   _batchDigestState.running = true;
@@ -2278,8 +2270,7 @@ export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
   _batchDigestState.countLabel = `0 / ${pdfQueue.length}`;
 
   let completedCount = 0;
-  const folderTitle = folders.map(f => f.name).join(', ');
-  toast(`Starting Batch Gemini Digest for ${pdfQueue.length} PDF${pdfQueue.length === 1 ? '' : 's'} in "${folderTitle}"…`);
+  toast(startToastMsg);
 
   try {
     for (let i = 0; i < pdfQueue.length; i++) {
@@ -2359,6 +2350,51 @@ export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
     _batchDigestState.resolveCurrentPdf = null;
     _batchDigestState.countLabel = '';
   }
+}
+
+/**
+ * Right-click handler for a Folder/Subfolder in the Library sidebar:
+ * Automatically processes every PDF in the folder one-by-one in the Subject's
+ * Gemini Notebook, waits for each digest to finish and save into Case Digest,
+ * and moves to the next PDF automatically.
+ */
+export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
+  const { folders, pdfQueue } = collectPdfQueueForFolders(foldersOrFolder);
+  if (!folders.length) return;
+
+  if (!pdfQueue.length) {
+    toast('No PDFs found inside this folder/subfolder to digest.');
+    return;
+  }
+
+  const folderTitle = folders.map(f => f.name).join(', ');
+  await _runBatchGeminiDigestQueue(
+    pdfQueue,
+    `Starting Batch Gemini Digest for ${pdfQueue.length} PDF${pdfQueue.length === 1 ? '' : 's'} in "${folderTitle}"…`
+  );
+}
+
+/**
+ * Right-click handler for multi-selected PDFs in the Library sidebar:
+ * Processes only the selected PDFs sequentially in Gemini Studio / Web.
+ */
+export async function runBatchGeminiDigestForPdfs(pdfsOrPdf) {
+  const rawList = Array.isArray(pdfsOrPdf) ? pdfsOrPdf : [pdfsOrPdf];
+  const seen = new Set();
+  const pdfQueue = [];
+  for (const item of rawList) {
+    if (!item || !item.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    pdfQueue.push(item);
+  }
+  if (!pdfQueue.length) {
+    toast('No PDFs selected to digest.');
+    return;
+  }
+  await _runBatchGeminiDigestQueue(
+    pdfQueue,
+    `Starting Batch Gemini Digest for ${pdfQueue.length} selected PDF${pdfQueue.length === 1 ? '' : 's'}…`
+  );
 }
 
 /**
@@ -2851,6 +2887,7 @@ if (typeof window !== 'undefined') {
   window.openGeminiDigestForCurrentPdf = openGeminiDigestForCurrentPdf;
   window.runGeminiDigestForPdf = runGeminiDigestForPdf;
   window.runBatchGeminiDigestForFolders = runBatchGeminiDigestForFolders;
+  window.runBatchGeminiDigestForPdfs = runBatchGeminiDigestForPdfs;
   window.focusOrReopenGeminiStudio = focusOrReopenGeminiStudio;
   window.stopActiveGeminiDigest = stopActiveGeminiDigest;
   window.getSubjectInfoForFolder = getSubjectInfoForFolder;

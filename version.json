@@ -1,7 +1,7 @@
 {
-    "version":  "1.23.1",
-    "build":  72,
-    "updatedAt":  "2026-11-15T01:46:39Z",
-    "notes":  "Fixed a 1,000-row database load limit so libraries with over 1,000 PDFs, annotations, or backups load and display every file and digest completely.",
+    "version":  "1.24.0",
+    "build":  73,
+    "updatedAt":  "2026-11-15T01:59:46Z",
+    "notes":  "Added batch Gemini Digest support for multi-selected PDFs via right-click in the sidebar.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
