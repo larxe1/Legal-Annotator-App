@@ -2,7 +2,7 @@
 // UI — toast, autosave, sync status, zoom, nav,
 //      modals, keyboard shortcuts, export
 // ═══════════════════════════════════════════════
-import { S } from './state.js';
+import { S, isPdfArchived } from './state.js';
 import { safeStorageSet, safeStorageGet, safeStorageRemove } from './storage.js';
 import { handleEditorKeyDown } from './tablepicker.js';
 import { getColorCategoryForHex } from './colors.js';
@@ -1062,7 +1062,7 @@ function _populatePaletteCases() {
   if (!group) return;
   group.querySelectorAll('.palette__item').forEach(el => el.remove());
 
-  const pdfs = Array.isArray(S.pdfs) ? S.pdfs : [];
+  const pdfs = (Array.isArray(S.pdfs) ? S.pdfs : []).filter(p => !isPdfArchived(p));
   const subjMap = new Map((S.subjects || []).map(s => [s.id, s.name]));
   const foldMap = new Map((S.folders || []).map(f => [f.id, f]));
 

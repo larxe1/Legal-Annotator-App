@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════
 // VIEWER — PDF rendering + page management
 // ═══════════════════════════════════════════════
-import { S } from './state.js';
+import { S, isPdfArchived } from './state.js';
 import { syncOK, syncSpin, jumpToPage, setIsJumping, isUserScrolling, onScrollIdle } from './ui.js';
 import { dbLoadAnnotations, dbLoadDrawings, dbLoadBookmarks, dbGetSetting } from './db.js';
 import { driveFetchPDF } from './drive.js';
@@ -1298,15 +1298,21 @@ function pushRecent(pdf) {
 
 function renderRecentPDFs() {
   const list = document.getElementById('recent-list');
+  if (!list) return;
   list.innerHTML = '';
-  for (const pdf of S.recentPDFs) {
+  const visible = (Array.isArray(S.recentPDFs) ? S.recentPDFs : [])
+    .filter(item => item && !isPdfArchived(item))
+    .map(item => (typeof item === 'object' ? item : S.pdfs.find(p => String(p.id) === String(item))))
+    .filter(Boolean);
+  for (const pdf of visible) {
     const item = document.createElement('div');
     item.className = 'recent-item';
     item.innerHTML = `<span>📄</span><span class="recent-name" title="${pdf.name}">${pdf.name}</span>`;
     item.addEventListener('click', () => openPDFFromLibrary(pdf));
     list.appendChild(item);
   }
-  document.getElementById('recent-wrap').style.display = S.recentPDFs.length ? 'block' : 'none';
+  const wrap = document.getElementById('recent-wrap');
+  if (wrap) wrap.style.display = visible.length ? 'block' : 'none';
 }
 
 export { renderRecentPDFs };

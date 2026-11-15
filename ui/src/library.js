@@ -5,11 +5,11 @@
 //   - Drag-to-reorder folders
 //   - Recent PDFs
 // ═══════════════════════════════════════════════
-import { S } from './state.js';
+import { S, isSubjectArchived, getVisibleSubjects, getArchivedSubjects } from './state.js';
 import { toast, openModal, closeModal, syncSpin, syncOK, syncErr } from './ui.js';
 import {
   dbLoad,
-  dbCreateSubject, dbRenameSubject, dbDelSubject,
+  dbCreateSubject, dbRenameSubject, dbDelSubject, setSubjectArchived,
   dbCreateFolder,  dbRenameFolder,  dbDelFolder, dbReorderFolder, dbMoveFolder,
   dbRegisterPDF,   dbRenamePDF,     dbDelPDF,    dbMovePDF, dbReorderPDF,
   dbLoadAnnCounts, dbUpdateFolderNotes, dbSetSetting, dbGetSetting
@@ -17,7 +17,7 @@ import {
 import { safeStorageGet, safeStorageSet, safeStorageRemove } from './storage.js';
 import { isFolderOfflineReady, makeFolderAvailableOffline, removeFolderOfflineCache } from './offline.js';
 import { driveUploadPDF, driveDeleteFile, driveEnsureSubFolder, driveResolveFolderPath, scheduleDriveOrganize } from './drive.js';
-import { openPDFFromLibrary, updateActivePDF, openFolderDoc } from './viewer.js';
+import { openPDFFromLibrary, updateActivePDF, openFolderDoc, renderRecentPDFs } from './viewer.js';
 import { closeSidebar } from './ui.js';
 import { exportFolderToPDF, exportPdfsToPDF } from './export.js';
 import {
@@ -28,6 +28,7 @@ import {
   renderStudyDesk,
   renderDocTabs,
 } from './goodnotes-ui.js';
+import { renderEditableSchedule } from './schedule.js';
 
 let _pdfToLink = null;
 let _folderNotesId = null;
@@ -35,6 +36,8 @@ let _folderNotesId = null;
 // ── Library Right-Click Context Menu ──
 let _ctxTarget = null;
 let _ctxIsFolder = false;
+let _ctxSubj = null;
+let _ctxSubjEl = null;
 
 function escLibHtml(str) {
   return String(str ?? '')
@@ -370,7 +373,17 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   if (exportTablesBtn) exportTablesBtn.style.display = 'flex';
   if (printStudioBtn) printStudioBtn.style.display = 'flex';
   if (forceSyncBtn) forceSyncBtn.style.display = isMultiPdf ? 'none' : 'flex';
+  document.getElementById('subj-ctx-menu')?.classList.remove('open');
+  const subjMenu = document.getElementById('subj-ctx-menu');
+  if (subjMenu) subjMenu.hidden = true;
+  _ctxSubj = null;
+  _ctxSubjEl = null;
 
+  positionCtxMenu(menu, x, y);
+}
+
+function positionCtxMenu(menu, x, y) {
+  if (!menu) return;
   // Position off-screen first so we can measure actual rendered dimensions
   menu.hidden = false;
   menu.style.left = '-9999px';
@@ -393,9 +406,25 @@ function showLibCtxMenu(item, x, y, isFolder = false) {
   menu.style.top  = top  + 'px';
 }
 
+function showSubjCtxMenu(subj, subjEl, x, y) {
+  const menu = document.getElementById('subj-ctx-menu');
+  if (!menu || !subj) return;
+  hideLibCtxMenu();
+  _ctxSubj = subj;
+  _ctxSubjEl = subjEl;
+  positionCtxMenu(menu, x, y);
+}
+
 function hideLibCtxMenu() {
   document.getElementById('lib-ctx-menu')?.classList.remove('open');
+  const subjMenu = document.getElementById('subj-ctx-menu');
+  if (subjMenu) {
+    subjMenu.classList.remove('open');
+    subjMenu.hidden = true;
+  }
   _ctxTarget = null;
+  _ctxSubj = null;
+  _ctxSubjEl = null;
 }
 
 // ── Export options modal: lets user pick content mode & portrait / landscape before exporting ──
@@ -840,9 +869,39 @@ export function initContextMenu() {
     }
   });
 
+  // Subject right-click context menu actions
+  document.getElementById('subj-ctx-archive')?.addEventListener('click', async () => {
+    const subj = _ctxSubj;
+    hideLibCtxMenu();
+    if (!subj) return;
+    await archiveSubject(subj);
+  });
+
+  document.getElementById('subj-ctx-add-fold')?.addEventListener('click', () => {
+    const subj = _ctxSubj;
+    hideLibCtxMenu();
+    if (!subj) return;
+    openNewFolderModal(subj.id);
+  });
+
+  document.getElementById('subj-ctx-rename')?.addEventListener('click', () => {
+    const subj = _ctxSubj;
+    const subjEl = _ctxSubjEl;
+    hideLibCtxMenu();
+    if (!subj) return;
+    renameSubjectRow(subj, subjEl);
+  });
+
+  document.getElementById('subj-ctx-del')?.addEventListener('click', () => {
+    const subj = _ctxSubj;
+    hideLibCtxMenu();
+    if (!subj) return;
+    deleteSubjectWithConfirm(subj);
+  });
+
   // Dismiss on outside click
   document.addEventListener('mousedown', e => {
-    if (!e.target.closest('#lib-ctx-menu')) hideLibCtxMenu();
+    if (!e.target.closest('#lib-ctx-menu') && !e.target.closest('#subj-ctx-menu')) hideLibCtxMenu();
   });
 
   // Dismiss on Escape
@@ -854,7 +913,7 @@ export function initContextMenu() {
 // ── Selection Logic ──
 function getFlatLibraryItems() {
   const items = [];
-  S.subjects.forEach(subj => {
+  getVisibleSubjects().forEach(subj => {
     // We don't select subjects, but we iterate their contents
     const rootFolds = S.folders.filter(f => f.subject_id === subj.id && !f.parent_folder_id)
       .sort((a,b) => (a.sort_order??0)-(b.sort_order??0));
@@ -1099,17 +1158,126 @@ async function handleMoveInto(targetFolderId, draggedIds) {
 }
 
 
+function refreshArchivedSubjectDependents() {
+  renderLibrary();
+  renderRecentPDFs?.();
+  renderEditableSchedule?.();
+  renderArchivedSubjectsSettings();
+}
+
+async function setSubjectArchiveState(subj, archived) {
+  if (!subj?.id) return;
+  await setSubjectArchived(subj.id, archived);
+  refreshArchivedSubjectDependents();
+  if (archived) {
+    toast(`Archived "${subj.name}" — preserved in Settings → Archived Subjects`);
+  } else {
+    toast(`Restored "${subj.name}"`);
+  }
+}
+
+async function archiveSubject(subj) {
+  await setSubjectArchiveState(subj, true);
+}
+
+function renameSubjectRow(subj, subjEl) {
+  const nameEl = subjEl?.querySelector('.li-subj-name')
+    || document.querySelector(`.li-subj[data-id="${CSS.escape(subj.id)}"] .li-subj-name`);
+  if (!nameEl) return;
+  startInlineRename(nameEl, async newName => {
+    await dbRenameSubject(subj.id, newName);
+    renderArchivedSubjectsSettings();
+    toast('Renamed');
+  });
+}
+
+function deleteSubjectWithConfirm(subj) {
+  if (!subj?.id) return;
+  if (!confirm(`Delete subject "${subj.name}" and all its content?`)) return;
+  dbDelSubject(subj.id).then(() => {
+    refreshArchivedSubjectDependents();
+    toast('Deleted');
+  });
+}
+
+export function renderArchivedSubjectsSettings() {
+  const listEl = document.getElementById('settings-archived-subjects-list');
+  if (!listEl) return;
+  const archived = getArchivedSubjects();
+  listEl.textContent = '';
+
+  if (!archived.length) {
+    const empty = document.createElement('div');
+    empty.className = 'archived-subj-empty';
+    empty.textContent = 'No archived subjects. Right-click any subject in the sidebar to archive it safely.';
+    listEl.appendChild(empty);
+    return;
+  }
+
+  archived.forEach((subj, idx) => {
+    const subjFolderIds = new Set(S.folders.filter(f => f.subject_id === subj.id).map(f => f.id));
+    const folderCount = subjFolderIds.size;
+    const pdfCount = S.pdfs.filter(p => subjFolderIds.has(p.folder_id)).length;
+
+    const row = document.createElement('div');
+    row.className = 'archived-subj-row';
+
+    const dot = document.createElement('span');
+    dot.className = 'archived-subj-dot';
+    dot.style.background = getSubjectBinderColor(subj, idx);
+
+    const info = document.createElement('div');
+    info.className = 'archived-subj-info';
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'archived-subj-name';
+    nameEl.textContent = subj.name || 'Untitled Subject';
+    nameEl.title = subj.name || '';
+
+    const metaEl = document.createElement('div');
+    metaEl.className = 'archived-subj-meta';
+    metaEl.textContent = `${folderCount} folder${folderCount === 1 ? '' : 's'} · ${pdfCount} PDF${pdfCount === 1 ? '' : 's'}`;
+
+    info.appendChild(nameEl);
+    info.appendChild(metaEl);
+
+    const restoreBtn = document.createElement('button');
+    restoreBtn.type = 'button';
+    restoreBtn.className = 'archived-subj-restore';
+    restoreBtn.textContent = 'Restore';
+    restoreBtn.addEventListener('click', async () => {
+      restoreBtn.disabled = true;
+      try {
+        await setSubjectArchiveState(subj, false);
+      } finally {
+        if (restoreBtn.isConnected) restoreBtn.disabled = false;
+      }
+    });
+
+    row.appendChild(dot);
+    row.appendChild(info);
+    row.appendChild(restoreBtn);
+    listEl.appendChild(row);
+  });
+}
+
+window._refreshArchivedSubjectsUI = renderArchivedSubjectsSettings;
+
 // ── Render full library tree ──
 export function renderLibrary() {
   const tree = document.getElementById('lib-tree');
-  if (!S.subjects.length) {
-    tree.innerHTML = '<div class="lib-empty">No subjects yet.<br>Click "+ New Subject" to start.</div>';
+  const visibleSubjects = getVisibleSubjects();
+  if (!visibleSubjects.length) {
+    const hasArchived = getArchivedSubjects().length > 0;
+    tree.innerHTML = hasArchived
+      ? '<div class="lib-empty">All subjects are archived.<br>Restore one in Settings → Archived Subjects or click "+ New Subject".</div>'
+      : '<div class="lib-empty">No subjects yet.<br>Click "+ New Subject" to start.</div>';
     renderStudyDesk();
     renderDocTabs();
     return;
   }
   tree.innerHTML = '';
-  S.subjects.forEach((subj, idx) => tree.appendChild(buildSubjectEl(subj, idx)));
+  visibleSubjects.forEach((subj, idx) => tree.appendChild(buildSubjectEl(subj, idx)));
   updateSelectionUI();
   renderStudyDesk();
   renderDocTabs();
@@ -1155,6 +1323,12 @@ function buildSubjectEl(subj, idx = 0) {
     ch.style.display = S.collapsedSubj[subj.id] ? 'none' : 'flex';
   });
 
+  hd.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    showSubjCtxMenu(subj, w, e.clientX, e.clientY);
+  });
+
   w.querySelector('[data-act="add-fold"]').addEventListener('click', e => {
     e.stopPropagation();
     openNewFolderModal(subj.id);
@@ -1162,16 +1336,12 @@ function buildSubjectEl(subj, idx = 0) {
 
   w.querySelector('[data-act="rename"]').addEventListener('click', e => {
     e.stopPropagation();
-    startInlineRename(w.querySelector('.li-subj-name'), async newName => {
-      await dbRenameSubject(subj.id, newName);
-      toast('Renamed');
-    });
+    renameSubjectRow(subj, w);
   });
 
   w.querySelector('[data-act="del"]').addEventListener('click', e => {
     e.stopPropagation();
-    if (!confirm(`Delete subject "${subj.name}" and all its content?`)) return;
-    dbDelSubject(subj.id).then(() => { renderLibrary(); toast('Deleted'); });
+    deleteSubjectWithConfirm(subj);
   });
 
   hd.addEventListener('dragover', e => {
@@ -2355,7 +2525,7 @@ export function openLinkPdfModal(pdf) {
   let totalSelectable = 0;
 
   // Build tree matching left sidebar
-  S.subjects.forEach(subj => {
+  getVisibleSubjects().forEach(subj => {
     const subjFolders = S.folders.filter(f => f.subject_id === subj.id);
     if (!subjFolders.length) return;
 

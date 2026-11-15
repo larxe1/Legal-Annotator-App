@@ -1,7 +1,7 @@
 {
-    "version": "1.22.16",
-    "build": 70,
-    "updatedAt": "2026-11-14T15:39:56Z",
-    "notes": "Fix OCR & Compressor Studio window boot, always launch current updated executable for Studio mode, upgrade scanned book OCR/compression sharpness & resolution, and fix PDF text-selection ghosting.",
-    "downloadUrl": "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
+    "version":  "1.23.0",
+    "build":  71,
+    "updatedAt":  "2026-11-15T01:34:56Z",
+    "notes":  "Add non-destructive Archive Subjects feature: right-click any subject in the library sidebar to archive it (hiding it from the sidebar, Study Desk, schedule, recent PDFs, and command palette while preserving all folders, PDFs, annotations, and sync), and restore archived subjects anytime from Settings.",
+    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

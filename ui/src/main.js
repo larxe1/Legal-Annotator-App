@@ -4,7 +4,7 @@
 import { S }                  from './state.js';
 import { db, dbLoad, dbLoadAnnCounts, dbCreateBookmark, dbDelBookmark, dbClearAllBookmarks, dbLoadLinks, dbSaveLinks, dbGetSetting, dbSetSetting } from './db.js';
 import { initDriveBar }       from './drive.js';
-import { renderLibrary, initLibraryModals, initLibrarySelection, initContextMenu } from './library.js';
+import { renderLibrary, initLibraryModals, initLibrarySelection, initContextMenu, renderArchivedSubjectsSettings } from './library.js';
 import { renderColorDots, initColors } from './colors.js';
 import { setMode }            from './viewer.js';
 import { initAnnPanel }       from './annotate.js';
@@ -800,6 +800,7 @@ RULES:
     refreshCacheStats();
     refreshGeminiKey();
     refreshAutoCloseTabsSetting();
+    renderArchivedSubjectsSettings();
     import('./smart-copy.js').then(m => m.refreshGeminiDigestSettingsCard?.()).catch(() => {});
   });
 

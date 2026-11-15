@@ -5,7 +5,7 @@
 // Weekly Docket vs. Calendar Grid views, and Subject Syllabus integration.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { S } from './state.js';
+import { S, isSubjectArchived, isPdfArchived } from './state.js';
 import { toast, openModal, closeModal } from './ui.js';
 import { safeStorageGet, safeStorageSet } from './storage.js';
 import { dbGetSetting, dbSetSetting } from './db.js';
@@ -412,7 +412,7 @@ export function openChooseSyllabusModal(subj, subjectNameOrId) {
   if (searchInp) searchInp.value = '';
 
   const subjPdfs = subj ? getPdfsForSubject(subj) : [];
-  const otherPdfs = S.pdfs.filter(p => !subjPdfs.some(sp => sp.id === p.id));
+  const otherPdfs = S.pdfs.filter(p => !isPdfArchived(p) && !subjPdfs.some(sp => sp.id === p.id));
 
   const renderList = (filter = '') => {
     listEl.innerHTML = '';
@@ -1888,6 +1888,12 @@ function formatRangeTitle(startDt, endDt, span) {
   return `${sm} ${startDt.getDate()}, ${sy} – ${em} ${endDt.getDate()}, ${ey}`;
 }
 
+function isScheduleEntrySubjectArchived(entry) {
+  if (!entry || !entry.subject) return false;
+  const subj = findSubjectByNameOrId(entry.subject);
+  return Boolean(subj && isSubjectArchived(subj.id));
+}
+
 function renderWeeklyDocketView(grid, schedule, activeDays) {
   grid.className = 'cal-grid';
   grid.style.removeProperty('--gcal-cols');
@@ -1905,7 +1911,7 @@ function renderWeeklyDocketView(grid, schedule, activeDays) {
     col.appendChild(dayTitle);
 
     const dayEntries = schedule
-      .filter(x => (x.day || '').toUpperCase() === day)
+      .filter(x => (x.day || '').toUpperCase() === day && !isScheduleEntrySubjectArchived(x))
       .sort((a, b) => parseStartMinutesFromStr(a.time) - parseStartMinutesFromStr(b.time));
 
     if (dayEntries.length === 0) {
@@ -2131,6 +2137,8 @@ function renderCalendarGridView(docket, grid, schedule) {
         }))
         .sort((a, b) => a.startMinutes - b.startMinutes);
     }
+
+    dayItems = dayItems.filter(entry => !isScheduleEntrySubjectArchived(entry));
 
     dayItems.forEach(entry => {
       const sylPdf = getSyllabusPdfForSubject(entry.subject);

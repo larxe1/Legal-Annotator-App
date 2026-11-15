@@ -2,7 +2,7 @@
 // SYNC — Real-time synchronization across tabs & devices
 // ═══════════════════════════════════════════════
 import { S } from './state.js';
-import { db, dbLoad, dbLoadAnnCounts, dbLoadAnnotations, dbLoadDrawings } from './db.js';
+import { db, dbLoad, dbLoadAnnCounts, dbLoadAnnotations, dbLoadDrawings, applyArchivedSubjectsList, dbGetSetting } from './db.js';
 import { safeStorageGet, safeStorageSet } from './storage.js';
 
 let _channel = null;
@@ -136,6 +136,26 @@ async function handleNotepadRefresh(pdfId) {
   }, 200);
 }
 
+function handleArchivedSubjectsRefresh(rawOrIds) {
+  let ids = [];
+  if (Array.isArray(rawOrIds)) {
+    ids = rawOrIds;
+  } else if (typeof rawOrIds === 'string' && rawOrIds.trim()) {
+    try {
+      const parsed = JSON.parse(rawOrIds);
+      if (Array.isArray(parsed)) ids = parsed;
+    } catch {
+      return;
+    }
+  }
+  applyArchivedSubjectsList(ids);
+  import('./library.js').then(m => m.renderLibrary?.()).catch(() => {});
+  import('./viewer.js').then(m => m.renderRecentPDFs?.()).catch(() => {});
+  import('./schedule.js').then(m => m.renderEditableSchedule?.()).catch(() => {});
+  import('./goodnotes-ui.js').then(m => m.renderStudyDesk?.()).catch(() => {});
+  try { window._refreshArchivedSubjectsUI?.(); } catch {}
+}
+
 export function initRealtimeSync() {
   // 1. Cross-Tab Broadcast Channel (instant 0ms sync on same browser)
   if (typeof BroadcastChannel !== 'undefined') {
@@ -146,6 +166,8 @@ export function initRealtimeSync() {
 
       if (data.type === 'LIBRARY_CHANGED') {
         handleLibraryRefresh();
+      } else if (data.type === 'archived_subjects_changed') {
+        handleArchivedSubjectsRefresh(Array.isArray(data.ids) ? data.ids : []);
       } else if (data.type === 'ANNOTATIONS_CHANGED') {
         handleAnnotationsRefresh(data.pdfId);
       } else if (data.type === 'NOTEPAD_CHANGED') {
@@ -189,6 +211,16 @@ export function initRealtimeSync() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, async (payload) => {
           const key = payload.new?.key || payload.old?.key;
           if (!key) return;
+          if (key === 'archived_subjects_v1') {
+            if (payload.eventType === 'DELETE') {
+              handleArchivedSubjectsRefresh([]);
+            } else if (payload.new?.value !== undefined) {
+              handleArchivedSubjectsRefresh(payload.new.value ?? '[]');
+            } else {
+              dbGetSetting('archived_subjects_v1').then(v => handleArchivedSubjectsRefresh(v ?? '[]')).catch(() => {});
+            }
+            return;
+          }
           if (!S.curPDF) {
             if (key === 'gn_open_tabs_v1') {
               import('./goodnotes-ui.js').then(m => m.renderDocTabs?.()).catch(() => {});

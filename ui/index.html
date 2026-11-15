@@ -1604,6 +1604,13 @@
         <div id="settings-gemini-notebooks-list" class="gemini-notebooks-list"></div>
       </div>
 
+      <!-- Archived Subjects -->
+      <div class="settings-card" id="settings-archived-subjects-card" style="background:var(--surface-2); border:1px solid var(--border, var(--rule)); border-radius:6px; padding:12px;">
+        <div style="font-size:13px; font-weight:600; color:var(--ink); margin-bottom:4px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/></svg><span>Archived Subjects</span></div>
+        <div style="font-size:11px; color:var(--ink-muted, var(--muted)); margin-bottom:10px;">Subjects you archive are hidden from the left sidebar and Study Desk, while all folders, PDFs, highlights, and notes remain safely preserved.</div>
+        <div id="settings-archived-subjects-list"></div>
+      </div>
+
       <!-- Keyboard Shortcuts -->
       <div class="settings-card" style="background:var(--surface-2); border:1px solid var(--border, var(--rule)); border-radius:6px; padding:12px;">
         <div style="font-size:13px; font-weight:600; color:var(--ink); margin-bottom:4px; display:inline-flex; align-items:center; gap:6px;"><svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg><span>Keyboard Shortcuts</span></div>
@@ -1832,6 +1839,16 @@
   <div class="ctx-item ctx-item--accent" id="lib-ctx-force-sync"><svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg><span>Force Sync to Cloud</span></div>
   <div class="ctx-sep"></div>
   <div class="ctx-item" id="lib-ctx-gdrive"><svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span>Open in Google Drive</span></div>
+</div>
+
+<!-- Subject Right-Click Context Menu -->
+<div id="subj-ctx-menu" class="ctx-menu" hidden>
+  <div class="ctx-item" id="subj-ctx-archive"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/></svg><span>Archive Subject</span></div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item" id="subj-ctx-add-fold"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span>New Folder</span></div>
+  <div class="ctx-item" id="subj-ctx-rename"><svg class="icon" aria-hidden="true"><use href="#i-pen"/></svg><span>Rename Subject</span></div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item ctx-item--danger" id="subj-ctx-del"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span>Delete Subject</span></div>
 </div>
 
 <!-- Service Worker Registration & PWA Install Prompter -->

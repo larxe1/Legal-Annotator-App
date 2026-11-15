@@ -2688,10 +2688,14 @@ kbd { background: var(--surface-2); border: 1px solid var(--border); border-radi
 [data-skin="casebook"] .ctx-menu {
   background: var(--surface);
 }
-#lib-ctx-menu { display: none; }
+#lib-ctx-menu,
+#subj-ctx-menu { display: none; }
 #lib-ctx-menu.open,
-#lib-ctx-menu.show { display: block; animation: ctx-in .12s ease; }
+#lib-ctx-menu.show,
+#subj-ctx-menu.open,
+#subj-ctx-menu.show { display: block; animation: ctx-in .12s ease; }
 #lib-ctx-menu[hidden],
+#subj-ctx-menu[hidden],
 #table-ctx-menu[hidden] { display: none !important; }
 
 /* ════════════════════════════════════════
@@ -6422,6 +6426,81 @@ body.theme-paper .gemini-notebook-row {
   color: var(--ink-muted, var(--muted));
   border: 1px dashed var(--rule, var(--navy-b));
   border-radius: var(--radius-s, 6px);
+}
+
+/* ── Settings: Archived Subjects ── */
+#settings-archived-subjects-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.archived-subj-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-s, 6px);
+  border: 1px solid var(--border, var(--rule));
+  background: var(--surface-paper, var(--surface));
+}
+.archived-subj-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.25);
+}
+.archived-subj-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.archived-subj-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archived-subj-meta {
+  font-size: 11px;
+  color: var(--ink-muted, var(--muted));
+  font-variant-numeric: tabular-nums;
+}
+.archived-subj-restore {
+  padding: 5px 11px;
+  border-radius: var(--radius-s, 6px);
+  border: 1px solid var(--accent, var(--gold));
+  background: var(--accent-soft, var(--gold-bg, transparent));
+  color: var(--accent, var(--gold));
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--dur-fast, 120ms) var(--ease-out, ease), color var(--dur-fast, 120ms) var(--ease-out, ease);
+}
+.archived-subj-restore:hover:not(:disabled) {
+  background: var(--accent, var(--gold));
+  color: var(--accent-ink, #14110f);
+}
+.archived-subj-restore:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+.archived-subj-empty {
+  padding: 12px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ink-muted, var(--muted));
+  border: 1px dashed var(--border, var(--rule));
+  border-radius: var(--radius-s, 6px);
+  background: var(--surface-paper, transparent);
 }
 
 

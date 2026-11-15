@@ -2,7 +2,7 @@
 // GOODNOTES & DUAL-SKIN UI — Chancery & Folio (Day) / Darkroom Casebook (Night),
 // Multi-Case Tabs, Color-Coded Subject Binders, & Study Desk Home
 // ═══════════════════════════════════════════════════════════════════════════
-import { S } from './state.js';
+import { S, isPdfArchived, isSubjectArchived } from './state.js';
 import { safeStorageGet, safeStorageSet, safeStorageRemove, initStorageManager } from './storage.js';
 import { dbSetSetting, dbGetSetting } from './db.js';
 import { toast, toggleSidebar } from './ui.js';
@@ -637,33 +637,34 @@ function getRecentPdfsForShelf(limit = 6) {
     const p =
       S.pdfs.find(x => String(x.id) === sid) ||
       S.pdfs.find(x => x.linked_pdf_id && String(x.linked_pdf_id) === sid);
-    if (p && !found.some(f => String(f.pdf.id) === String(p.id))) {
+    if (p && !isPdfArchived(p) && !found.some(f => String(f.pdf.id) === String(p.id))) {
       found.push({ pdf: p, ts: entry.ts });
     }
     if (found.length >= limit) break;
   }
   if (found.length === 0 && Array.isArray(S.pdfs) && S.pdfs.length > 0) {
-    return S.pdfs.slice(0, limit).map(p => ({ pdf: p, ts: 0 }));
+    return S.pdfs.filter(p => !isPdfArchived(p)).slice(0, limit).map(p => ({ pdf: p, ts: 0 }));
   }
   return found;
 }
 
 export function openSubjectBinderByTitle(rawTitle) {
-  if (!rawTitle || !S.subjects.length) return false;
+  const activeSubjects = (S.subjects || []).filter(s => !isSubjectArchived(s.id));
+  if (!rawTitle || !activeSubjects.length) return false;
   const q = rawTitle.toLowerCase();
   const codeMatch = q.match(/\b(\d{3})\b/);
   const code = codeMatch ? codeMatch[1] : null;
 
   let matchedSubj = null;
   if (code) {
-    matchedSubj = S.subjects.find(s => s.name.toLowerCase().includes(code));
+    matchedSubj = activeSubjects.find(s => s.name.toLowerCase().includes(code));
   }
   if (!matchedSubj) {
     const keywords = q
       .replace(/^\d+\s*:\s*/, '')
       .split(/\s+/)
       .filter(w => w.length >= 4 && w !== 'and');
-    matchedSubj = S.subjects.find(s => {
+    matchedSubj = activeSubjects.find(s => {
       const sn = s.name.toLowerCase();
       return keywords.some(kw => sn.includes(kw));
     });
@@ -705,9 +706,10 @@ export function renderStudyDesk(options = {}) {
   if (!cal) return;
 
   // 1. Calculate Semester Digest Stats (count unique canonical PDFs)
+  const activePdfs = (Array.isArray(S.pdfs) ? S.pdfs : []).filter(p => !isPdfArchived(p));
   let digestedCount = 0;
-  const totalCases = S.pdfs.length;
-  for (const p of S.pdfs) {
+  const totalCases = activePdfs.length;
+  for (const p of activePdfs) {
     if (hasCaseDigest(p)) digestedCount++;
   }
 

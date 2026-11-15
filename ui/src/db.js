@@ -25,16 +25,49 @@ const SURL = window.APP_CONFIG.SUPABASE_URL;
 const SKEY = window.APP_CONFIG.SUPABASE_KEY;
 export const db = supabase.createClient(SURL, SKEY);
 
+const ARCHIVED_SUBJECTS_SETTING_KEY = 'archived_subjects_v1';
+
+/** Replace S.archivedSubjects from an array of IDs and cache to localStorage. */
+export function applyArchivedSubjectsList(ids) {
+  const cleanIds = Array.isArray(ids)
+    ? [...new Set(ids.filter(id => typeof id === 'string' && id.trim()))]
+    : [];
+  S.archivedSubjects = new Set(cleanIds);
+  safeStorageSet(ARCHIVED_SUBJECTS_SETTING_KEY, JSON.stringify(cleanIds));
+  return S.archivedSubjects;
+}
+
+/** Archive or unarchive a subject non-destructively (persists to app_settings + localStorage + BroadcastChannel). */
+export async function setSubjectArchived(subjId, archived) {
+  if (!subjId || typeof subjId !== 'string') return false;
+  const cleanId = subjId.trim();
+  if (!cleanId) return false;
+  if (!(S.archivedSubjects instanceof Set)) {
+    S.archivedSubjects = new Set();
+  }
+  if (archived) {
+    S.archivedSubjects.add(cleanId);
+  } else {
+    S.archivedSubjects.delete(cleanId);
+  }
+  const ids = [...S.archivedSubjects];
+  safeStorageSet(ARCHIVED_SUBJECTS_SETTING_KEY, JSON.stringify(ids));
+  await dbSetSetting(ARCHIVED_SUBJECTS_SETTING_KEY, JSON.stringify(ids));
+  broadcastSync({ type: 'archived_subjects_changed', ids });
+  return true;
+}
+
 // ── Load all library data (with offline local snapshot restore) ──
 export async function dbLoad(retries = 3) {
   syncSpin(retries < 3 ? `Retrying load... (${3 - retries})` : 'Loading…');
   try {
     if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('OFFLINE');
-    const [s, f, p, c] = await Promise.all([
+    const [s, f, p, c, arch] = await Promise.all([
       db.from('subjects').select('*').order('created_at'),
       db.from('folders').select('*').order('sort_order').order('created_at'),
       db.from('pdf_files').select('*').order('created_at'),
       db.from('color_categories').select('*').order('created_at'),
+      db.from('app_settings').select('value').eq('key', ARCHIVED_SUBJECTS_SETTING_KEY).maybeSingle().then(r => r, err => ({ error: err })),
     ]);
     const firstErr = s.error || f.error || p.error || c.error;
     if (firstErr) {
@@ -53,6 +86,13 @@ export async function dbLoad(retries = 3) {
     S.folders    = [...remoteFolders, ...localPendingFolds];
     S.pdfs       = p.data || [];
     S.colorCats  = c.data || [];
+
+    if (arch && !arch.error && arch.data && typeof arch.data.value === 'string') {
+      try {
+        const parsedArch = JSON.parse(arch.data.value);
+        if (Array.isArray(parsedArch)) applyArchivedSubjectsList(parsedArch);
+      } catch {}
+    }
     
     // Sanitize circular references caused by drag-and-drop bug
     for (const folder of S.folders) {
@@ -112,6 +152,13 @@ export async function dbLoad(retries = 3) {
         S.folders    = snap.folders   || [];
         S.pdfs       = snap.pdfs      || [];
         S.colorCats  = snap.colorCats || [];
+        try {
+          const rawArch = safeStorageGet(ARCHIVED_SUBJECTS_SETTING_KEY);
+          if (rawArch) {
+            const parsedArch = JSON.parse(rawArch);
+            if (Array.isArray(parsedArch)) applyArchivedSubjectsList(parsedArch);
+          }
+        } catch {}
         syncOK(navigator.onLine ? 'Local Cache (DB Sync Error)' : 'Offline Mode (Local Cache)');
         console.log('[DB] Restored library from local offline snapshot');
         return;
@@ -255,6 +302,9 @@ export async function dbDelSubject(id) {
   S.pdfs     = S.pdfs.filter(p => !pids.includes(p.id));
   S.folders  = S.folders.filter(f => f.subject_id !== cleanId);
   S.subjects = S.subjects.filter(x => x.id !== cleanId);
+  if (S.archivedSubjects instanceof Set && S.archivedSubjects.has(cleanId)) {
+    await setSubjectArchived(cleanId, false);
+  }
   broadcastSync({ type: 'LIBRARY_CHANGED' });
   scheduleDriveOrganize(600);
 }

@@ -1,6 +1,18 @@
 // ═══════════════════════════════════════════════
 // STATE — single source of truth for entire app
 // ═══════════════════════════════════════════════
+function _loadInitialArchivedSubjects() {
+  try {
+    if (typeof localStorage === 'undefined') return new Set();
+    const raw = localStorage.getItem('archived_subjects_v1');
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter(id => typeof id === 'string' && id) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 export const S = {
   // Library data (from Supabase)
   subjects:    [],
@@ -8,6 +20,9 @@ export const S = {
   pdfs:        [],
   bookmarks:   [],
   colorCats:   [],
+
+  // Archived subject IDs (non-destructive visibility filter)
+  archivedSubjects: _loadInitialArchivedSubjects(),
 
   // Multi-selection in library
   selectedIds: new Set(),
@@ -82,3 +97,49 @@ export const S = {
   // Toolbar links
   links: [],
 };
+
+// ── Archived Subject Helpers (non-destructive visibility checks) ──
+export function isSubjectArchived(subjId) {
+  return Boolean(subjId && S.archivedSubjects?.has(subjId));
+}
+
+export function getSubjectIdForFolder(folderId) {
+  if (!folderId) return null;
+  const visited = new Set();
+  let currId = folderId;
+  while (currId) {
+    if (visited.has(currId)) return null;
+    visited.add(currId);
+    const folder = (S.folders || []).find(f => f.id === currId);
+    if (!folder) return null;
+    if (folder.subject_id) return folder.subject_id;
+    currId = folder.parent_folder_id || null;
+  }
+  return null;
+}
+
+export function isFolderArchived(folderId) {
+  return isSubjectArchived(getSubjectIdForFolder(folderId));
+}
+
+export function isPdfArchived(pdfOrId) {
+  if (!pdfOrId) return false;
+  const pdf = typeof pdfOrId === 'string'
+    ? (S.pdfs || []).find(p => p.id === pdfOrId)
+    : pdfOrId;
+  if (!pdf) return false;
+  if (pdf.folder_id) {
+    const subjId = getSubjectIdForFolder(pdf.folder_id);
+    if (subjId) return isSubjectArchived(subjId);
+  }
+  if (pdf.subject_id) return isSubjectArchived(pdf.subject_id);
+  return false;
+}
+
+export function getVisibleSubjects() {
+  return (S.subjects || []).filter(s => !isSubjectArchived(s.id));
+}
+
+export function getArchivedSubjects() {
+  return (S.subjects || []).filter(s => isSubjectArchived(s.id));
+}
