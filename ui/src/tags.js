@@ -7,7 +7,7 @@ import { toast, autosave, closeOtherPanels } from './ui.js';
 import { dbGetSetting, dbSetSetting } from './db.js';
 import { safeStorageSet, safeStorageGet } from './storage.js';
 import {
-  handlePaste, showTablePicker, insertBannerHeader,
+  handlePaste, handleCopy, showTablePicker, insertBannerHeader,
   outdentLine, indentLine, copyFirstSummaryTable
 } from './tablepicker.js';
 
@@ -1936,6 +1936,7 @@ function injectTopicNotesModalDOM() {
   const ed = modal.querySelector('#topic-notes-editor');
   ed?.addEventListener('input', () => saveTopicEditorContent());
   ed?.addEventListener('paste', handlePaste);
+  ed?.addEventListener('copy', handleCopy);
 
   // Wire toolbar buttons
   modal.querySelectorAll('.tnm-tbtn').forEach(b => {

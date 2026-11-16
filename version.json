@@ -1,7 +1,7 @@
 {
-    "version":  "1.25.1",
-    "build":  75,
-    "updatedAt":  "2026-11-16T08:01:00Z",
-    "notes":  "Highlights tab now defaults to In Order (Page 1 to last page, top-to-bottom within each page) with By Category as the alternative view.",
+    "version":  "1.25.2",
+    "build":  76,
+    "updatedAt":  "2026-11-16T11:54:44Z",
+    "notes":  "Copying formatted notes, case digests, tables, and highlights now strips dark-mode background and text colors while preserving clean document formatting (bold, lists, tables) for pasting into Google Docs.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

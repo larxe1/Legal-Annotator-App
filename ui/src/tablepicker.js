@@ -437,6 +437,205 @@ export function handlePaste(e) {
   targetEl?.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function _escCopyHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function _isIntentionalHighlightBg(rawBg) {
+  if (!rawBg) return false;
+  const val = String(rawBg).trim().toLowerCase();
+  if (!val || val === 'transparent' || val === 'inherit' || val === 'initial' || val === 'none') return false;
+  if (val.startsWith('var(')) return false;
+
+  let r = 0, g = 0, b = 0, a = 1;
+  const rgbMatch = val.match(/^rgba?\(\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*[,\s]\s*([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/);
+  if (rgbMatch) {
+    r = Number(rgbMatch[1]);
+    g = Number(rgbMatch[2]);
+    b = Number(rgbMatch[3]);
+    a = rgbMatch[4] !== undefined ? Number(rgbMatch[4]) : 1;
+  } else if (/^#[0-9a-f]{3,8}$/i.test(val)) {
+    let hex = val.slice(1);
+    if (hex.length === 3 || hex.length === 4) {
+      hex = hex.split('').map(ch => ch + ch).join('');
+    }
+    r = parseInt(hex.slice(0, 2), 16);
+    g = parseInt(hex.slice(2, 4), 16);
+    b = parseInt(hex.slice(4, 6), 16);
+    if (hex.length === 8) a = parseInt(hex.slice(6, 8), 16) / 255;
+  } else {
+    return true; // named highlight color (e.g. yellow, gold)
+  }
+
+  if (!Number.isFinite(a) || a <= 0.08) return false;
+  const maxC = Math.max(r, g, b);
+  const minC = Math.min(r, g, b);
+  // Ignore dark UI surfaces (e.g. Casebook #141210 / #1d1a16), pure white, and subtle neutral tints
+  if (maxC < 75) return false;
+  if (minC > 246) return false;
+  if ((maxC - minC) < 16 && (maxC < 200 || minC > 225)) return false;
+  return true;
+}
+
+export function buildCleanCopyPayload(sourceRoot, fallbackPlainText = '') {
+  if (!sourceRoot) {
+    const plain = String(fallbackPlainText || '');
+    return { html: _escCopyHtml(plain).replace(/\n/g, '<br>'), plain };
+  }
+
+  const clone = sourceRoot.cloneNode(true);
+  if (clone.querySelectorAll) {
+    clone.querySelectorAll('.np-drag-handle, .np-hi-bar, .np-hi-filter-bar, .ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder, button, svg').forEach(el => el.remove());
+  }
+
+  function serializeNode(node, inCellOrList = false) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return _escCopyHtml(node.textContent || '');
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+    const tag = node.tagName.toLowerCase();
+    if (['script', 'style', 'button', 'svg', 'canvas'].includes(tag)) return '';
+    if (node.classList?.contains('np-drag-handle')) return '';
+
+    const childInBlock = inCellOrList || ['td', 'th', 'li', 'blockquote'].includes(tag);
+    let inner = '';
+    node.childNodes.forEach(c => { inner += serializeNode(c, childInBlock); });
+
+    if (!inner && !['br', 'hr', 'td', 'th', 'li', 'img'].includes(tag)) return '';
+
+    const style = node.style || {};
+    const fontWeight = (style.fontWeight || '').toLowerCase();
+    const fontStyle = (style.fontStyle || '').toLowerCase();
+    const textDeco = (style.textDecoration || style.textDecorationLine || '').toLowerCase();
+
+    const isBold = (['b', 'strong'].includes(tag) && fontWeight !== 'normal' && fontWeight !== '400' && fontWeight !== 'lighter') ||
+                   (fontWeight === 'bold' || fontWeight === '700' || fontWeight === '800' || fontWeight === '900' || parseInt(fontWeight, 10) >= 600);
+    const isItalic = (['i', 'em'].includes(tag) && fontStyle !== 'normal') || fontStyle === 'italic';
+    const isUnderline = (tag === 'u' && !textDeco.includes('none')) || textDeco.includes('underline');
+    const isStrike = ['s', 'strike', 'del'].includes(tag) || textDeco.includes('line-through');
+
+    if (tag === 'br') return '<br>';
+    if (tag === 'hr') return '<hr>';
+    if (tag === 'img') {
+      const src = node.getAttribute('src') || '';
+      if (!src || src.startsWith('javascript:')) return '';
+      const alt = _escCopyHtml(node.getAttribute('alt') || '');
+      return `<img src="${_escCopyHtml(src)}" alt="${alt}" style="max-width:100%;height:auto;">`;
+    }
+
+    if (tag === 'sup') return `<sup>${inner}</sup>`;
+    if (tag === 'sub') return `<sub>${inner}</sub>`;
+    if (tag === 'code') return `<code>${inner}</code>`;
+    if (tag === 'pre') return `<pre>${inner}</pre>`;
+    if (tag === 'a') {
+      const href = node.getAttribute('href') || '';
+      if (/^(https?:|mailto:|#)/i.test(href)) {
+        return `<a href="${_escCopyHtml(href)}">${inner}</a>`;
+      }
+      return inner;
+    }
+
+    let formatted = inner;
+    if (isStrike) formatted = `<s>${formatted}</s>`;
+    if (isUnderline) formatted = `<u>${formatted}</u>`;
+    if (isItalic) formatted = `<i>${formatted}</i>`;
+    if (isBold) formatted = `<b>${formatted}</b>`;
+
+    if (tag === 'mark' || (tag === 'span' && _isIntentionalHighlightBg(style.backgroundColor))) {
+      const bg = tag === 'mark' && !_isIntentionalHighlightBg(style.backgroundColor)
+        ? '#fef08a'
+        : style.backgroundColor;
+      return `<span style="background-color:${_escCopyHtml(bg)};">${formatted}</span>`;
+    }
+    if (['span', 'b', 'strong', 'i', 'em', 'u', 's', 'strike', 'del', 'font'].includes(tag)) {
+      return formatted;
+    }
+
+    if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) {
+      return `<${tag}>${inner}</${tag}>`;
+    }
+    if (tag === 'ul' || tag === 'ol') {
+      return `<${tag}>${inner}</${tag}>`;
+    }
+    if (tag === 'li') {
+      return `<li>${inner || '<br>'}</li>`;
+    }
+    if (tag === 'blockquote') {
+      return `<blockquote style="border-left:3px solid #cbd5e1; margin:6px 0; padding-left:10px;">${inner}</blockquote>`;
+    }
+    if (tag === 'table') {
+      return `<table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse; width:100%; margin:8px 0;">${inner}</table>`;
+    }
+    if (['thead', 'tbody', 'tfoot'].includes(tag)) {
+      return `<${tag}>${inner}</${tag}>`;
+    }
+    if (tag === 'tr') {
+      return `<tr>${inner}</tr>`;
+    }
+    if (tag === 'th' || tag === 'td') {
+      const colspan = node.getAttribute('colspan') ? ` colspan="${_escCopyHtml(node.getAttribute('colspan'))}"` : '';
+      const rowspan = node.getAttribute('rowspan') ? ` rowspan="${_escCopyHtml(node.getAttribute('rowspan'))}"` : '';
+      const thWeight = tag === 'th' ? ' font-weight:bold;' : '';
+      return `<${tag} style="border:1px solid #cbd5e1; padding:6px 10px; vertical-align:top;${thWeight}"${colspan}${rowspan}>${inner || '<br>'}</${tag}>`;
+    }
+    if (tag === 'p' || tag === 'div') {
+      if (!inner) return inCellOrList ? '<br>' : '';
+      return inCellOrList ? `${inner}<br>` : `<p style="margin:0 0 8px 0;">${inner}</p>`;
+    }
+
+    return formatted;
+  }
+
+  // Wrap orphaned partial-table fragments (when user selects across rows/cells inside a table)
+  const topEls = Array.from(clone.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);
+  const hasOrphanTableRows = topEls.some(el => ['tr', 'thead', 'tbody', 'tfoot'].includes(el.tagName.toLowerCase()));
+  const hasOrphanTableCells = topEls.some(el => ['td', 'th'].includes(el.tagName.toLowerCase()));
+
+  let bodyHtml = '';
+  if (hasOrphanTableCells) {
+    let rowInner = '';
+    clone.childNodes.forEach(c => { rowInner += serializeNode(c, true); });
+    bodyHtml = `<table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse; width:100%; margin:8px 0;"><tbody><tr>${rowInner}</tr></tbody></table>`;
+  } else if (hasOrphanTableRows) {
+    let tblInner = '';
+    clone.childNodes.forEach(c => { tblInner += serializeNode(c, false); });
+    bodyHtml = `<table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse; width:100%; margin:8px 0;">${tblInner}</table>`;
+  } else {
+    clone.childNodes.forEach(c => { bodyHtml += serializeNode(c, false); });
+  }
+
+  bodyHtml = bodyHtml.replace(/(?:<br\s*\/?>\s*)+$/i, '');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><!--StartFragment-->${bodyHtml}<!--EndFragment--></body></html>`;
+  const plain = String(fallbackPlainText || clone.textContent || '').trim();
+  return { html, plain };
+}
+
+export function handleCopy(e) {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+
+  const targetEl = e.currentTarget;
+  const range = sel.getRangeAt(0);
+  if (targetEl && !targetEl.contains(range.commonAncestorContainer)) return;
+
+  const plainText = sel.toString();
+  if (!plainText && !range.cloneContents().querySelector('img, table')) return;
+
+  const fragment = range.cloneContents();
+  const { html, plain } = buildCleanCopyPayload(fragment, plainText);
+  if (e.clipboardData) {
+    e.clipboardData.setData('text/html', html);
+    e.clipboardData.setData('text/plain', plain || plainText);
+    e.preventDefault();
+  }
+}
+
 // ───────────────────────────────────────────────
 // TABLE CONTEXT MENU
 // ───────────────────────────────────────────────
@@ -865,29 +1064,12 @@ export async function copyFormattedTable(tableEl, customToastMsg) {
   cleanTable.querySelectorAll('.table-row-hidden').forEach(r => r.classList.remove('table-row-hidden'));
   cleanTable.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
 
-  // Ensure portable table & cell border/padding styles so pasting into Word, Google Docs,
-  // Notion, or Legal Annotator preserves the exact grid and text formatting.
-  cleanTable.setAttribute('border', '1');
-  cleanTable.setAttribute('cellpadding', '6');
-  cleanTable.setAttribute('cellspacing', '0');
-  cleanTable.style.cssText = 'width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:break-word; border:1px solid #475569;';
-
-  cleanTable.querySelectorAll('th, td').forEach(cell => {
-    const isTh = cell.tagName.toLowerCase() === 'th';
-    cell.style.border = '1px solid #475569';
-    cell.style.padding = '6px 10px';
-    cell.style.verticalAlign = 'top';
-    cell.style.wordBreak = 'break-word';
-    cell.style.overflowWrap = 'anywhere';
-    if (isTh) cell.style.fontWeight = 'bold';
-  });
-
-  const htmlPayload = cleanTable.outerHTML;
+  const { html: htmlPayload, plain: cleanPlain } = buildCleanCopyPayload(cleanTable);
   const rows = Array.from(cleanTable.querySelectorAll('tr'));
   const plainText = rows.map(tr => {
     const cells = Array.from(tr.querySelectorAll('th, td'));
     return cells.map(c => (c.innerText || c.textContent || '').trim().replace(/\r?\n+/g, ' ')).join('\t');
-  }).join('\n');
+  }).join('\n') || cleanPlain;
 
   let copied = false;
 

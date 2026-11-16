@@ -8,7 +8,7 @@ import {
   dbCreateAnnotation, dbUpdateAnnColor, dbDelAnnotation,
   dbCreateNote, dbUpdateNote, dbDelNote,
 } from './db.js';
-import { handlePaste, showTablePicker, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, applyEditorHighlight, copyFirstSummaryTable } from './tablepicker.js';
+import { handlePaste, handleCopy, showTablePicker, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, applyEditorHighlight, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
 import { safeStorageSet, safeStorageGet } from './storage.js';
 import {
@@ -831,9 +831,12 @@ export function initAnnPanel() {
     });
   });
 
-  // Attach sanitized paste handling to note editors
+  // Attach sanitized paste & copy handling to note editors
   document.getElementById('note-editor')?.addEventListener('paste', handlePaste);
+  document.getElementById('note-editor')?.addEventListener('copy', handleCopy);
   document.getElementById('edit-note-ed')?.addEventListener('paste', handlePaste);
+  document.getElementById('edit-note-ed')?.addEventListener('copy', handleCopy);
+  document.getElementById('ann-notes')?.addEventListener('copy', handleCopy);
 
   document.getElementById('edit-note-ed')?.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {

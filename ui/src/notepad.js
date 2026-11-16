@@ -15,7 +15,7 @@ import {
   dbLoadBookmarks,
 } from './db.js';
 import { replayOutbox } from './outbox.js';
-import { showTablePicker, handlePaste, sanitizeRichPasteHtml, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown, copyFirstSummaryTable } from './tablepicker.js';
+import { showTablePicker, handlePaste, handleCopy, sanitizeRichPasteHtml, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
 import { closeOtherPanels, toast, jumpToPage } from './ui.js';
 import { getColorCategoryForHex, normalizeHexColor } from './colors.js';
@@ -3111,6 +3111,7 @@ export function initNotepad() {
     });
     
     ed.addEventListener('paste', handlePaste);
+    ed.addEventListener('copy', handleCopy);
 
     // Floating highlight menu on text selection (identical to PDF reader highlight popup)
     const onSelect = () => {
@@ -3143,6 +3144,9 @@ export function initNotepad() {
       if (e.shiftKey) onSelect();
     });
   });
+
+  // Also sanitize rich copies from the read-only Highlights tab
+  $highlightsPane()?.addEventListener('copy', handleCopy);
 
   // Close on Esc
   document.addEventListener('keydown', e => {
