@@ -982,12 +982,9 @@ body.sidebar-collapsed #app:not(.sidebar-autohide):not([data-rail-autohide="true
   border-color: var(--cream);
   box-shadow: inset 0 0 0 1.5px var(--surface), 0 0 0 1px var(--accent);
 }
-/* Color tooltip */
-.cdot::after { content: attr(title); position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border-strong); color: var(--ink); font-size: 10.5px; white-space: nowrap; padding: 3px 7px; border-radius: var(--radius-s); pointer-events: none; opacity: 0; transition: opacity .15s; font-family: var(--font-ui); font-weight: 500; box-shadow: var(--shadow-lift); z-index: 40; }
-.cdot:hover::after { opacity: 1; }
-.cdot[draggable="true"] { cursor: grab; }
-.cdot:active { cursor: grabbing; }
-.cdot.dragging { opacity: 0.4; }
+/* Native title tooltip used on .cdot so .capsule overflow clipping never slices a ::after pill */
+.cdot[draggable="true"] { cursor: pointer; }
+.cdot.dragging { opacity: 0.4; cursor: grabbing; }
 .cdot.drop-before { box-shadow: -3px 0 0 0 var(--accent, #c9a84c); }
 .cdot.drop-after { box-shadow: 3px 0 0 0 var(--accent, #c9a84c); }
 #add-color-btn { font-size: 14px; cursor: pointer; background: none; border: none; color: var(--ink-muted); padding: 0 2px; transition: color .15s; }
