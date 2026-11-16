@@ -17,7 +17,9 @@ import {
 import { replayOutbox } from './outbox.js';
 import { showTablePicker, handlePaste, sanitizeRichPasteHtml, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
-import { closeOtherPanels, toast } from './ui.js';
+import { closeOtherPanels, toast, jumpToPage } from './ui.js';
+import { getColorCategoryForHex, normalizeHexColor } from './colors.js';
+import { getNoteBody, getNoteType, rectToPx, openAnnContextMenu } from './annotate.js';
 import { safeStorageSet, safeStorageGet } from './storage.js';
 import { getNotepadHistoryIDB, saveNotepadHistoryIDB } from './pdfcache.js';
 import { getNotepadDiagnostics, generateDiagnosticReport, logNotepadDiagnostic } from './diag.js';
@@ -61,14 +63,19 @@ let _timerPdfId = null;
 // Monotonic sequence token to discard stale async dbLoad responses
 let _loadSeq = 0;
 
-// Active editor tab: 'notes' | 'digest'
+// Active editor tab: 'highlights' | 'notes' | 'digest'
 let _activeTab = 'notes';
+let _highlightsView = safeStorageGet('la_np_hi_view', 'category') === 'all' ? 'all' : 'category';
+let _showHighlightNotes = safeStorageGet('la_np_hi_notes', 'false') === 'true';
+let _hiDragState = null;
 
-function $panel()        { return document.getElementById('notepad-panel'); }
-function $notesEditor()  { return document.getElementById('np-editor'); }
-function $digestEditor() { return document.getElementById('np-digest-editor'); }
-function $currentEditor(){ return _activeTab === 'digest' ? $digestEditor() : $notesEditor(); }
-function $saveLbl()      { return document.getElementById('np-save-lbl'); }
+function $panel()          { return document.getElementById('notepad-panel'); }
+function $highlightsPane() { return document.getElementById('np-highlights-pane'); }
+function $notesEditor()    { return document.getElementById('np-editor'); }
+function $digestEditor()   { return document.getElementById('np-digest-editor'); }
+function $toolbar()        { return document.getElementById('np-toolbar'); }
+function $currentEditor()  { return _activeTab === 'digest' ? $digestEditor() : $notesEditor(); }
+function $saveLbl()        { return document.getElementById('np-save-lbl'); }
 
 // ── Snapshot backup helper to protect against any data loss ──
 async function saveHistorySnapshot(pdfId, content, digest) {
@@ -588,6 +595,8 @@ export async function openNotepad(pdfId) {
     if ($digestEditor()) $digestEditor().innerHTML = '';
     const lbl = $saveLbl();
     if (lbl) { lbl.textContent = ''; lbl.className = ''; lbl.title = ''; }
+    _applyNotepadTabLayout(_activeTab);
+    renderNotepadHighlights();
     return;
   }
 
@@ -645,18 +654,22 @@ export async function openNotepad(pdfId) {
   if (notesEd) notesEd.innerHTML = initialContent;
   if (digestEd) digestEd.innerHTML = initialDigest;
   _domBoundPdfId = pdfId;
+  _applyNotepadTabLayout(_activeTab);
+  renderNotepadHighlights();
 
-  const activeEd = $currentEditor();
-  if (activeEd) {
-    try {
-      const range = document.createRange();
-      const sel   = window.getSelection();
-      range.selectNodeContents(activeEd);
-      range.collapse(false);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      activeEd.focus();
-    } catch {}
+  if (_activeTab !== 'highlights') {
+    const activeEd = $currentEditor();
+    if (activeEd) {
+      try {
+        const range = document.createRange();
+        const sel   = window.getSelection();
+        range.selectNodeContents(activeEd);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        activeEd.focus();
+      } catch {}
+    }
   }
 
   // 3. Load latest data from database
@@ -816,7 +829,557 @@ export async function closeNotepad() {
   }
 }
 
-// ── Switch between Notes and Digest tabs ──
+function _escHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch]));
+}
+
+function _sanitizeNoteHtml(rawHtml) {
+  if (!rawHtml) return '';
+  try {
+    const doc = new DOMParser().parseFromString(String(rawHtml), 'text/html');
+    doc.querySelectorAll('script, iframe, object, embed, style, link, meta').forEach(el => el.remove());
+    doc.querySelectorAll('*').forEach(el => {
+      for (const attr of Array.from(el.attributes)) {
+        const name = attr.name.toLowerCase();
+        const val = String(attr.value || '').trim().toLowerCase();
+        if (name.startsWith('on')) {
+          el.removeAttribute(attr.name);
+        } else if ((name === 'href' || name === 'src' || name === 'action') &&
+                   (val.startsWith('javascript:') || val.startsWith('vbscript:') || val.startsWith('data:text/html'))) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    });
+    return doc.body.innerHTML;
+  } catch {
+    return _escHtml(rawHtml);
+  }
+}
+
+function _getHighlightPdfId() {
+  if (S.curPDF) return S.curPDF.linked_pdf_id || S.curPDF.id;
+  return _activePdfId || null;
+}
+
+function _getSavedAnnOrder(pdfId) {
+  if (!pdfId) return [];
+  try {
+    const raw = safeStorageGet('la_ann_order_' + pdfId, '');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function _saveAnnOrder(pdfId, ids) {
+  if (!pdfId || !Array.isArray(ids)) return;
+  safeStorageSet('la_ann_order_' + pdfId, JSON.stringify(ids));
+}
+
+function _sortAnnotationsByOrder(anns, pdfId) {
+  const list = Array.isArray(anns) ? anns : [];
+  const saved = _getSavedAnnOrder(pdfId);
+  const rank = new Map(saved.map((id, idx) => [id, idx]));
+  return list
+    .map((ann, idx) => ({ ann, idx }))
+    .sort((a, b) => {
+      const ra = rank.has(String(a.ann.id)) ? rank.get(String(a.ann.id)) : Infinity;
+      const rb = rank.has(String(b.ann.id)) ? rank.get(String(b.ann.id)) : Infinity;
+      if (ra !== rb) return ra - rb;
+      const pa = Number(a.ann.page) || 0;
+      const pb = Number(b.ann.page) || 0;
+      if (pa !== pb) return pa - pb;
+      return a.idx - b.idx;
+    })
+    .map(entry => entry.ann);
+}
+
+function _clearHiDragClasses(root) {
+  if (!root) return;
+  root.querySelectorAll('.dragging, .drop-above, .drop-below').forEach(el => {
+    el.classList.remove('dragging', 'drop-above', 'drop-below');
+  });
+}
+
+async function _navigateToHighlight(ann) {
+  if (!ann) return;
+  const pageNum = Math.max(1, Number(ann.page) || 1);
+  let ratio = 0;
+  const wrap = S.pages?.[pageNum]?.wrap;
+  if (wrap?.offsetHeight > 0 && Array.isArray(ann.rects) && ann.rects.length > 0) {
+    const firstRect = ann.rects[0];
+    if (firstRect && Number.isFinite(Number(firstRect.y))) {
+      const firstPx = rectToPx(firstRect, wrap);
+      ratio = Math.max(0, Math.min(0.92, (firstPx.y - 40) / wrap.offsetHeight));
+    }
+  }
+  await jumpToPage(pageNum, true, ratio);
+  const idStr = String(ann.id ?? '');
+  const escapedId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+    ? CSS.escape(idStr)
+    : idStr.replace(/"/g, '\\"');
+  const mark = S.pages?.[pageNum]?.annOv?.querySelector(`[data-id="${escapedId}"]`)
+    || document.querySelector(`.hi-grp[data-id="${escapedId}"]`);
+  if (mark) {
+    try { mark.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+    document.querySelectorAll('.hi-grp.selected').forEach(g => g.classList.remove('selected'));
+    mark.classList.add('selected');
+  }
+}
+
+function _reorderAnnAndSave(pdfId, orderedAnns, draggedId, targetId, position) {
+  if (!pdfId || !draggedId || !targetId || draggedId === targetId) return;
+  const ids = orderedAnns.map(a => String(a.id)).filter(id => id !== String(draggedId));
+  const targetIdx = ids.indexOf(String(targetId));
+  if (targetIdx === -1) return;
+  const insertIdx = position === 'after' ? targetIdx + 1 : targetIdx;
+  ids.splice(insertIdx, 0, String(draggedId));
+  _saveAnnOrder(pdfId, ids);
+}
+
+function _getHiddenHighlightCats() {
+  try {
+    const raw = safeStorageGet('la_np_hi_hidden_cats', '');
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function _saveHiddenHighlightCats(hiddenSet) {
+  safeStorageSet('la_np_hi_hidden_cats', JSON.stringify(Array.from(hiddenSet || [])));
+}
+
+function _resolveAnnCategoryKey(ann) {
+  const info = getColorCategoryForHex(ann?.hex_color);
+  if (info.isLegacy) return '__uncategorized__';
+  if (info.id != null) return 'cat:' + info.id;
+  return 'hex:' + (info.hex_color || '');
+}
+
+function _getCategoryFilterKey(cat) {
+  if (!cat) return '__uncategorized__';
+  if (cat.id != null) return 'cat:' + cat.id;
+  return 'hex:' + (normalizeHexColor(cat.hex_color) || '');
+}
+
+function _buildHighlightCard(ann, catInfo, groupKey, orderedAnns, pdfId, pane) {
+  const card = document.createElement('div');
+  card.className = 'note-card np-hi-card' + (_showHighlightNotes ? '' : ' np-hi-card--compact');
+  card.draggable = true;
+  card.dataset.annId = String(ann.id);
+  card.dataset.groupKey = groupKey;
+
+  const dotColor = catInfo.hex_color || normalizeHexColor(ann.hex_color) || ann.hex_color || '#c9a84c';
+  const catLabel = catInfo.name || 'Highlight';
+  const rawText = String(ann.highlighted_text || '').replace(/\s+/g, ' ').trim();
+  const quoteHtml = rawText
+    ? `<blockquote class="note-card__quote">“${_escHtml(rawText)}”</blockquote>`
+    : `<blockquote class="note-card__quote np-hi-quote--box">[Box annotation]</blockquote>`;
+
+  const notes = Array.isArray(ann.notes) ? ann.notes : [];
+  let notesHtml = '';
+  if (_showHighlightNotes && notes.length > 0) {
+    const itemsHtml = notes.map(note => {
+      const safeBody = _sanitizeNoteHtml(getNoteBody(note));
+      const isCase = getNoteType(note) === 'case';
+      return `<div class="np-hi-note${isCase ? ' np-hi-note--case' : ''}">
+        ${isCase ? '<span class="np-hi-note-tag">Case</span>' : ''}
+        <div class="np-hi-note-body note-body">${safeBody}</div>
+      </div>`;
+    }).join('');
+    notesHtml = `<div class="np-hi-notes">${itemsHtml}</div>`;
+  }
+
+  card.innerHTML = `
+    <div class="note-card__head">
+      <span class="note-card__meta">
+        <span class="np-drag-handle" title="Drag to reorder highlight" aria-hidden="true">⋮⋮</span>
+        <span class="note-card__swatch" style="background:${_escHtml(dotColor)}" aria-hidden="true"></span>
+        <span class="note-num">Page ${_escHtml(ann.page || '?')}</span>
+      </span>
+      <span class="note-card__ink">${_escHtml(catLabel)}</span>
+    </div>
+    ${quoteHtml}
+    ${notesHtml}
+  `;
+
+  card.querySelectorAll('[data-pdf-link]').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const linkedId = link.getAttribute('data-pdf-link');
+      const pdf = S.pdfs?.find(p => p.id === linkedId);
+      if (pdf) {
+        import('./viewer.js').then(m => m.openPDFFromLibrary(pdf)).catch(() => {});
+      } else {
+        toast('PDF not found or deleted');
+      }
+    });
+  });
+
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('.np-drag-handle, a, [data-pdf-link], button')) return;
+    _navigateToHighlight(ann);
+  });
+
+  card.addEventListener('contextmenu', (e) => {
+    openAnnContextMenu(e, ann);
+  });
+
+  card.addEventListener('dragstart', (e) => {
+    e.stopPropagation();
+    _hiDragState = { type: 'card', annId: String(ann.id), groupKey };
+    card.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', JSON.stringify(_hiDragState));
+    }
+  });
+
+  card.addEventListener('dragover', (e) => {
+    if (!_hiDragState || _hiDragState.type !== 'card') return;
+    if (_hiDragState.annId === String(ann.id)) return;
+    if (_highlightsView === 'category' && _hiDragState.groupKey !== groupKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    pane.querySelectorAll('.np-hi-card.drop-above, .np-hi-card.drop-below').forEach(el => {
+      if (el !== card) el.classList.remove('drop-above', 'drop-below');
+    });
+    const rect = card.getBoundingClientRect();
+    const isAbove = (e.clientY - rect.top) < rect.height / 2;
+    card.classList.toggle('drop-above', isAbove);
+    card.classList.toggle('drop-below', !isAbove);
+  });
+
+  card.addEventListener('dragleave', (e) => {
+    if (!card.contains(e.relatedTarget)) {
+      card.classList.remove('drop-above', 'drop-below');
+    }
+  });
+
+  card.addEventListener('drop', (e) => {
+    if (!_hiDragState || _hiDragState.type !== 'card') return;
+    if (_hiDragState.annId === String(ann.id)) return;
+    if (_highlightsView === 'category' && _hiDragState.groupKey !== groupKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = card.getBoundingClientRect();
+    const position = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
+    const draggedId = _hiDragState.annId;
+    _hiDragState = null;
+    _clearHiDragClasses(pane);
+    _reorderAnnAndSave(pdfId, orderedAnns, draggedId, String(ann.id), position);
+    renderNotepadHighlights();
+  });
+
+  card.addEventListener('dragend', () => {
+    _hiDragState = null;
+    _clearHiDragClasses(pane);
+  });
+
+  return card;
+}
+
+export function renderNotepadHighlights() {
+  const pane = $highlightsPane();
+  if (!pane) return;
+
+  const pdfId = _getHighlightPdfId();
+  pane.innerHTML = '';
+  pane.classList.toggle('np-highlights-pane--compact', !_showHighlightNotes);
+
+  if (!pdfId || !S.curPDF) {
+    pane.innerHTML = '<div class="note-empty np-hi-empty">Open a PDF to view its highlights.</div>';
+    return;
+  }
+
+  const orderedAnns = _sortAnnotationsByOrder(S.annotations, pdfId);
+  const totalCount = orderedAnns.length;
+  const hiddenCats = _getHiddenHighlightCats();
+  const cats = Array.isArray(S.colorCats) ? S.colorCats : [];
+  const hasUncategorized = orderedAnns.some(ann => _resolveAnnCategoryKey(ann) === '__uncategorized__');
+  const visibleAnns = orderedAnns.filter(ann => !hiddenCats.has(_resolveAnnCategoryKey(ann)));
+  const visibleCount = visibleAnns.length;
+
+  const countText = (totalCount > 0 && visibleCount < totalCount)
+    ? `${visibleCount} of ${totalCount} highlights`
+    : `${totalCount} ${totalCount === 1 ? 'highlight' : 'highlights'}`;
+
+  const bar = document.createElement('div');
+  bar.className = 'np-hi-bar';
+  bar.innerHTML = `
+    <span class="np-hi-count">${_escHtml(countText)}</span>
+    <div class="np-hi-controls">
+      <button type="button" class="np-hi-notes-toggle${_showHighlightNotes ? ' active' : ''}" aria-pressed="${_showHighlightNotes ? 'true' : 'false'}" title="Toggle attached notes in Highlights view">Show notes</button>
+      <div class="np-hi-view-toggle" role="group" aria-label="Highlights view">
+        <button type="button" class="np-hi-view-btn${_highlightsView === 'category' ? ' active' : ''}" data-hiview="category">By Category</button>
+        <button type="button" class="np-hi-view-btn${_highlightsView === 'all' ? ' active' : ''}" data-hiview="all">All</button>
+      </div>
+    </div>
+  `;
+  bar.querySelector('.np-hi-notes-toggle')?.addEventListener('click', () => {
+    _showHighlightNotes = !_showHighlightNotes;
+    safeStorageSet('la_np_hi_notes', _showHighlightNotes ? 'true' : 'false');
+    renderNotepadHighlights();
+  });
+  bar.querySelectorAll('.np-hi-view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const nextView = btn.dataset.hiview === 'all' ? 'all' : 'category';
+      if (_highlightsView === nextView) return;
+      _highlightsView = nextView;
+      safeStorageSet('la_np_hi_view', _highlightsView);
+      renderNotepadHighlights();
+    });
+  });
+  pane.appendChild(bar);
+
+  if (cats.length > 0 || hasUncategorized) {
+    const filterBar = document.createElement('div');
+    filterBar.className = 'np-hi-filter-bar';
+    filterBar.setAttribute('role', 'group');
+    filterBar.setAttribute('aria-label', 'Filter highlights by category');
+
+    const filterItems = cats.map(cat => ({
+      key: _getCategoryFilterKey(cat),
+      name: cat.name || 'Color',
+      hex: normalizeHexColor(cat.hex_color) || cat.hex_color || '#c9a84c',
+    }));
+    if (hasUncategorized) {
+      filterItems.push({
+        key: '__uncategorized__',
+        name: 'Uncategorized',
+        hex: '#8a867e',
+      });
+    }
+
+    for (const item of filterItems) {
+      const isHidden = hiddenCats.has(item.key);
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'np-hi-filter-pill' + (isHidden ? ' is-hidden' : ' active');
+      pill.setAttribute('aria-pressed', isHidden ? 'false' : 'true');
+      pill.title = isHidden ? `Show ${item.name}` : `Hide ${item.name}`;
+      pill.innerHTML = `<span class="np-hi-filter-dot" style="background:${_escHtml(item.hex)}" aria-hidden="true"></span><span class="np-hi-filter-lbl">${_escHtml(item.name)}</span>`;
+      pill.addEventListener('click', () => {
+        const nextHidden = _getHiddenHighlightCats();
+        if (nextHidden.has(item.key)) nextHidden.delete(item.key);
+        else nextHidden.add(item.key);
+        _saveHiddenHighlightCats(nextHidden);
+        renderNotepadHighlights();
+      });
+      filterBar.appendChild(pill);
+    }
+
+    pane.appendChild(filterBar);
+  }
+
+  const scroll = document.createElement('div');
+  scroll.className = 'np-hi-scroll';
+  pane.appendChild(scroll);
+
+  if (totalCount === 0) {
+    scroll.innerHTML = '<div class="note-empty np-hi-empty">No highlights yet — select text or drag a box on the PDF to create one.</div>';
+    return;
+  }
+
+  if (visibleCount === 0) {
+    const emptyEl = document.createElement('div');
+    emptyEl.className = 'note-empty np-hi-empty';
+    emptyEl.innerHTML = `
+      <div>All highlights are hidden by category filters.</div>
+      <button type="button" class="np-hi-show-all-btn">Show all</button>
+    `;
+    emptyEl.querySelector('.np-hi-show-all-btn')?.addEventListener('click', () => {
+      _saveHiddenHighlightCats(new Set());
+      renderNotepadHighlights();
+    });
+    scroll.appendChild(emptyEl);
+    return;
+  }
+
+  if (_highlightsView === 'all') {
+    for (const ann of visibleAnns) {
+      const catInfo = getColorCategoryForHex(ann.hex_color);
+      scroll.appendChild(_buildHighlightCard(ann, catInfo, '__all__', orderedAnns, pdfId, pane));
+    }
+    return;
+  }
+
+  const matchedIds = new Set();
+  const groups = [];
+
+  for (let i = 0; i < cats.length; i++) {
+    const cat = cats[i];
+    const catNorm = normalizeHexColor(cat.hex_color) || cat.hex_color || '#c9a84c';
+    const items = [];
+    for (const ann of visibleAnns) {
+      if (matchedIds.has(ann.id)) continue;
+      const info = getColorCategoryForHex(ann.hex_color);
+      const isMatch = !info.isLegacy && (
+        (cat.id != null && info.id === cat.id) ||
+        (cat.id == null && info.hex_color === normalizeHexColor(cat.hex_color))
+      );
+      if (isMatch) {
+        matchedIds.add(ann.id);
+        items.push({ ann, catInfo: info });
+      }
+    }
+    if (items.length > 0) {
+      groups.push({
+        key: cat.id != null ? `cat:${cat.id}` : `catidx:${i}`,
+        catId: cat.id ?? null,
+        name: cat.name || 'Color',
+        hex: catNorm,
+        items,
+      });
+    }
+  }
+
+  const uncategorized = visibleAnns
+    .filter(ann => !matchedIds.has(ann.id))
+    .map(ann => ({ ann, catInfo: getColorCategoryForHex(ann.hex_color) }));
+
+  if (uncategorized.length > 0) {
+    groups.push({
+      key: '__uncategorized__',
+      catId: null,
+      name: 'Uncategorized',
+      hex: '#8a867e',
+      items: uncategorized,
+    });
+  }
+
+  for (const grp of groups) {
+    const grpEl = document.createElement('div');
+    grpEl.className = 'np-hi-group';
+    grpEl.dataset.groupKey = grp.key;
+    if (grp.catId != null) grpEl.dataset.catId = String(grp.catId);
+
+    const hd = document.createElement('div');
+    hd.className = 'np-hi-group-hd';
+    const canDragCat = grp.catId != null;
+    if (canDragCat) hd.draggable = true;
+
+    hd.innerHTML = `
+      ${canDragCat ? '<span class="np-drag-handle" title="Drag to reorder category" aria-hidden="true">⋮⋮</span>' : ''}
+      <span class="np-hi-cat-dot" style="background:${_escHtml(grp.hex)}" aria-hidden="true"></span>
+      <span class="np-hi-cat-name">${_escHtml(grp.name)}</span>
+      <span class="np-hi-cat-count">${grp.items.length}</span>
+    `;
+
+    if (canDragCat) {
+      hd.addEventListener('dragstart', (e) => {
+        e.stopPropagation();
+        _hiDragState = { type: 'category', catId: grp.catId };
+        grpEl.classList.add('dragging');
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', JSON.stringify(_hiDragState));
+        }
+      });
+
+      hd.addEventListener('dragend', () => {
+        _hiDragState = null;
+        _clearHiDragClasses(pane);
+      });
+
+      grpEl.addEventListener('dragover', (e) => {
+        if (!_hiDragState || _hiDragState.type !== 'category') return;
+        if (String(_hiDragState.catId) === String(grp.catId)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        pane.querySelectorAll('.np-hi-group.drop-above, .np-hi-group.drop-below').forEach(el => {
+          if (el !== grpEl) el.classList.remove('drop-above', 'drop-below');
+        });
+        const rect = grpEl.getBoundingClientRect();
+        const isAbove = (e.clientY - rect.top) < rect.height / 2;
+        grpEl.classList.toggle('drop-above', isAbove);
+        grpEl.classList.toggle('drop-below', !isAbove);
+      });
+
+      grpEl.addEventListener('dragleave', (e) => {
+        if (!grpEl.contains(e.relatedTarget)) {
+          grpEl.classList.remove('drop-above', 'drop-below');
+        }
+      });
+
+      grpEl.addEventListener('drop', (e) => {
+        if (!_hiDragState || _hiDragState.type !== 'category') return;
+        if (String(_hiDragState.catId) === String(grp.catId)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = grpEl.getBoundingClientRect();
+        const position = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
+        const draggedId = _hiDragState.catId;
+        _hiDragState = null;
+        _clearHiDragClasses(pane);
+        window.dispatchEvent(new CustomEvent('la:reorder-color-cat', {
+          detail: {
+            draggedId,
+            targetId: grp.catId,
+            position,
+          },
+        }));
+      });
+    }
+
+    const listEl = document.createElement('div');
+    listEl.className = 'np-hi-group-list';
+    for (const { ann, catInfo } of grp.items) {
+      listEl.appendChild(_buildHighlightCard(ann, catInfo, grp.key, orderedAnns, pdfId, pane));
+    }
+
+    grpEl.appendChild(hd);
+    grpEl.appendChild(listEl);
+    scroll.appendChild(grpEl);
+  }
+}
+
+function _applyNotepadTabLayout(tab) {
+  const normalized = (tab === 'highlights' || tab === 'digest') ? tab : 'notes';
+  _activeTab = normalized;
+
+  document.querySelectorAll('#np-tabs .ap-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.nptab === normalized);
+  });
+
+  const hiPane   = $highlightsPane();
+  const notesEd  = $notesEditor();
+  const digestEd = $digestEditor();
+  const toolbar  = $toolbar();
+
+  if (normalized === 'highlights') {
+    if (notesEd)  notesEd.style.display = 'none';
+    if (digestEd) digestEd.style.display = 'none';
+    if (hiPane)   hiPane.style.display = 'flex';
+    if (toolbar)  toolbar.style.display = 'none';
+  } else if (normalized === 'digest') {
+    if (hiPane)   hiPane.style.display = 'none';
+    if (notesEd)  notesEd.style.display = 'none';
+    if (digestEd) digestEd.style.display = 'block';
+    if (toolbar)  toolbar.style.display = 'flex';
+  } else {
+    if (hiPane)   hiPane.style.display = 'none';
+    if (digestEd) digestEd.style.display = 'none';
+    if (notesEd)  notesEd.style.display = 'block';
+    if (toolbar)  toolbar.style.display = 'flex';
+  }
+}
+
+// ── Switch between Highlights, Notes, and Digest tabs ──
 export function switchNotepadTab(tab) {
   // Capture latest text from both editors into cache if dirty, but do NOT mark dirty
   // merely from clicking tabs (prevents empty tab clicks during load from overwriting cloud data).
@@ -842,22 +1405,14 @@ export function switchNotepadTab(tab) {
     }
   }
 
-  _activeTab = tab;
-  document.querySelectorAll('#np-tabs .ap-tab').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.nptab === tab);
-  });
+  _applyNotepadTabLayout(tab);
 
-  const notesEd = $notesEditor();
-  const digestEd = $digestEditor();
-
-  if (tab === 'digest') {
-    if (notesEd) notesEd.style.display = 'none';
-    if (digestEd) digestEd.style.display = 'block';
-    digestEd?.focus();
+  if (_activeTab === 'highlights') {
+    renderNotepadHighlights();
+  } else if (_activeTab === 'digest') {
+    $digestEditor()?.focus();
   } else {
-    if (digestEd) digestEd.style.display = 'none';
-    if (notesEd) notesEd.style.display = 'block';
-    notesEd?.focus();
+    $notesEditor()?.focus();
   }
 }
 
@@ -1172,6 +1727,9 @@ export async function notepadOnPDFChange(newPdfId) {
 
   // 3. Update active pointer
   _activePdfId = newPdfId;
+  if (_activeTab === 'highlights') {
+    renderNotepadHighlights();
+  }
 
   // 4. If notepad panel is open, open for new PDF
   if (newPdfId && $panel()?.classList.contains('open')) {
@@ -2373,6 +2931,8 @@ export function initNotepad() {
       } else {
         if ($notesEditor()) $notesEditor().innerHTML = '';
         if ($digestEditor()) $digestEditor().innerHTML = '';
+        _applyNotepadTabLayout(_activeTab);
+        renderNotepadHighlights();
         panel.classList.add('open');
       }
     }
@@ -2643,7 +3203,12 @@ export function initNotepad() {
         buildHighlightDropdown(hiBtn, $currentEditor());
       }
     } catch {}
+    renderNotepadHighlights();
   });
+
+  window.addEventListener('la:color-order-changed', () => { renderNotepadHighlights(); });
+  window.addEventListener('la:colors-updated', () => { renderNotepadHighlights(); });
+  window.addEventListener('la:annotations-changed', () => { renderNotepadHighlights(); });
 }
 
 function initNotepadResizer() {

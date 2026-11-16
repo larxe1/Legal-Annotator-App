@@ -28,6 +28,12 @@ function _escHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
+function _notifyAnnotationsChanged() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('la:annotations-changed'));
+  }
+}
+
 // ── Create annotation (text or box) ──
 export async function createAnnotation(pageNum, rects, text, mode_) {
   if (!S.curPDF) return;
@@ -55,6 +61,7 @@ export async function createAnnotation(pageNum, rects, text, mode_) {
     S.annCounts[trueId] = (S.annCounts[trueId] || 0) + 1;
     updateAnnBadge(trueId);
     drawAnnotation(ann);
+    _notifyAnnotationsChanged();
     autosave('saved');
     toast(activeTag ? `Highlight saved (${activeTag})` : 'Highlight saved');
   } catch (e) {
@@ -104,6 +111,41 @@ export function wrapNoteHtml(html, type) {
   return html;
 }
 
+const LEGACY_BASE_SCALE = 1.5;
+
+/**
+ * Convert a stored highlight rect (normalized [0..1] when r.n === 1, or legacy px at 1.5 scale)
+ * into CSS pixel coordinates { x, y, w, h } for the page's current rendered size.
+ */
+export function rectToPx(r, pageOrWrap) {
+  if (!r) return { x: 0, y: 0, w: 0, h: 0 };
+  const rx = Number(r.x) || 0;
+  const ry = Number(r.y) || 0;
+  const rw = Number(r.w) || 0;
+  const rh = Number(r.h) || 0;
+
+  if (r.n === 1) {
+    let pw = 0, ph = 0;
+    if (typeof pageOrWrap === 'number') {
+      const pg = S.pages?.[pageOrWrap];
+      pw = pg?.wrap?.clientWidth || pg?.viewport?.width || 0;
+      ph = pg?.wrap?.clientHeight || pg?.viewport?.height || 0;
+    } else if (pageOrWrap && typeof pageOrWrap === 'object') {
+      pw = pageOrWrap.clientWidth || pageOrWrap.offsetWidth || pageOrWrap.width || 0;
+      ph = pageOrWrap.clientHeight || pageOrWrap.offsetHeight || pageOrWrap.height || 0;
+    }
+    if (!(pw > 0 && ph > 0)) {
+      const fallbackPg = Object.values(S.pages || {}).find(p => p?.wrap?.clientWidth > 0 || p?.viewport?.width > 0);
+      pw = fallbackPg?.wrap?.clientWidth || fallbackPg?.viewport?.width || (612 * (S.scale || LEGACY_BASE_SCALE));
+      ph = fallbackPg?.wrap?.clientHeight || fallbackPg?.viewport?.height || (792 * (S.scale || LEGACY_BASE_SCALE));
+    }
+    return { x: rx * pw, y: ry * ph, w: rw * pw, h: rh * ph };
+  }
+
+  const ratio = (S.scale || LEGACY_BASE_SCALE) / LEGACY_BASE_SCALE;
+  return { x: rx * ratio, y: ry * ratio, w: rw * ratio, h: rh * ratio };
+}
+
 // ── Draw annotation overlay ──
 export function drawAnnotation(ann) {
   const pg = S.pages[ann.page]; if (!pg || !pg.rendered || !pg.annOv) return;
@@ -115,13 +157,22 @@ export function drawAnnotation(ann) {
   grp.style.opacity = '0.4';
   grp.style.mixBlendMode = 'multiply';
 
-  for (const r of ann.rects) {
+  for (const r of (ann.rects || [])) {
     const d = document.createElement('div');
     d.className = 'hr';
-    d.style.cssText = `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${ann.hex_color};`;
+    if (r && r.n === 1) {
+      d.style.cssText = `left:${(r.x * 100).toFixed(5)}%;top:${(r.y * 100).toFixed(5)}%;width:${(r.w * 100).toFixed(5)}%;height:${(r.h * 100).toFixed(5)}%;background:${ann.hex_color};`;
+    } else {
+      const px = rectToPx(r, ann.page);
+      d.style.cssText = `left:${px.x}px;top:${px.y}px;width:${px.w}px;height:${px.h}px;background:${ann.hex_color};`;
+    }
     grp.appendChild(d);
   }
   grp.addEventListener('click', e => { e.stopPropagation(); openAnnPanel(ann); });
+  grp.addEventListener('contextmenu', e => {
+    if (e.currentTarget?.closest('#canvas-scroll-b')) return;
+    openAnnContextMenu(e, ann);
+  });
   grp.addEventListener('mouseenter', e => {
     const notes = Array.isArray(ann.notes) ? ann.notes : [];
     const genNotes = notes.filter(n => getNoteType(n) === 'general');
@@ -169,6 +220,7 @@ export function redrawAllAnnotations() {
     if (trueId) loadTagsForPdf(trueId);
   }
   for (const a of S.annotations) drawAnnotation(a);
+  _notifyAnnotationsChanged();
 }
 
 export function clearAnnMark(id) {
@@ -252,6 +304,219 @@ export function closeAnnPanel() {
   S.selAnn = null;
 }
 
+/**
+ * Update an annotation's highlight color across memory, local cache, PDF overlay,
+ * open annotation panel, Highlights tab, and cloud DB.
+ */
+export async function updateAnnotationColor(ann, nextHex) {
+  if (!ann) return;
+  const norm = normalizeHexColor(nextHex) || nextHex;
+  if (!norm) return;
+  autosave('saving');
+  try {
+    ann.hex_color = norm;
+    const inList = Array.isArray(S.annotations) ? S.annotations.find(a => a.id === ann.id) : null;
+    if (inList && inList !== ann) inList.hex_color = norm;
+
+    const trueId = ann.pdf_file_id || S.curPDF?.linked_pdf_id || S.curPDF?.id;
+    if (trueId) {
+      const cacheKey = 'local_anns_' + trueId;
+      if (safeStorageGet(cacheKey, null) !== null) {
+        safeStorageSet(cacheKey, JSON.stringify(S.annotations));
+      }
+    }
+
+    clearAnnMark(ann.id);
+    drawAnnotation(ann);
+    if (S.selAnn?.id === ann.id) {
+      S.selAnn.hex_color = norm;
+      document.querySelector(`.hi-grp[data-id="${ann.id}"]`)?.classList.add('selected');
+      renderAnnColors();
+    }
+    _notifyAnnotationsChanged();
+    await dbUpdateAnnColor(ann.id, norm);
+    autosave('saved');
+    toast('Color updated');
+  } catch (e) {
+    console.error(e);
+    autosave('err');
+  }
+}
+
+/**
+ * Delete an annotation from memory, overlay, tags, panel, and cloud DB.
+ */
+export async function deleteAnnotation(targetAnn) {
+  if (!targetAnn) return;
+  autosave('saving');
+  try {
+    S.annotations = S.annotations.filter(x => x.id !== targetAnn.id);
+    const trueId = targetAnn.pdf_file_id || S.curPDF?.linked_pdf_id || S.curPDF?.id;
+    if (trueId) {
+      S.annCounts[trueId] = Math.max(0, (S.annCounts[trueId] || 1) - 1);
+      updateAnnBadge(trueId);
+      const cacheKey = 'local_anns_' + trueId;
+      if (safeStorageGet(cacheKey, null) !== null) {
+        safeStorageSet(cacheKey, JSON.stringify(S.annotations));
+      }
+    }
+    clearAnnMark(targetAnn.id);
+    if (S.selAnn?.id === targetAnn.id) closeAnnPanel();
+    onAnnDeleted(targetAnn.id);
+    _notifyAnnotationsChanged();
+    await dbDelAnnotation(targetAnn.id);
+    autosave('saved');
+    toast('Highlight deleted');
+  } catch (e) {
+    console.error(e);
+    autosave('err');
+  }
+}
+
+let _annCtxHandlersBound = false;
+
+/** Close the highlight right-click context menu if open. */
+export function closeAnnContextMenu() {
+  const menu = document.getElementById('ann-ctx-menu');
+  if (!menu) return;
+  menu.classList.remove('open', 'show');
+}
+
+function _ensureAnnCtxCloseHandlers() {
+  if (_annCtxHandlersBound) return;
+  _annCtxHandlersBound = true;
+  document.addEventListener('pointerdown', (ev) => {
+    if (!ev.target?.closest?.('#ann-ctx-menu')) closeAnnContextMenu();
+  }, true);
+  document.addEventListener('contextmenu', (ev) => {
+    if (!ev.target?.closest?.('#ann-ctx-menu')) closeAnnContextMenu();
+  }, true);
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') closeAnnContextMenu();
+  });
+  window.addEventListener('scroll', (ev) => {
+    const menu = document.getElementById('ann-ctx-menu');
+    if (menu && (ev.target === menu || menu.contains(ev.target))) return;
+    closeAnnContextMenu();
+  }, true);
+  window.addEventListener('resize', closeAnnContextMenu);
+  window.addEventListener('blur', closeAnnContextMenu);
+}
+
+/**
+ * Open the highlight right-click context menu for changing color, opening notes,
+ * or deleting the annotation.
+ */
+export function openAnnContextMenu(e, ann) {
+  if (!e || !ann) return;
+  if (e.target?.closest?.('#canvas-scroll-b')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  hideTip();
+
+  document.querySelectorAll('.ctx-menu').forEach(m => {
+    if (m.id === 'ann-ctx-menu') return;
+    m.classList.remove('open', 'show');
+    if (m.id === 'subj-ctx-menu' || m.id === 'folder-ctx-menu' || m.id === 'multi-folder-ctx-menu') {
+      m.hidden = true;
+    }
+    if (m.id === 'table-ctx-menu') {
+      m.style.display = 'none';
+    }
+  });
+
+  const menu = document.getElementById('ann-ctx-menu');
+  if (!menu) return;
+  _ensureAnnCtxCloseHandlers();
+  menu.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'ctx-menu__label';
+  header.textContent = 'Change color';
+  menu.appendChild(header);
+
+  const currentNorm = normalizeHexColor(ann.hex_color);
+  for (const cat of S.colorCats || []) {
+    const catNorm = normalizeHexColor(cat.hex_color) || cat.hex_color;
+    const isActive = Boolean(currentNorm && normalizeHexColor(catNorm) === currentNorm);
+
+    const item = document.createElement('div');
+    item.className = 'ctx-item ctx-item--color' + (isActive ? ' ctx-item--active' : '');
+    item.setAttribute('role', 'menuitemradio');
+    item.setAttribute('aria-checked', String(isActive));
+
+    const dot = document.createElement('span');
+    dot.className = 'ctx-color-dot';
+    dot.style.background = catNorm;
+    dot.setAttribute('aria-hidden', 'true');
+
+    const name = document.createElement('span');
+    name.className = 'ctx-item__name';
+    name.textContent = cat.name || catNorm;
+
+    item.append(dot, name);
+    if (isActive) {
+      const chk = document.createElement('span');
+      chk.className = 'ctx-item__check';
+      chk.textContent = '✓';
+      chk.setAttribute('aria-hidden', 'true');
+      item.appendChild(chk);
+    }
+
+    item.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      closeAnnContextMenu();
+      updateAnnotationColor(ann, catNorm);
+    });
+    menu.appendChild(item);
+  }
+
+  const sep = document.createElement('div');
+  sep.className = 'ctx-sep';
+  menu.appendChild(sep);
+
+  const openItem = document.createElement('div');
+  openItem.className = 'ctx-item';
+  openItem.setAttribute('role', 'menuitem');
+  openItem.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>Open notes</span>';
+  openItem.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    closeAnnContextMenu();
+    openAnnPanel(ann);
+  });
+  menu.appendChild(openItem);
+
+  const delItem = document.createElement('div');
+  delItem.className = 'ctx-item ctx-item--danger';
+  delItem.setAttribute('role', 'menuitem');
+  delItem.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span>Delete highlight</span>';
+  delItem.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    closeAnnContextMenu();
+    deleteAnnotation(ann);
+  });
+  menu.appendChild(delItem);
+
+  menu.hidden = false;
+  menu.style.left = '-9999px';
+  menu.style.top = '-9999px';
+  menu.classList.add('open');
+
+  const pad = 6;
+  const mw = menu.offsetWidth || 210;
+  const mh = menu.offsetHeight || 240;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let left = e.clientX;
+  let top = e.clientY;
+  if (left + mw + pad > vw) left = Math.max(pad, e.clientX - mw);
+  if (top + mh + pad > vh) top = Math.max(pad, e.clientY - mh);
+  left = Math.max(pad, Math.min(left, Math.max(pad, vw - mw - pad)));
+  top = Math.max(pad, Math.min(top, Math.max(pad, vh - mh - pad)));
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+}
+
 function renderAnnColors() {
   const c = document.getElementById('ap-colors');
   if (!c) return;
@@ -275,22 +540,8 @@ function renderAnnColors() {
     d.style.background = norm;
     d.title = cat.name;
     d.setAttribute('aria-label', cat.name);
-    d.addEventListener('click', async () => {
-      const targetAnn = S.selAnn;
-      if (!targetAnn) return;
-      autosave('saving');
-      try {
-        targetAnn.hex_color = norm;
-        clearAnnMark(targetAnn.id);
-        drawAnnotation(targetAnn);
-        renderAnnColors();
-        await dbUpdateAnnColor(targetAnn.id, norm);
-        autosave('saved');
-        toast('Color updated');
-      } catch (e) {
-        console.error(e);
-        autosave('err');
-      }
+    d.addEventListener('click', () => {
+      if (S.selAnn) updateAnnotationColor(S.selAnn, norm);
     });
     c.appendChild(d);
   }
@@ -410,6 +661,7 @@ function renderNotes(ann) {
         const trueId = ann.pdf_file_id;
         if (trueId) safeStorageSet('local_anns_' + trueId, JSON.stringify(S.annotations));
         renderNotes(ann);
+        _notifyAnnotationsChanged();
         await dbDelNote(note.id);
         autosave('saved');
         import('./ui.js').then(m => m.toast(isCase ? 'Case summary deleted' : 'Note deleted'));
@@ -438,27 +690,8 @@ export function initAnnPanel() {
     });
   });
 
-  document.getElementById('btn-del-hi').addEventListener('click', async () => {
-    const targetAnn = S.selAnn;
-    if (!targetAnn) return;
-    autosave('saving');
-    try {
-      S.annotations = S.annotations.filter(x => x.id !== targetAnn.id);
-      const trueId = targetAnn.pdf_file_id;
-      if (trueId) {
-        S.annCounts[trueId] = Math.max(0, (S.annCounts[trueId] || 1) - 1);
-        updateAnnBadge(trueId);
-      }
-      clearAnnMark(targetAnn.id);
-      closeAnnPanel();
-      onAnnDeleted(targetAnn.id);
-      await dbDelAnnotation(targetAnn.id);
-      autosave('saved');
-      toast('Highlight deleted');
-    } catch (e) {
-      console.error(e);
-      autosave('err');
-    }
+  document.getElementById('btn-del-hi').addEventListener('click', () => {
+    if (S.selAnn) deleteAnnotation(S.selAnn);
   });
 
   // Add note / Case summary — with empty-editor shake (fixes bug #5)
@@ -484,6 +717,7 @@ export function initAnnPanel() {
       }
       ed.innerHTML = '';
       if (S.selAnn?.id === targetAnn.id) renderNotes(targetAnn);
+      _notifyAnnotationsChanged();
       autosave('saved');
       toast(savedTab === 'case' ? 'Case summary added' : 'Note added');
     } catch (e) {
@@ -515,6 +749,7 @@ export function initAnnPanel() {
           safeStorageSet('local_anns_' + trueId, JSON.stringify(S.annotations));
         }
         if (S.selAnn?.id === targetAnn?.id) renderNotes(targetAnn);
+        _notifyAnnotationsChanged();
       }
       closeModal('mo-edit-note');
       await dbUpdateNote(S.editingNoteId, htmlToSave);

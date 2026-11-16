@@ -77,7 +77,7 @@ function isValidMatchQuery(matchQuery) {
 // ── Replay all queued actions to Supabase ──
 export async function replayOutbox(dbClient) {
   if (_isReplaying) return;
-  if (!navigator.onLine) return;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return;
 
   const queue = getOutboxQueue();
   if (queue.length === 0) return;
@@ -100,8 +100,9 @@ export async function replayOutbox(dbClient) {
       } else if (item.action === 'update') {
         let q = dbClient.from(item.table).update(item.data);
         if (item.matchQuery && isValidMatchQuery(item.matchQuery)) {
-          q = q.match(item.matchQuery);
-        } else if (item.data?.id) {
+          const entries = Object.entries(item.matchQuery);
+          q = entries.length === 1 ? q.eq(entries[0][0], entries[0][1]) : q.match(item.matchQuery);
+        } else if (item.data?.id !== undefined && item.data?.id !== null && item.data?.id !== '') {
           q = q.eq('id', item.data.id);
         } else {
           console.warn(`[Outbox] Dropping unsafe update without criteria on ${item.table}`);
@@ -114,13 +115,16 @@ export async function replayOutbox(dbClient) {
           console.warn(`[Outbox] Dropping unsafe delete with invalid criteria on ${item.table}:`, item.matchQuery);
           continue;
         }
-        const { error } = await dbClient.from(item.table).delete().match(item.matchQuery);
+        const entries = Object.entries(item.matchQuery);
+        let q = dbClient.from(item.table).delete();
+        q = entries.length === 1 ? q.eq(entries[0][0], entries[0][1]) : q.match(item.matchQuery);
+        const { error } = await q;
         if (error) throw error;
       }
       console.log(`[Outbox] Successfully synced: ${item.action} on ${item.table}`);
     } catch (err) {
       item.retries = (item.retries || 0) + 1;
-      import('./ui.js').then(m => m.recordError(err, `Sync ${item.action} on ${item.table}`));
+      import('./ui.js').then(m => m.recordError(err, `Sync ${item.action} on ${item.table}`)).catch(() => {});
       
       const errMsg = (err?.message || err?.details || String(err)).toLowerCase();
       const isFatal = errMsg.includes('syntax') || errMsg.includes('constraint') || 
@@ -153,14 +157,15 @@ export async function replayOutbox(dbClient) {
 export async function safeDbWrite(dbClient, table, action, data, matchQuery = null) {
   // Safety check on delete operations: ensure strict criteria
   if (action === 'delete' && !isValidMatchQuery(matchQuery)) {
+    const err = new Error(`Blocked unsafe delete on "${table}" — invalid matchQuery`);
     console.error(`[Outbox] Blocked unsafe delete on "${table}" — matchQuery is missing or contains invalid keys:`, matchQuery);
-    return;
+    return { ok: false, offline: false, queued: false, blocked: true, error: err };
   }
 
   // If we know we are offline, enqueue immediately
-  if (!navigator.onLine) {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
     enqueueAction(table, action, data, matchQuery);
-    return;
+    return { ok: false, offline: true, queued: true };
   }
 
   let timeoutId = null;
@@ -172,38 +177,57 @@ export async function safeDbWrite(dbClient, table, action, data, matchQuery = nu
       } else if (action === 'update') {
         let q = dbClient.from(table).update(data);
         if (matchQuery && isValidMatchQuery(matchQuery)) {
-          q = q.match(matchQuery);
-        } else if (data?.id) {
+          const entries = Object.entries(matchQuery);
+          q = entries.length === 1 ? q.eq(entries[0][0], entries[0][1]) : q.match(matchQuery);
+        } else if (data?.id !== undefined && data?.id !== null && data?.id !== '') {
           q = q.eq('id', data.id);
         } else {
+          const err = new Error(`Blocked unsafe update on "${table}" — no valid matchQuery or id provided`);
           console.error(`[Outbox] Blocked unsafe update on "${table}" — no valid matchQuery or id provided:`, data);
-          return;
+          return { ok: false, offline: false, queued: false, blocked: true, error: err };
         }
         const { error } = await q;
         if (error) throw error;
       } else if (action === 'delete') {
-        const { error } = await dbClient.from(table).delete().match(matchQuery);
+        const entries = Object.entries(matchQuery);
+        let q = dbClient.from(table).delete();
+        q = entries.length === 1 ? q.eq(entries[0][0], entries[0][1]) : q.match(matchQuery);
+        const { error } = await q;
         if (error) throw error;
       }
+      return { ok: true, offline: false, queued: false };
     })();
 
     const timeoutPromise = new Promise((_, reject) => {
       timeoutId = setTimeout(() => reject(new Error(`Supabase ${action} on ${table} timed out after 8s`)), 8000);
     });
 
-    await Promise.race([dbPromise, timeoutPromise]);
+    return await Promise.race([dbPromise, timeoutPromise]);
   } catch (err) {
     const errMsg = (err?.message || err?.details || String(err)).toLowerCase();
     const isForeignKey = err?.code === '23503' || errMsg.includes('23503') || errMsg.includes('foreign key') || errMsg.includes('fkey');
 
     if (isForeignKey) {
       console.warn(`[Outbox] Foreign key constraint on ${table} (referenced parent item missing/deleted). Skipping enqueue:`, err);
-      return;
+      return { ok: false, offline: false, queued: false, error: err };
+    }
+
+    const isFatalDbError = err?.code === '42501' || err?.code === '42703' || err?.code === '23502' ||
+                           err?.code === '23505' || err?.code === '22P02' ||
+                           errMsg.includes('row-level security') || errMsg.includes('permission denied') ||
+                           errMsg.includes('violates') || errMsg.includes('constraint') ||
+                           errMsg.includes('column') || errMsg.includes('relation') || errMsg.includes('syntax');
+
+    if (isFatalDbError) {
+      console.error(`[Outbox] Direct Supabase write rejected (${table}/${action}):`, err);
+      import('./ui.js').then(m => m.recordError(err, `Write to ${table}`)).catch(() => {});
+      return { ok: false, offline: false, queued: false, error: err };
     }
 
     console.warn(`[Outbox] Direct Supabase write failed — saving to offline outbox queue:`, err);
-    import('./ui.js').then(m => m.recordError(err, `Write to ${table}`));
+    import('./ui.js').then(m => m.recordError(err, `Write to ${table}`)).catch(() => {});
     enqueueAction(table, action, data, matchQuery);
+    return { ok: false, offline: false, queued: true, error: err };
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
   }

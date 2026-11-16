@@ -663,8 +663,9 @@
       <button id="np-save-now-btn" class="np-save-btn" title="Manually save notes to cloud now (Ctrl+S)" style="background:var(--accent, var(--gold));color:var(--accent-ink, #fff);border:none;padding:3px 9px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:4px;white-space:nowrap;flex-shrink:0;"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg><span>Save Now</span></button>
       <button class="ap-close" id="np-close" aria-label="Close Notepad"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
     </div>
-    <!-- Tabs: Notes vs Case Digest -->
+    <!-- Tabs: Highlights vs Notes vs Case Digest -->
     <div class="ap-tabs" id="np-tabs" style="display:flex; border-bottom:1px solid var(--border, var(--rule)); background:var(--surface-2); flex-shrink:0;">
+      <button class="ap-tab" data-nptab="highlights" id="nptab-highlights"><svg class="icon" aria-hidden="true"><use href="#i-highlight"/></svg><span>Highlights</span></button>
       <button class="ap-tab active" data-nptab="notes" id="nptab-notes"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>Notes</span></button>
       <button class="ap-tab" data-nptab="digest" id="nptab-digest"><svg class="icon" aria-hidden="true"><use href="#i-scale"/></svg><span>Case Digest</span></button>
     </div>
@@ -724,6 +725,7 @@
       <button class="np-fmt-btn" id="np-history-btn" title="View note history and restore a previous version" style="font-size:11px;"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span>History</span></button>
     </div>
     <div id="np-body">
+      <div id="np-highlights-pane" class="np-highlights-pane" style="display:none;"></div>
       <div
         id="np-editor"
         class="np-editor-pane"
@@ -1850,6 +1852,9 @@
   <div class="ctx-sep"></div>
   <div class="ctx-item ctx-item--danger" id="subj-ctx-del"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span>Delete Subject</span></div>
 </div>
+
+<!-- Highlight Annotation Right-Click Context Menu -->
+<div id="ann-ctx-menu" class="ctx-menu" role="menu" aria-label="Highlight options"></div>
 
 <!-- Service Worker Registration & PWA Install Prompter -->
 <script>

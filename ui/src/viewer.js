@@ -1230,9 +1230,12 @@ function onTextUp(pageNum) {
   rects = merged;
 
   const last = rects[rects.length - 1];
-  S.pendingSel = { pageNum, rects, text };
   const mx = Math.min(wr.left + last.x + last.w, window.innerWidth - 170);
   const my = Math.min(wr.top  + last.y + last.h + 6, window.innerHeight - 60);
+  const normRects = (wr.width > 0 && wr.height > 0)
+    ? rects.map(r => ({ x: r.x / wr.width, y: r.y / wr.height, w: r.w / wr.width, h: r.h / wr.height, n: 1 }))
+    : rects;
+  S.pendingSel = { pageNum, rects: normRects, text };
   const m  = document.getElementById('sel-menu');
   m.style.left = mx + 'px';
   m.style.top  = my + 'px';
@@ -1265,7 +1268,10 @@ function setupBoxDrag(wrap, pageNum) {
     const ti   = S.pages[pageNum]?.textItems || [];
     const text = ti.filter(it => it.x < rx + rw && it.x + it.w > rx && it.y < ry + rh && it.y + it.h > ry)
       .map(it => it.str).join(' ').trim() || '(selected region)';
-    import('./annotate.js').then(({ createAnnotation }) => createAnnotation(pageNum, [{ x: rx, y: ry, w: rw, h: rh }], text, 'box'));
+    const boxRect = (wr.width > 0 && wr.height > 0)
+      ? { x: rx / wr.width, y: ry / wr.height, w: rw / wr.width, h: rh / wr.height, n: 1 }
+      : { x: rx, y: ry, w: rw, h: rh };
+    import('./annotate.js').then(({ createAnnotation }) => createAnnotation(pageNum, [boxRect], text, 'box'));
   }
 
   wrap.addEventListener('mousedown', e => {

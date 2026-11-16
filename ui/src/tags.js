@@ -2,6 +2,7 @@
 // TAGS & TOPIC COVERAGE WORKSPACE — Tags, Quick Step Scroll, & Outside Laws
 // ═══════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
+import { rectToPx } from './annotate.js';
 import { toast, autosave, closeOtherPanels } from './ui.js';
 import { dbGetSetting, dbSetSetting } from './db.js';
 import { safeStorageSet, safeStorageGet } from './storage.js';
@@ -491,12 +492,13 @@ export function redrawTagBadgeForAnn(ann) {
 
   const firstRect = ann.rects && ann.rects[0];
   if (!firstRect) return;
+  const pxRect = rectToPx(firstRect, pg.wrap);
 
   const badge = document.createElement('div');
   badge.className = 'ann-tag-pill-badge';
   badge.dataset.id = ann.id;
-  badge.style.left = `${Math.max(2, firstRect.x + firstRect.w - 6)}px`;
-  badge.style.top = `${Math.max(2, firstRect.y - 12)}px`;
+  badge.style.left = `${Math.max(2, pxRect.x + pxRect.w - 6)}px`;
+  badge.style.top = `${Math.max(2, pxRect.y - 12)}px`;
 
   const tagLabel = tags.length === 1 ? tags[0] : `${tags[0]} +${tags.length - 1}`;
   const topic = currentTagData?.topics?.[tags[0]];
@@ -547,7 +549,7 @@ export async function jumpThroughTag(tagName, direction = 1) {
     toast(`No highlights tagged with "${tagName}"`);
     return;
   }
-  matching.sort((a, b) => (a.page - b.page) || ((a.rects?.[0]?.y || 0) - (b.rects?.[0]?.y || 0)));
+  matching.sort((a, b) => (a.page - b.page) || (rectToPx(a.rects?.[0], a.page).y - rectToPx(b.rects?.[0], b.page).y));
 
   let curIdx = _tagJumpIndices[tagName] ?? -1;
   curIdx = (curIdx + direction + matching.length) % matching.length;
@@ -700,7 +702,7 @@ function renderSingleTopicView(container, tagName) {
   };
   const color = topic.color || pickTopicColor(tagName);
   const matching = (S.annotations || []).filter(a => getAnnTags(a).includes(tagName));
-  matching.sort((a, b) => (a.page - b.page) || ((a.rects?.[0]?.y || 0) - (b.rects?.[0]?.y || 0)));
+  matching.sort((a, b) => (a.page - b.page) || (rectToPx(a.rects?.[0], a.page).y - rectToPx(b.rects?.[0], b.page).y));
 
   const curIdx = (_tagJumpIndices[tagName] ?? -1) + 1;
   const posLabel = matching.length > 0 ? (curIdx > 0 ? `${curIdx} of ${matching.length}` : `1 of ${matching.length}`) : '0 of 0';
@@ -867,7 +869,7 @@ export function openTopicNotesModal(tagName) {
 
   const color = topic.color || pickTopicColor(tagName);
   const matching = (S.annotations || []).filter(a => getAnnTags(a).includes(tagName));
-  matching.sort((a, b) => (a.page - b.page) || ((a.rects?.[0]?.y || 0) - (b.rects?.[0]?.y || 0)));
+  matching.sort((a, b) => (a.page - b.page) || (rectToPx(a.rects?.[0], a.page).y - rectToPx(b.rects?.[0], b.page).y));
 
   // Title and badge
   const titleEl = document.getElementById('tnm-topic-name');

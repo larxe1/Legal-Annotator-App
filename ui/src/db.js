@@ -714,12 +714,20 @@ function _syncLocalSnapshotColors() {
   } catch {}
 }
 
+function _assertColorCatWriteResult(writeResult, fallbackMessage) {
+  if (writeResult && writeResult.ok === false && !writeResult.offline && !writeResult.queued) {
+    throw writeResult.error || new Error(fallbackMessage);
+  }
+}
+
 export async function dbCreateColorCat(name, hex_color) {
   const id = 'cc_' + Date.now();
   const cleanName = String(name || '').trim() || 'Color';
   const cleanHex = _normalizeColorHex(hex_color) || '#c9a84c';
   const cat = { id, name: cleanName, hex_color: cleanHex };
-  await safeDbWrite(db, 'color_categories', 'upsert', cat);
+  const writeResult = await safeDbWrite(db, 'color_categories', 'upsert', cat);
+  _assertColorCatWriteResult(writeResult, 'Failed to create color category');
+  if (!Array.isArray(S.colorCats)) S.colorCats = [];
   S.colorCats.push(cat);
   _syncLocalSnapshotColors();
   broadcastSync({ type: 'LIBRARY_CHANGED' });
@@ -727,27 +735,34 @@ export async function dbCreateColorCat(name, hex_color) {
 }
 
 export async function dbUpdateColorCat(id, name, hex_color) {
-  const cleanId = String(id || '').trim();
-  const cleanName = String(name || '').trim();
+  const cleanId = id == null ? '' : String(id).trim();
+  const cleanName = name == null ? '' : String(name).trim();
   if (!cleanId || !cleanName) {
     throw new Error('dbUpdateColorCat requires non-empty id and name');
   }
-  const idx = S.colorCats.findIndex(c => c.id === cleanId);
-  const existing = idx >= 0 ? S.colorCats[idx] : null;
+  const list = Array.isArray(S.colorCats) ? S.colorCats : (S.colorCats = []);
+  const idx = list.findIndex(c => String(c.id) === cleanId);
+  const existing = idx >= 0 ? list[idx] : null;
+  const targetId = existing ? existing.id : cleanId;
   const cleanHex = _normalizeColorHex(hex_color) || _normalizeColorHex(existing?.hex_color) || '#c9a84c';
-  const row = { id: cleanId, name: cleanName, hex_color: cleanHex };
-  await safeDbWrite(db, 'color_categories', 'upsert', row);
-  const updated = { ...(existing || {}), ...row };
-  if (idx >= 0) S.colorCats[idx] = updated;
-  else S.colorCats.push(updated);
+  const payload = { name: cleanName, hex_color: cleanHex };
+  const writeResult = await safeDbWrite(db, 'color_categories', 'update', payload, { id: targetId });
+  _assertColorCatWriteResult(writeResult, 'Failed to update color category');
+  const updated = { ...(existing || { id: targetId }), ...payload };
+  if (idx >= 0) list[idx] = updated;
+  else list.push(updated);
   _syncLocalSnapshotColors();
   broadcastSync({ type: 'LIBRARY_CHANGED' });
   return updated;
 }
 
 export async function dbDelColorCat(id) {
-  await safeDbWrite(db, 'color_categories', 'delete', null, { id });
-  S.colorCats = S.colorCats.filter(c => c.id !== id);
+  const cleanId = id == null ? '' : String(id).trim();
+  const existing = Array.isArray(S.colorCats) ? S.colorCats.find(c => String(c.id) === cleanId) : null;
+  const targetId = existing ? existing.id : id;
+  const writeResult = await safeDbWrite(db, 'color_categories', 'delete', null, { id: targetId });
+  _assertColorCatWriteResult(writeResult, 'Failed to delete color category');
+  S.colorCats = (S.colorCats || []).filter(c => String(c.id) !== cleanId);
   _syncLocalSnapshotColors();
   broadcastSync({ type: 'LIBRARY_CHANGED' });
 }

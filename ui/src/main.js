@@ -5,7 +5,7 @@ import { S }                  from './state.js';
 import { db, dbLoad, dbLoadAnnCounts, dbCreateBookmark, dbDelBookmark, dbClearAllBookmarks, dbLoadLinks, dbSaveLinks, dbGetSetting, dbSetSetting } from './db.js';
 import { initDriveBar }       from './drive.js';
 import { renderLibrary, initLibraryModals, initLibrarySelection, initContextMenu, renderArchivedSubjectsSettings } from './library.js';
-import { renderColorDots, initColors } from './colors.js';
+import { renderColorDots, initColors, applySavedColorOrder } from './colors.js';
 import { setMode }            from './viewer.js';
 import { initAnnPanel }       from './annotate.js';
 import { initSearch, openSearch, closeSearch } from './search.js';
@@ -93,6 +93,7 @@ async function init() {
 
   // 5. Active color (guarded)
   try {
+    applySavedColorOrder(S.colorCats);
     if (S.colorCats.length) S.activeColor = S.colorCats[0].hex_color;
     renderColorDots();
   } catch (e) { console.error('[Init] Colors render error:', e); }

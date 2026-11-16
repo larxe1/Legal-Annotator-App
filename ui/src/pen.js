@@ -28,6 +28,7 @@
 // Desktop testing: localStorage.setItem('pen_debug_mouse','1') makes the mouse act as a pen.
 // ═══════════════════════════════════════════════
 import { S } from './state.js';
+import { rectToPx } from './annotate.js';
 import { toast } from './ui.js';
 import { safeStorageGet, safeStorageSet } from './storage.js';
 
@@ -465,7 +466,11 @@ function schedulePreview() {
     for (const r of res.rects) {
       const d = document.createElement('div');
       d.className = 'hr';
-      d.style.cssText = `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${col};`;
+      if (r && r.n === 1) {
+        d.style.cssText = `left:${(r.x * 100).toFixed(5)}%;top:${(r.y * 100).toFixed(5)}%;width:${(r.w * 100).toFixed(5)}%;height:${(r.h * 100).toFixed(5)}%;background:${col};`;
+      } else {
+        d.style.cssText = `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${col};`;
+      }
       grp.appendChild(d);
     }
   });
@@ -629,8 +634,11 @@ function computeRangeHighlight(geo, wr, startCaret, endCaret) {
     }
   }
 
+  const normRects = (wr && wr.width > 0 && wr.height > 0)
+    ? merged.map(r => ({ x: r.x / wr.width, y: r.y / wr.height, w: r.w / wr.width, h: r.h / wr.height, n: 1 }))
+    : merged;
   const text = texts.join(' ').replace(/\s+/g, ' ').trim();
-  return { rects: merged, text: text || '(highlighted text)' };
+  return { rects: normRects, text: text || '(highlighted text)' };
 }
 
 function finishStroke(st) {
@@ -666,6 +674,9 @@ function handleTap(st) {
   const wr = pg.wrap.getBoundingClientRect();
   const x = st.x0 - wr.left, y = st.y0 - wr.top;
   const hit = (S.annotations || []).filter(a => a.page === st.pn &&
-    (a.rects || []).some(r => x >= r.x - 2 && x <= r.x + r.w + 2 && y >= r.y - 2 && y <= r.y + r.h + 2)).pop();
+    (a.rects || []).some(r => {
+      const pr = rectToPx(r, pg.wrap);
+      return x >= pr.x - 2 && x <= pr.x + pr.w + 2 && y >= pr.y - 2 && y <= pr.y + pr.h + 2;
+    })).pop();
   if (hit) pg.annOv?.querySelector(`[data-id="${hit.id}"]`)?.click();
 }

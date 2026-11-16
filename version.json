@@ -1,7 +1,7 @@
 {
-    "version":  "1.24.0",
-    "build":  73,
-    "updatedAt":  "2026-11-15T01:59:46Z",
-    "notes":  "Added batch Gemini Digest support for multi-selected PDFs via right-click in the sidebar.",
+    "version":  "1.25.0",
+    "build":  74,
+    "updatedAt":  "2026-11-16T06:08:15Z",
+    "notes":  "Added Highlights tab left of Notes (Highlights, Notes, Case Digests) with toggleable highlight notes, compact continuous reading view, category visibility filters, and drag-and-drop reordering; set default highlight color order to yellow-brown, red, blue with drag-and-drop swatch reordering; added right-click highlight color context menu; fixed highlight color category Save persistence and rare zoom-out highlight misplacement.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
