@@ -65,7 +65,7 @@ let _loadSeq = 0;
 
 // Active editor tab: 'highlights' | 'notes' | 'digest'
 let _activeTab = 'notes';
-let _highlightsView = safeStorageGet('la_np_hi_view', 'category') === 'all' ? 'all' : 'category';
+let _highlightsView = safeStorageGet('la_np_hi_view_v2', 'all') === 'category' ? 'category' : 'all';
 let _showHighlightNotes = safeStorageGet('la_np_hi_notes', 'false') === 'true';
 let _hiDragState = null;
 
@@ -884,12 +884,34 @@ function _saveAnnOrder(pdfId, ids) {
   safeStorageSet('la_ann_order_' + pdfId, JSON.stringify(ids));
 }
 
+function _getAnnPagePosition(ann) {
+  const rects = Array.isArray(ann?.rects) ? ann.rects : [];
+  const first = rects[0];
+  if (!first) return { y: Infinity, x: Infinity };
+  if (first.n === 1) {
+    return {
+      y: Number.isFinite(Number(first.y)) ? Number(first.y) : Infinity,
+      x: Number.isFinite(Number(first.x)) ? Number(first.x) : Infinity,
+    };
+  }
+  const pageNum = Math.max(1, Number(ann?.page) || 1);
+  const wrap = S.pages?.[pageNum]?.wrap;
+  if (wrap && wrap.clientHeight > 0 && wrap.clientWidth > 0) {
+    const px = rectToPx(first, wrap);
+    return { y: px.y / wrap.clientHeight, x: px.x / wrap.clientWidth };
+  }
+  return {
+    y: Number.isFinite(Number(first.y)) ? Number(first.y) / 1200 : Infinity,
+    x: Number.isFinite(Number(first.x)) ? Number(first.x) / 900 : Infinity,
+  };
+}
+
 function _sortAnnotationsByOrder(anns, pdfId) {
   const list = Array.isArray(anns) ? anns : [];
   const saved = _getSavedAnnOrder(pdfId);
   const rank = new Map(saved.map((id, idx) => [id, idx]));
   return list
-    .map((ann, idx) => ({ ann, idx }))
+    .map((ann, idx) => ({ ann, idx, pos: _getAnnPagePosition(ann) }))
     .sort((a, b) => {
       const ra = rank.has(String(a.ann.id)) ? rank.get(String(a.ann.id)) : Infinity;
       const rb = rank.has(String(b.ann.id)) ? rank.get(String(b.ann.id)) : Infinity;
@@ -897,6 +919,8 @@ function _sortAnnotationsByOrder(anns, pdfId) {
       const pa = Number(a.ann.page) || 0;
       const pb = Number(b.ann.page) || 0;
       if (pa !== pb) return pa - pb;
+      if (Math.abs(a.pos.y - b.pos.y) > 0.006) return a.pos.y - b.pos.y;
+      if (a.pos.x !== b.pos.x) return a.pos.x - b.pos.x;
       return a.idx - b.idx;
     })
     .map(entry => entry.ann);
@@ -1124,8 +1148,8 @@ export function renderNotepadHighlights() {
     <div class="np-hi-controls">
       <button type="button" class="np-hi-notes-toggle${_showHighlightNotes ? ' active' : ''}" aria-pressed="${_showHighlightNotes ? 'true' : 'false'}" title="Toggle attached notes in Highlights view">Show notes</button>
       <div class="np-hi-view-toggle" role="group" aria-label="Highlights view">
+        <button type="button" class="np-hi-view-btn${_highlightsView === 'all' ? ' active' : ''}" data-hiview="all">In Order</button>
         <button type="button" class="np-hi-view-btn${_highlightsView === 'category' ? ' active' : ''}" data-hiview="category">By Category</button>
-        <button type="button" class="np-hi-view-btn${_highlightsView === 'all' ? ' active' : ''}" data-hiview="all">All</button>
       </div>
     </div>
   `;
@@ -1136,10 +1160,10 @@ export function renderNotepadHighlights() {
   });
   bar.querySelectorAll('.np-hi-view-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const nextView = btn.dataset.hiview === 'all' ? 'all' : 'category';
+      const nextView = btn.dataset.hiview === 'category' ? 'category' : 'all';
       if (_highlightsView === nextView) return;
       _highlightsView = nextView;
-      safeStorageSet('la_np_hi_view', _highlightsView);
+      safeStorageSet('la_np_hi_view_v2', _highlightsView);
       renderNotepadHighlights();
     });
   });
