@@ -117,21 +117,34 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     subjectId: '',
     subjectName: '',
     subfolderName: '',
-    instructionText: '',
-    pdfText: '',
-    fullPromptText: '',
     pinnedNotebookUrl: '',
     modelLabel: '4 Hydrogen',
     thinkingLevel: 'High',
     autoSubmit: false,
     digestMode: 'replace',
     autoSendDigest: true,
-    jobId: 0
+    jobId: 0,
+    hasPromptText: false,
+    promptLength: 0
   };
+
+  var _inMemoryPromptText = '';
+  var _inMemoryPromptJobId = 0;
+
+  function sanitizeStateForCache(src) {
+    var out = {};
+    if (!src || typeof src !== 'object') return out;
+    for (var k in src) {
+      if (k === 'pdfText' || k === 'fullPromptText' || k === 'instructionText') continue;
+      out[k] = src[k];
+    }
+    return out;
+  }
 
   try {
     if (window.__INITIAL_GEMINI_JOB__ && typeof window.__INITIAL_GEMINI_JOB__ === 'object') {
       for (var ik in window.__INITIAL_GEMINI_JOB__) {
+        if (ik === 'pdfText' || ik === 'fullPromptText' || ik === 'instructionText') continue;
         if (window.__INITIAL_GEMINI_JOB__[ik] !== undefined && window.__INITIAL_GEMINI_JOB__[ik] !== null) {
           _state[ik] = window.__INITIAL_GEMINI_JOB__[ik];
         }
@@ -144,16 +157,19 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         var initJobId = Number(window.__INITIAL_GEMINI_JOB__ && window.__INITIAL_GEMINI_JOB__.jobId ? window.__INITIAL_GEMINI_JOB__.jobId : 0);
         var cachedJobId = Number(parsed.jobId || 0);
         if (cachedJobId >= initJobId) {
-          for (var k in parsed) { _state[k] = parsed[k]; }
+          for (var k in parsed) {
+            if (k === 'pdfText' || k === 'fullPromptText' || k === 'instructionText') continue;
+            _state[k] = parsed[k];
+          }
         }
       }
     }
-    sessionStorage.setItem('la_gemini_state_cache', JSON.stringify(_state));
+    sessionStorage.setItem('la_gemini_state_cache', JSON.stringify(sanitizeStateForCache(_state)));
   } catch (e) {}
 
   function saveStateCache() {
     try {
-      sessionStorage.setItem('la_gemini_state_cache', JSON.stringify(_state));
+      sessionStorage.setItem('la_gemini_state_cache', JSON.stringify(sanitizeStateForCache(_state)));
     } catch (e) {}
   }
 
@@ -1537,7 +1553,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   function setGeminiInputText(inputEl, text) {
     if (!inputEl) return false;
-    var expectedMin = Math.min(8, String(text || '').trim().length);
+    var trimmedLen = String(text || '').trim().length;
+    var expectedMin = trimmedLen > 20 ? 21 : trimmedLen;
     function hasInputText() {
       var raw = (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT')
         ? (inputEl.value || '')
@@ -2128,10 +2145,71 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     sendDigestPayload(snap.html, snap.text);
   }
 
+  var _promptTextCallbacks = [];
+  var _promptTextTimer = null;
+
+  window.__GEMINI_STUDIO_RECEIVE_PROMPT_TEXT = function(payload) {
+    if (_promptTextTimer) {
+      clearTimeout(_promptTextTimer);
+      _promptTextTimer = null;
+    }
+    var txt = '';
+    var jid = 0;
+    if (payload && typeof payload === 'object') {
+      txt = String(payload.fullPromptText || '');
+      jid = Number(payload.jobId || 0);
+    }
+    if (txt && (!jid || jid === Number(_state.jobId || 0))) {
+      _inMemoryPromptText = txt;
+      _inMemoryPromptJobId = Number(_state.jobId || jid || 0);
+    }
+    var cbs = _promptTextCallbacks.splice(0);
+    for (var i = 0; i < cbs.length; i++) {
+      try { cbs[i](txt); } catch (e) {}
+    }
+  };
+
+  function requestPromptTextFallback(cb) {
+    var curJobId = Number(_state.jobId || 0);
+    if (_inMemoryPromptText && _inMemoryPromptJobId === curJobId && curJobId > 0) {
+      cb(_inMemoryPromptText);
+      return;
+    }
+    _promptTextCallbacks.push(cb);
+    if (_promptTextTimer) clearTimeout(_promptTextTimer);
+    _promptTextTimer = setTimeout(function() {
+      _promptTextTimer = null;
+      var cbs = _promptTextCallbacks.splice(0);
+      for (var i = 0; i < cbs.length; i++) {
+        try { cbs[i](''); } catch (e) {}
+      }
+    }, 4500);
+    sendBridgeMsg({
+      action: 'request_prompt_text',
+      jobId: curJobId
+    });
+  }
+
+  function readGeminiInputLength(el) {
+    if (!el) return 0;
+    var raw = (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')
+      ? (el.value || '')
+      : (el.innerText || el.textContent || '');
+    return raw.replace(/\u200B/g, '').trim().length;
+  }
+
+  var _pastePollTimer = null;
+  function clearPastePollTimer() {
+    if (_pastePollTimer) {
+      clearInterval(_pastePollTimer);
+      _pastePollTimer = null;
+    }
+  }
+
   function pasteAndMaybeSubmit(manualTrigger) {
     if (_isPasting) return false;
-    var fullText = (_state.fullPromptText || '').trim();
-    if (!fullText) {
+    var hasPrompt = !!(_state.hasPromptText || (_inMemoryPromptJobId === Number(_state.jobId || 0) && _inMemoryPromptText && _inMemoryPromptText.trim()));
+    if (!hasPrompt) {
       showStatus('No PDF text loaded yet — click "Case Digest (Gemini)" in Legal Annotator.', '#f87171');
       emitStudioStatus('error', 'No PDF text', 'No PDF text loaded yet — retry Gemini Digest from Legal Annotator.', true);
       return false;
@@ -2144,6 +2222,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     _isPasting = true;
+    clearPastePollTimer();
     try { activeInput.scrollIntoView({ block: 'center' }); } catch (e) {}
     var pos = getElementScreenCenter(activeInput);
 
@@ -2153,9 +2232,18 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     armAutoSendWatcher();
 
     if (!pos || pos.cy < 44) {
-      var fallbackOk = setGeminiInputText(activeInput, fullText);
-      if (fallbackOk) typeTrailingSpaceKeystroke(activeInput);
-      window.__onNativePasteSubmitDone(fallbackOk);
+      showStatus('Loading prompt text for fallback paste…', '#93c5fd');
+      requestPromptTextFallback(function(promptText) {
+        var trimmedPrompt = String(promptText || '').trim();
+        if (!trimmedPrompt) {
+          window.__onNativePasteSubmitDone(false, true);
+          return;
+        }
+        var curBox = findGeminiPromptInput() || activeInput;
+        var fallbackOk = curBox ? setGeminiInputText(curBox, trimmedPrompt) : false;
+        if (fallbackOk && curBox) typeTrailingSpaceKeystroke(curBox);
+        window.__onNativePasteSubmitDone(fallbackOk, true);
+      });
       return true;
     }
 
@@ -2170,29 +2258,88 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     return true;
   }
 
-  window.__onNativePasteSubmitDone = function(ok) {
-    _isPasting = false;
+  window.__onNativePasteSubmitDone = function(ok, fromFallback) {
+    clearPastePollTimer();
     _awaitingLastChangeAt = Date.now();
     _awaitingStoppedAt = 0;
     _hasSeenGenerationForJob = false;
-    var fullText = (_state.fullPromptText || '').trim();
-    var curBox = findGeminiPromptInput();
-    var getBoxLen = function(el) {
-      return ((el && (el.innerText || el.textContent || el.value || '').replace(/\u200B/g, '').trim().length) || 0);
-    };
-    var boxLen = getBoxLen(curBox);
-    if (boxLen <= 20 && curBox && fullText) {
-      if (setGeminiInputText(curBox, fullText)) {
-        typeTrailingSpaceKeystroke(curBox);
-        boxLen = getBoxLen(curBox);
-      }
+
+    function finishPasteSuccess(len) {
+      clearPastePollTimer();
+      _isPasting = false;
+      showStatus('Case pasted (' + len.toLocaleString() + ' chars)! Select model & submit manually — will auto-save to Case Digest when done.', '#4ade80');
+      emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted — select model & submit manually! Will auto-save when done.', false, true);
     }
-    if (!ok && boxLen <= 20) {
-      showStatus('Click inside Ask Gemini and press Ctrl+V (OS paste failed).', '#fbbf24');
-      emitStudioStatus('error', 'Paste needs focus', 'Could not paste automatically via OS — click inside Ask Gemini and press Ctrl+V.', true);
+
+    function finishPasteFailure(reason) {
+      clearPastePollTimer();
+      _isPasting = false;
+      var msg = reason || 'Could not paste automatically — click inside Ask Gemini and press Ctrl+V.';
+      showStatus(msg, '#f87171');
+      emitStudioStatus('error', 'Paste failed', msg, true, true);
+    }
+
+    function runFallbackPaste() {
+      showStatus('OS paste empty — trying fallback text injection…', '#fbbf24');
+      requestPromptTextFallback(function(promptText) {
+        var trimmedPrompt = String(promptText || '').trim();
+        if (!trimmedPrompt) {
+          finishPasteFailure('Paste failed and prompt text could not be retrieved — retry Gemini Digest from Legal Annotator.');
+          return;
+        }
+        var box = findGeminiPromptInput();
+        if (box && setGeminiInputText(box, trimmedPrompt)) {
+          typeTrailingSpaceKeystroke(box);
+          var immediateLen = readGeminiInputLength(findGeminiPromptInput() || box);
+          if (immediateLen > 20) {
+            finishPasteSuccess(immediateLen);
+            return;
+          }
+          setTimeout(function() {
+            var delayedLen = readGeminiInputLength(findGeminiPromptInput() || box);
+            if (delayedLen > 20) finishPasteSuccess(delayedLen);
+            else finishPasteFailure('Fallback paste left Ask Gemini empty — click inside Ask Gemini and press Ctrl+V.');
+          }, 150);
+          return;
+        }
+        finishPasteFailure('Could not paste into Ask Gemini — click inside Ask Gemini and press Ctrl+V.');
+      });
+    }
+
+    var boxLen = readGeminiInputLength(findGeminiPromptInput());
+    if (boxLen > 20) {
+      finishPasteSuccess(boxLen);
       return;
     }
-    showStatus('Case pasted! Select model & submit manually — will auto-save to Case Digest when done.', '#4ade80');
+
+    if (fromFallback) {
+      setTimeout(function() {
+        var recheckLen = readGeminiInputLength(findGeminiPromptInput());
+        if (ok && recheckLen > 20) finishPasteSuccess(recheckLen);
+        else finishPasteFailure('Fallback paste left Ask Gemini empty — click inside Ask Gemini and press Ctrl+V.');
+      }, 150);
+      return;
+    }
+
+    if (!ok) {
+      runFallbackPaste();
+      return;
+    }
+
+    var pollTicks = 0;
+    var maxPollTicks = 10; // ~1.5s across 150ms ticks for large 70-page pastes
+    _pastePollTimer = setInterval(function() {
+      pollTicks++;
+      var len = readGeminiInputLength(findGeminiPromptInput());
+      if (len > 20) {
+        finishPasteSuccess(len);
+        return;
+      }
+      if (pollTicks >= maxPollTicks) {
+        clearPastePollTimer();
+        runFallbackPaste();
+      }
+    }, 150);
   };
 
   function extractAndSendDigest() {
@@ -2279,7 +2426,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   var _jobTimer = null;
   function processActiveJob() {
     ensureStudioBar();
-    if (!_state.jobId || !_state.fullPromptText) return;
+    var curJobId = Number(_state.jobId || 0);
+    var hasInMemPrompt = !!(_inMemoryPromptJobId === curJobId && _inMemoryPromptText && _inMemoryPromptText.trim());
+    if (!curJobId || (!_state.hasPromptText && !hasInMemPrompt)) return;
 
     var handledJob = sessionStorage.getItem('la_gemini_handled_job_id');
     if (handledJob === String(_state.jobId)) return;
@@ -2352,6 +2501,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     if (!job || typeof job !== 'object') return;
     var isNewJob = job.jobId && String(job.jobId) !== String(_state.jobId);
     for (var k in job) {
+      if (k === 'pdfText' || k === 'fullPromptText' || k === 'instructionText') continue;
       if (job[k] !== undefined && job[k] !== null) {
         _state[k] = job[k];
       }
@@ -2362,6 +2512,14 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
       sessionStorage.removeItem('la_gemini_auto_opened_job_id');
       _isPasting = false;
+      clearPastePollTimer();
+      _inMemoryPromptText = '';
+      _inMemoryPromptJobId = 0;
+      _promptTextCallbacks = [];
+      if (_promptTextTimer) {
+        clearTimeout(_promptTextTimer);
+        _promptTextTimer = null;
+      }
       _hasSeenGenerationForJob = false;
       _verifiedModelKeyOnCurrentPage = '';
       if (_jobTimer) {
@@ -2430,6 +2588,10 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     try {
       _notebookTransitionReadyAt = Math.max(_notebookTransitionReadyAt, Date.now() + 500);
       ensureStudioBar();
+      sendBridgeMsg({
+        action: 'sync_job',
+        currentJobId: Number(_state.jobId || 0)
+      });
       processActiveJob();
     } catch (e) {
       try { console.warn('[GeminiStudio] boot error:', e); } catch (_e) {}
@@ -2537,6 +2699,30 @@ pub fn desktop_focus_gemini_studio(app: tauri::AppHandle) -> Result<bool, String
     } else {
         Ok(false)
     }
+}
+
+fn build_gemini_job_meta(job: &serde_json::Value) -> serde_json::Value {
+    let prompt_len = job
+        .get("fullPromptText")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().len())
+        .unwrap_or(0);
+    serde_json::json!({
+        "pdfId": job.get("pdfId").cloned().unwrap_or_else(|| serde_json::json!("")),
+        "pdfName": job.get("pdfName").cloned().unwrap_or_else(|| serde_json::json!("Current PDF")),
+        "subjectId": job.get("subjectId").cloned().unwrap_or_else(|| serde_json::json!("")),
+        "subjectName": job.get("subjectName").cloned().unwrap_or_else(|| serde_json::json!("")),
+        "subfolderName": job.get("subfolderName").cloned().unwrap_or_else(|| serde_json::json!("")),
+        "pinnedNotebookUrl": job.get("pinnedNotebookUrl").cloned().unwrap_or_else(|| serde_json::json!("")),
+        "modelLabel": job.get("modelLabel").cloned().unwrap_or_else(|| serde_json::json!("4 Hydrogen")),
+        "thinkingLevel": job.get("thinkingLevel").cloned().unwrap_or_else(|| serde_json::json!("High")),
+        "autoSubmit": job.get("autoSubmit").cloned().unwrap_or_else(|| serde_json::json!(false)),
+        "digestMode": job.get("digestMode").cloned().unwrap_or_else(|| serde_json::json!("replace")),
+        "autoSendDigest": job.get("autoSendDigest").cloned().unwrap_or_else(|| serde_json::json!(true)),
+        "jobId": job.get("jobId").cloned().unwrap_or_else(|| serde_json::json!(0)),
+        "hasPromptText": prompt_len > 0,
+        "promptLength": prompt_len,
+    })
 }
 
 #[tauri::command]
@@ -2662,6 +2848,12 @@ pub async fn desktop_open_gemini_studio(
     disk_prefs["autoSendDigest"] = serde_json::Value::Bool(eff_auto_send);
     save_gemini_prefs_disk(&disk_prefs);
 
+    let _ = instruction_text;
+    let eff_full_prompt = if !full_prompt_text.trim().is_empty() {
+        full_prompt_text
+    } else {
+        pdf_text
+    };
     let job_id = crate::now_ms();
     let job_val = serde_json::json!({
         "pdfId": pdf_id,
@@ -2669,9 +2861,7 @@ pub async fn desktop_open_gemini_studio(
         "subjectId": eff_subject_id,
         "subjectName": eff_subject_name,
         "subfolderName": subfolder_name.unwrap_or_default(),
-        "instructionText": instruction_text.unwrap_or_default(),
-        "pdfText": pdf_text,
-        "fullPromptText": full_prompt_text,
+        "fullPromptText": eff_full_prompt,
         "pinnedNotebookUrl": eff_pinned,
         "modelLabel": eff_model_label,
         "thinkingLevel": eff_thinking_level,
@@ -2686,7 +2876,8 @@ pub async fn desktop_open_gemini_studio(
         *g = job_val.clone();
     }
 
-    let job_json_str = serde_json::to_string(&job_val).unwrap_or_else(|_| "{}".to_string());
+    let job_meta_val = build_gemini_job_meta(&job_val);
+    let job_meta_json_str = serde_json::to_string(&job_meta_val).unwrap_or_else(|_| "{}".to_string());
     let win_label = "gemini-studio";
     let win_title = if eff_subject_name.is_empty() {
         format!("Gemini Digest Studio — {} — Legal Annotator", pdf_name)
@@ -2706,9 +2897,21 @@ pub async fn desktop_open_gemini_studio(
         let _ = existing.set_focus();
         let eval_js = format!(
             "window.__GEMINI_STUDIO_RECEIVE_JOB && window.__GEMINI_STUDIO_RECEIVE_JOB({});",
-            job_json_str
+            job_meta_json_str
         );
-        let _ = existing.eval(&eval_js);
+        if let Err(e) = existing.eval(&eval_js) {
+            eprintln!("[GeminiStudio] existing.eval failed for job {}: {}", job_id, e);
+            let app_retry = app.clone();
+            let retry_js = eval_js.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(180));
+                if let Some(gw) = app_retry.get_webview_window("gemini-studio") {
+                    if let Err(e2) = gw.eval(&retry_js) {
+                        eprintln!("[GeminiStudio] existing.eval retry failed: {}", e2);
+                    }
+                }
+            });
+        }
         emit_gemini_studio_status(
             &app,
             serde_json::json!({
@@ -2734,7 +2937,7 @@ pub async fn desktop_open_gemini_studio(
     let state_for_nav = get_gemini_job_state();
     let init_script_with_job = format!(
         "window.__INITIAL_GEMINI_JOB__ = {};\n{}",
-        job_json_str, GEMINI_INIT_SCRIPT
+        job_meta_json_str, GEMINI_INIT_SCRIPT
     );
 
     let mut builder = WebviewWindowBuilder::new(&app, win_label, WebviewUrl::External(parsed_url))
@@ -2895,6 +3098,66 @@ pub async fn desktop_open_gemini_studio(
                                     }
                                 }
                             });
+                        } else if action == "sync_job" {
+                            let client_job_id = msg_val
+                                .get("currentJobId")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let maybe_meta = state_for_nav.lock().ok().and_then(|st| {
+                                let latest_job_id =
+                                    st.get("jobId").and_then(|v| v.as_u64()).unwrap_or(0);
+                                if latest_job_id > client_job_id {
+                                    Some(build_gemini_job_meta(&st))
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(meta_val) = maybe_meta {
+                                let meta_json = serde_json::to_string(&meta_val)
+                                    .unwrap_or_else(|_| "{}".to_string());
+                                let app_sync = app_for_nav.clone();
+                                std::thread::spawn(move || {
+                                    if let Some(gw) = app_sync.get_webview_window("gemini-studio") {
+                                        let js = format!(
+                                            "window.__GEMINI_STUDIO_RECEIVE_JOB && window.__GEMINI_STUDIO_RECEIVE_JOB({});",
+                                            meta_json
+                                        );
+                                        if let Err(e) = gw.eval(&js) {
+                                            eprintln!("[GeminiStudio] sync_job eval failed: {}", e);
+                                        }
+                                    }
+                                });
+                            }
+                        } else if action == "request_prompt_text" {
+                            let payload = state_for_nav
+                                .lock()
+                                .ok()
+                                .map(|st| {
+                                    serde_json::json!({
+                                        "jobId": st.get("jobId").cloned().unwrap_or_else(|| serde_json::json!(0)),
+                                        "fullPromptText": st.get("fullPromptText").cloned().unwrap_or_else(|| serde_json::json!(""))
+                                    })
+                                })
+                                .unwrap_or_else(|| {
+                                    serde_json::json!({ "jobId": 0, "fullPromptText": "" })
+                                });
+                            let payload_json = serde_json::to_string(&payload)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            let app_prompt = app_for_nav.clone();
+                            std::thread::spawn(move || {
+                                if let Some(gw) = app_prompt.get_webview_window("gemini-studio") {
+                                    let js = format!(
+                                        "window.__GEMINI_STUDIO_RECEIVE_PROMPT_TEXT && window.__GEMINI_STUDIO_RECEIVE_PROMPT_TEXT({});",
+                                        payload_json
+                                    );
+                                    if let Err(e) = gw.eval(&js) {
+                                        eprintln!(
+                                            "[GeminiStudio] request_prompt_text eval failed: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            });
                         } else if action == "native_paste_and_submit" {
                             let css_x = msg_val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let css_y = msg_val.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -2921,37 +3184,67 @@ pub async fn desktop_open_gemini_studio(
                                     .get_or_init(|| Mutex::new(()))
                                     .lock();
                                 let mut ok = false;
-                                if !prompt_text.is_empty()
-                                    && crate::set_native_os_clipboard_text(&prompt_text)
+                                let mut clipboard_failed = false;
+                                if prompt_text.is_empty() {
+                                    emit_gemini_studio_status(
+                                        &app_paste,
+                                        serde_json::json!({
+                                            "action": "studio_error",
+                                            "state": "error",
+                                            "stepLabel": "No prompt text",
+                                            "message": "No prompt text found in Gemini Studio state — retry Gemini Digest from Legal Annotator.",
+                                            "pdfId": pdf_id_for_paste,
+                                            "canRetry": true
+                                        }),
+                                    );
+                                } else if !crate::set_native_os_clipboard_text(&prompt_text) {
+                                    clipboard_failed = true;
+                                    eprintln!(
+                                        "[GeminiStudio] set_native_os_clipboard_text failed (len={})",
+                                        prompt_text.len()
+                                    );
+                                    emit_gemini_studio_status(
+                                        &app_paste,
+                                        serde_json::json!({
+                                            "action": "studio_error",
+                                            "state": "error",
+                                            "stepLabel": "Clipboard busy",
+                                            "message": "OS clipboard write failed — trying fallback paste in Gemini Studio…",
+                                            "pdfId": pdf_id_for_paste,
+                                            "canRetry": true
+                                        }),
+                                    );
+                                } else if let Some(gw) =
+                                    app_paste.get_webview_window("gemini-studio")
                                 {
-                                    if let Some(gw) = app_paste.get_webview_window("gemini-studio")
-                                    {
-                                        let _ = gw.show();
-                                        let _ = gw.unminimize();
+                                    let _ = gw.show();
+                                    let _ = gw.unminimize();
+                                    let _ = gw.set_focus();
+                                    std::thread::sleep(std::time::Duration::from_millis(40));
+                                    if let Ok(inner_pos) = gw.inner_position() {
+                                        let win_scale = gw.scale_factor().unwrap_or(1.0);
+                                        let scale = if js_dpr > 0.2 { js_dpr } else { win_scale };
+                                        let screen_x =
+                                            inner_pos.x + (css_x * scale).round() as i32;
+                                        let screen_y =
+                                            inner_pos.y + (css_y * scale).round() as i32;
+                                        crate::perform_native_os_mouse_click(screen_x, screen_y);
+                                        std::thread::sleep(std::time::Duration::from_millis(70));
                                         let _ = gw.set_focus();
-                                        std::thread::sleep(std::time::Duration::from_millis(40));
-                                        if let Ok(inner_pos) = gw.inner_position() {
-                                            let win_scale = gw.scale_factor().unwrap_or(1.0);
-                                            let scale = if js_dpr > 0.2 { js_dpr } else { win_scale };
-                                            let screen_x =
-                                                inner_pos.x + (css_x * scale).round() as i32;
-                                            let screen_y =
-                                                inner_pos.y + (css_y * scale).round() as i32;
-                                            crate::perform_native_os_mouse_click(
-                                                screen_x, screen_y,
-                                            );
-                                            std::thread::sleep(std::time::Duration::from_millis(
-                                                70,
-                                            ));
-                                            let _ = gw.set_focus();
-                                            crate::perform_native_os_ctrl_v();
-                                            std::thread::sleep(std::time::Duration::from_millis(
-                                                80,
-                                            ));
-                                            let _ = gw.set_focus();
-                                            crate::perform_native_os_key_space();
-                                            ok = true;
-                                        }
+                                        crate::perform_native_os_ctrl_v();
+                                        let post_paste_ms: u64 = if prompt_text.len() > 100_000 {
+                                            350
+                                        } else if prompt_text.len() > 25_000 {
+                                            250
+                                        } else {
+                                            180
+                                        };
+                                        std::thread::sleep(std::time::Duration::from_millis(
+                                            post_paste_ms,
+                                        ));
+                                        let _ = gw.set_focus();
+                                        crate::perform_native_os_key_space();
+                                        ok = true;
                                     }
                                 }
                                 std::thread::sleep(std::time::Duration::from_millis(40));
@@ -2960,18 +3253,22 @@ pub async fn desktop_open_gemini_studio(
                                         "window.__onNativePasteSubmitDone && window.__onNativePasteSubmitDone({});",
                                         if ok { "true" } else { "false" }
                                     );
-                                    let _ = gw.eval(&js);
-                                }
-                                if ok {
+                                    if let Err(e) = gw.eval(&js) {
+                                        eprintln!(
+                                            "[GeminiStudio] __onNativePasteSubmitDone eval failed: {}",
+                                            e
+                                        );
+                                    }
+                                } else if !clipboard_failed && !prompt_text.is_empty() {
                                     emit_gemini_studio_status(
                                         &app_paste,
                                         serde_json::json!({
-                                            "action": "studio_status",
-                                            "state": "streaming",
-                                            "stepLabel": "Ready to Submit",
-                                            "message": "Case pasted — select model & submit manually! Will auto-save when done.",
+                                            "action": "studio_error",
+                                            "state": "error",
+                                            "stepLabel": "Studio closed",
+                                            "message": "Gemini Studio window was not available for paste.",
                                             "pdfId": pdf_id_for_paste,
-                                            "canRetry": false
+                                            "canRetry": true
                                         }),
                                     );
                                 }

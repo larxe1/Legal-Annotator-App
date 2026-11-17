@@ -223,6 +223,7 @@ if (invoke) {
 
   window.desktopOpenGeminiStudio = async (opts = {}) => {
     try {
+      const hasFullPrompt = Boolean(opts.fullPromptText && String(opts.fullPromptText).length > 0);
       return await invoke('desktop_open_gemini_studio', {
         pdfId: String(opts.pdfId || ''),
         pdfName: String(opts.pdfName || 'Current PDF'),
@@ -230,7 +231,7 @@ if (invoke) {
         subjectName: opts.subjectName ? String(opts.subjectName) : '',
         subfolderName: opts.subfolderName ? String(opts.subfolderName) : '',
         instructionText: opts.instructionText ? String(opts.instructionText) : '',
-        pdfText: String(opts.pdfText || ''),
+        pdfText: opts.pdfText && !hasFullPrompt ? String(opts.pdfText) : '',
         fullPromptText: String(opts.fullPromptText || ''),
         pinnedNotebookUrl: opts.pinnedNotebookUrl ? String(opts.pinnedNotebookUrl) : null,
         modelLabel: opts.modelLabel ? String(opts.modelLabel) : null,
@@ -240,7 +241,12 @@ if (invoke) {
         autoSendDigest: typeof opts.autoSendDigest === 'boolean' ? opts.autoSendDigest : null,
       });
     } catch (err) {
-      console.warn('[Desktop] desktop_open_gemini_studio failed:', err);
+      console.error('[Desktop] desktop_open_gemini_studio failed:', {
+        err,
+        pdfId: opts?.pdfId,
+        pdfName: opts?.pdfName,
+        promptLength: opts?.fullPromptText ? String(opts.fullPromptText).length : 0,
+      });
       return false;
     }
   };

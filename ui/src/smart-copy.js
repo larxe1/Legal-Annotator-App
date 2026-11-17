@@ -655,7 +655,10 @@ export function formatPageTextContent(tc, pageViewport = null, pageNum = null) {
       if (isBarePageNumber(l.text) || isRunningHeader(l.text)) {
         continue;
       }
-      if (COMMERCIAL_FOOTER_PATTERNS.some(pat => pat.test(l.text))) {
+      if (COMMERCIAL_FOOTER_PATTERNS.some(pat => {
+        if (pat.global || pat.sticky) pat.lastIndex = 0;
+        return pat.test(l.text);
+      })) {
         continue;
       }
     } else {
@@ -1038,10 +1041,28 @@ function writeLocalGeminiNotebooksMap(map) {
   return clean;
 }
 
+/**
+ * Fetches a cloud setting with a bounded timeout so offline/stalled Supabase
+ * never hangs before Gemini Studio opens.
+ */
+async function dbGetSettingWithTimeout(key, timeoutMs = 2500) {
+  let timerId = null;
+  try {
+    return await Promise.race([
+      dbGetSetting(key),
+      new Promise((_, reject) => {
+        timerId = setTimeout(() => reject(new Error(`dbGetSetting("${key}") timed out`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timerId !== null) clearTimeout(timerId);
+  }
+}
+
 async function hydrateGeminiNotebooksMapFromCloud() {
   let localMap = readLocalGeminiNotebooksMap();
   try {
-    const cloudRaw = await dbGetSetting('gemini_subject_notebooks');
+    const cloudRaw = await dbGetSettingWithTimeout('gemini_subject_notebooks', 2500);
     if (cloudRaw) {
       const cloudObj = typeof cloudRaw === 'string' ? JSON.parse(cloudRaw) : cloudRaw;
       if (cloudObj && typeof cloudObj === 'object' && !Array.isArray(cloudObj)) {
@@ -1138,7 +1159,7 @@ async function resolveGeminiModelPrefs() {
   let thinkingLevel = safeStorageGet('gemini_thinking_level', '');
   if (!modelLabel) {
     try {
-      const cloudModel = await dbGetSetting('gemini_model_label');
+      const cloudModel = await dbGetSettingWithTimeout('gemini_model_label', 2500);
       if (cloudModel && typeof cloudModel === 'string' && cloudModel.trim()) {
         modelLabel = cloudModel.trim();
         safeStorageSet('gemini_model_label', modelLabel);
@@ -1147,7 +1168,7 @@ async function resolveGeminiModelPrefs() {
   }
   if (!thinkingLevel) {
     try {
-      const cloudThinking = await dbGetSetting('gemini_thinking_level');
+      const cloudThinking = await dbGetSettingWithTimeout('gemini_thinking_level', 2500);
       if (cloudThinking && typeof cloudThinking === 'string' && cloudThinking.trim()) {
         thinkingLevel = cloudThinking.trim();
         safeStorageSet('gemini_thinking_level', thinkingLevel);
@@ -1297,7 +1318,7 @@ async function saveGeminiDigestSettingsFromCard() {
  * stripPageNumbersAndFooters + buildFullCopyInstruction) used by both
  * Perplexity and Gemini Case Digest flows.
  */
-async function extractPdfDigestPromptPayload({ doc, total, pdfObj, isCancelled }) {
+async function extractPdfDigestPromptPayload({ doc, total, pdfObj, isCancelled, onProgress }) {
   const trueId = pdfObj.linked_pdf_id || pdfObj.id;
   const pageTexts = new Array(total);
   const BATCH_SIZE = 10;
@@ -1339,6 +1360,11 @@ async function extractPdfDigestPromptPayload({ doc, total, pdfObj, isCancelled }
       })());
     }
     await Promise.all(batchPromises);
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress(Math.min(i + BATCH_SIZE - 1, total), total);
+      } catch {}
+    }
     if (i + BATCH_SIZE <= total) await new Promise(r => setTimeout(r, 0));
   }
 
@@ -2403,7 +2429,13 @@ export async function runBatchGeminiDigestForPdfs(pdfsOrPdf) {
  * window (or falls back to opening Gemini in the browser).
  */
 export async function openGeminiDigestForCurrentPdf(opts = {}) {
-  if (_isDigestingGemini) return;
+  if (_isDigestingGemini) {
+    if (opts.preOpenedWebWin && !opts.preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
+      try { opts.preOpenedWebWin.close(); } catch {}
+    }
+    toast('Still preparing Gemini case digest…');
+    return;
+  }
   if (_isDigestingPerplexity || (_batchDigestState.running && _batchDigestState.provider !== 'gemini')) {
     if (opts.preOpenedWebWin && !opts.preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
       try { opts.preOpenedWebWin.close(); } catch {}
@@ -2457,6 +2489,19 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
       total,
       pdfObj,
       isCancelled: () => _singleDigestCancelled || _batchDigestState.cancelled,
+      onProgress: (processed, totalPages) => {
+        if (btn) {
+          btn.innerHTML = `<svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><span>${processed}/${totalPages}…</span>`;
+        }
+        applyDigestMonitorStatus('gemini', {
+          state: 'extracting',
+          stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Gemini Studio',
+          message: `Extracting pages ${processed}/${totalPages} of "${pdfObj.name || 'Case'}"…`,
+          countLabel,
+          pdfId: String(trueId || ''),
+          pdfName: String(pdfObj.name || ''),
+        });
+      },
     });
 
     if (!extracted.ok) {
@@ -2477,8 +2522,8 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
       return;
     }
 
-    const { pdfText, activeFolderId, subfolderName, instructionText, fullPromptText } = extracted;
-    await copyToClipboard(fullPromptText);
+    const { activeFolderId, subfolderName, instructionText, fullPromptText } = extracted;
+    const copiedOk = await copyToClipboard(fullPromptText);
 
     const { subjectId, subjectName } = getSubjectInfoForFolder(activeFolderId);
     const pinnedNotebookUrl = await getPinnedGeminiNotebookForSubject(subjectId);
@@ -2497,7 +2542,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
       subjectName: String(subjectName || ''),
       subfolderName: subfolderName ? String(subfolderName) : '',
       instructionText: instructionText ? String(instructionText) : '',
-      pdfText: String(pdfText || ''),
+      pdfText: '',
       fullPromptText: String(fullPromptText || ''),
       pinnedNotebookUrl: pinnedNotebookUrl ? String(pinnedNotebookUrl) : null,
       modelLabel: String(modelLabel || '4 Hydrogen'),
@@ -2509,8 +2554,21 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
     _lastGeminiStudioPayload = studioPayload;
     _lastGeminiUrl = pinnedNotebookUrl || 'https://gemini.google.com/notebooks';
 
-    if (typeof window.desktopOpenGeminiStudio === 'function') {
-      const opened = await window.desktopOpenGeminiStudio(studioPayload);
+    if (hasDesktopStudio) {
+      let opened = false;
+      if (typeof window.desktopOpenGeminiStudio === 'function') {
+        try {
+          opened = Boolean(await window.desktopOpenGeminiStudio(studioPayload));
+        } catch (ipcErr) {
+          console.warn('[gemini-digest] desktopOpenGeminiStudio failed:', ipcErr);
+        }
+      } else if (tauriInvoke) {
+        try {
+          opened = Boolean(await tauriInvoke('desktop_open_gemini_studio', studioPayload));
+        } catch (ipcErr) {
+          console.warn('[gemini-digest] direct Tauri invoke failed:', ipcErr);
+        }
+      }
       if (opened) {
         applyDigestMonitorStatus('gemini', {
           state: 'streaming',
@@ -2523,24 +2581,21 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
         toast(subjectName ? `Opened Gemini Digest Studio (${subjectName})!` : 'Opened Gemini Digest Studio!');
         return;
       }
-    } else if (tauriInvoke) {
-      try {
-        const opened = await tauriInvoke('desktop_open_gemini_studio', studioPayload);
-        if (opened) {
-          applyDigestMonitorStatus('gemini', {
-            state: 'streaming',
-            stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Gemini Studio',
-            message: `Digesting "${pdfObj.name || 'Case'}" in Gemini Studio…`,
-            countLabel,
-            pdfId: String(trueId || ''),
-            pdfName: String(pdfObj.name || ''),
-          });
-          toast(subjectName ? `Opened Gemini Digest Studio (${subjectName})!` : 'Opened Gemini Digest Studio!');
-          return;
-        }
-      } catch (ipcErr) {
-        console.warn('[gemini-digest] direct Tauri invoke failed:', ipcErr);
+      if (preOpenedWebWin && !preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
+        try { preOpenedWebWin.close(); } catch {}
       }
+      applyDigestMonitorStatus('gemini', {
+        state: 'error',
+        stepLabel: 'Gemini Studio Error',
+        message: 'Could not send case to Gemini Studio',
+        error: 'Could not send case to Gemini Studio',
+        countLabel,
+        pdfId: String(trueId || ''),
+        pdfName: String(pdfObj.name || ''),
+        canRetry: true,
+      });
+      toast('Could not send case to Gemini Studio');
+      return;
     }
 
     // Web / external browser fallback
@@ -2573,17 +2628,27 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
     }
     if (_pplxMonitorState.state !== 'error') {
       applyDigestMonitorStatus('gemini', {
-        state: 'awaiting',
-        stepLabel: 'Gemini Tab',
-        message: 'Opened Gemini tab — Paste (Ctrl+V) & copy reply back to Case Digest',
+        state: copiedOk ? 'awaiting' : 'error',
+        stepLabel: copiedOk ? 'Gemini Tab' : 'Clipboard Copy Failed',
+        message: copiedOk
+          ? 'Opened Gemini tab — Paste (Ctrl+V) & copy reply back to Case Digest'
+          : 'Opened Gemini tab, but clipboard copy failed — copy text manually.',
+        ...(copiedOk ? {} : {
+          error: 'Could not copy case + instructions to clipboard automatically.',
+          canRetry: true,
+        }),
         countLabel,
         pdfId: String(trueId || ''),
         pdfName: String(pdfObj.name || ''),
       });
     }
-    toast(pinnedNotebookUrl
-      ? `Copied case + instructions! Paste (Ctrl+V) in your ${subjectName || 'Subject'} Gemini Notebook.`
-      : 'Copied case + instructions! Open your Subject Notebook in Gemini and paste (Ctrl+V).');
+    if (copiedOk) {
+      toast(pinnedNotebookUrl
+        ? `Copied case + instructions! Paste (Ctrl+V) in your ${subjectName || 'Subject'} Gemini Notebook.`
+        : 'Copied case + instructions! Open your Subject Notebook in Gemini and paste (Ctrl+V).');
+    } else {
+      toast('Warning: Could not copy case + instructions to clipboard — please copy text manually.');
+    }
   } catch (err) {
     if (preOpenedWebWin && !preOpenedWebWin.closed && !opts.keepWebWinOnEmpty) {
       try { preOpenedWebWin.close(); } catch {}
