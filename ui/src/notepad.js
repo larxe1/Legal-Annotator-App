@@ -936,24 +936,40 @@ function _clearHiDragClasses(root) {
 async function _navigateToHighlight(ann) {
   if (!ann) return;
   const pageNum = Math.max(1, Number(ann.page) || 1);
-  let ratio = 0;
+  const { ensurePageRendered } = await import('./viewer.js');
+  await ensurePageRendered(pageNum);
+
   const wrap = S.pages?.[pageNum]?.wrap;
+  const scrollEl = document.getElementById('canvas-scroll');
+  let ratio = 0;
   if (wrap?.offsetHeight > 0 && Array.isArray(ann.rects) && ann.rects.length > 0) {
     const firstRect = ann.rects[0];
     if (firstRect && Number.isFinite(Number(firstRect.y))) {
       const firstPx = rectToPx(firstRect, wrap);
-      ratio = Math.max(0, Math.min(0.92, (firstPx.y - 40) / wrap.offsetHeight));
+      const hlCenterY = firstPx.y + (firstPx.h || 0) / 2;
+      const centerOffset = scrollEl?.clientHeight ? (scrollEl.clientHeight / 2) : 120;
+      const targetOffsetInWrap = hlCenterY - centerOffset + 16;
+      ratio = Math.max(0, Math.min(0.95, targetOffsetInWrap / wrap.offsetHeight));
     }
   }
+
   await jumpToPage(pageNum, true, ratio);
+
   const idStr = String(ann.id ?? '');
   const escapedId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
     ? CSS.escape(idStr)
     : idStr.replace(/"/g, '\\"');
-  const mark = S.pages?.[pageNum]?.annOv?.querySelector(`[data-id="${escapedId}"]`)
-    || document.querySelector(`.hi-grp[data-id="${escapedId}"]`);
+  const mark = S.pages?.[pageNum]?.annOv?.querySelector(`[data-id="${escapedId}"]`) || null;
   if (mark) {
-    try { mark.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+    const firstHr = mark.querySelector('.hr');
+    if (firstHr && scrollEl && (!Array.isArray(ann.rects) || !ann.rects.length)) {
+      const hrRect = firstHr.getBoundingClientRect();
+      const scrollRect = scrollEl.getBoundingClientRect();
+      const deltaY = (hrRect.top + hrRect.height / 2) - (scrollRect.top + scrollRect.height / 2);
+      if (Math.abs(deltaY) > 12) {
+        scrollEl.scrollTo({ top: Math.max(0, scrollEl.scrollTop + deltaY), behavior: 'smooth' });
+      }
+    }
     document.querySelectorAll('.hi-grp.selected').forEach(g => g.classList.remove('selected'));
     mark.classList.add('selected');
   }
@@ -1639,15 +1655,88 @@ function stripTrailingSourcesHtml(html = '') {
   }
 }
 
-// ── Import formatted digest strictly into Case Digest tab (leaves Notes tab untouched) ──
-export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText = '', mode = 'append', sourceLabel = 'Perplexity') {
-  const targetPdfId = pdfId
-    || (S.curPDF ? (S.curPDF.linked_pdf_id || S.curPDF.id) : null)
-    || _activePdfId;
-  if (!targetPdfId) {
-    toast('Open a PDF first so the Case Digest knows which case to save to.');
-    return false;
+const getTruePdfId = (pdfObj) => (pdfObj ? String(pdfObj.linked_pdf_id || pdfObj.id || '') : '');
+
+/**
+ * Hydrate a target PDF's regular notes and digest into _notepadCache without
+ * touching the DOM, #notepad-panel, _activePdfId, or _domBoundPdfId.
+ */
+async function _hydrateNotepadCacheHeadless(targetPdfId) {
+  const storedC = safeStorageGet('local_notepad_' + targetPdfId, '') || '';
+  const storedD = safeStorageGet('local_digest_' + targetPdfId, '') || '';
+
+  if (_notepadCache.has(targetPdfId)) {
+    const entry = _notepadCache.get(targetPdfId);
+    return {
+      content: entry.dirty ? (entry.content ?? '') : (entry.content || storedC),
+      digest: entry.dirty ? (entry.digest ?? '') : (entry.digest || storedD),
+    };
   }
+
+  let notesContent = storedC;
+  let digestContent = storedD;
+  try {
+    const loaded = await dbLoadNotepad(targetPdfId);
+    if (loaded?.cloudOk) {
+      _setCloudBase(targetPdfId, loaded.cloudContent || '', loaded.cloudDigest || '');
+    }
+    const remC = loaded?.cloudOk ? (loaded.cloudContent || '') : (loaded?.content || '');
+    const remD = loaded?.cloudOk ? (loaded.cloudDigest || '') : (loaded?.digest || '');
+    const writeTs = getWriteTs(targetPdfId);
+    const syncTs = getSyncTs(targetPdfId);
+    const hasLocalUnsaved = writeTs > 0 && writeTs > syncTs;
+    const hasLegacyLocal = writeTs === 0 && syncTs === 0 && !!(storedC || storedD) && (storedC !== remC || storedD !== remD);
+
+    if (storedC && !remC) notesContent = storedC;
+    else if (!storedC && remC) notesContent = remC;
+    else if (storedC && remC && storedC !== remC) {
+      notesContent = (hasLocalUnsaved || hasLegacyLocal) ? mergeNoteHtml(storedC, remC) : remC;
+    } else {
+      notesContent = remC || storedC || '';
+    }
+
+    if (storedD && !remD) digestContent = storedD;
+    else if (!storedD && remD) digestContent = remD;
+    else if (storedD && remD && storedD !== remD) {
+      digestContent = (hasLocalUnsaved || hasLegacyLocal) ? mergeNoteHtml(storedD, remD) : remD;
+    } else {
+      digestContent = remD || storedD || '';
+    }
+  } catch (err) {
+    console.warn(`[Notepad] Headless load fallback to local cache for ${targetPdfId}:`, err);
+  }
+
+  if (!_notepadCache.has(targetPdfId)) {
+    _notepadCache.set(targetPdfId, {
+      content: notesContent,
+      digest: digestContent,
+      dirty: false,
+      timestamp: Date.now(),
+    });
+    if (notesContent && !storedC) safeStorageSet('local_notepad_' + targetPdfId, notesContent);
+  }
+  const latest = _notepadCache.get(targetPdfId);
+  return {
+    content: latest ? (latest.content ?? notesContent) : notesContent,
+    digest: latest ? (latest.digest ?? digestContent) : digestContent,
+  };
+}
+
+// ── Import formatted digest strictly into Case Digest tab (leaves Notes tab untouched) ──
+export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText = '', mode = 'append', sourceLabel = 'Perplexity', options = {}) {
+  const strictTarget = Boolean(options && options.strictTarget);
+  const failResult = () => (strictTarget ? { ok: false } : false);
+
+  const rawTargetId = strictTarget
+    ? String(pdfId || '').trim()
+    : String(pdfId || getTruePdfId(S.curPDF) || _activePdfId || '').trim();
+  if (!rawTargetId) {
+    toast(strictTarget
+      ? 'Cannot auto-save digest: missing target PDF ID'
+      : 'Open a PDF first so the Case Digest knows which case to save to.');
+    return failResult();
+  }
+  const targetPdfId = String(S.pdfs?.find(p => String(p.id) === rawTargetId)?.linked_pdf_id || rawTargetId);
 
   const cleanedRawHtml = stripLeadingPreambleHtml(stripTrailingSourcesHtml(rawHtml));
   const cleanedRawText = stripLeadingPreambleText(stripTrailingSourcesText(rawText));
@@ -1656,31 +1745,44 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
   ).trim();
   if (!formattedHtml) {
     toast('No digest text found to import.');
-    return false;
+    return failResult();
   }
 
-  const panel = $panel();
-  if (!panel?.classList.contains('open') || _activePdfId !== targetPdfId) {
-    await openNotepad(targetPdfId);
+  let isCurrentPdf = getTruePdfId(S.curPDF) === targetPdfId;
+  if (isCurrentPdf) {
+    const panel = $panel();
+    if (!panel?.classList.contains('open') || _activePdfId !== targetPdfId || _domBoundPdfId !== targetPdfId) {
+      await openNotepad(targetPdfId);
+    }
+    // Re-verify after await in case the user switched PDFs mid-load
+    isCurrentPdf =
+      getTruePdfId(S.curPDF) === targetPdfId &&
+      _activePdfId === targetPdfId &&
+      _domBoundPdfId === targetPdfId;
+    if (isCurrentPdf) {
+      switchNotepadTab('digest');
+    }
   }
-  switchNotepadTab('digest');
 
-  const cached = _notepadCache.get(targetPdfId) || {
-    content: safeStorageGet('local_notepad_' + targetPdfId, '') || '',
-    digest: safeStorageGet('local_digest_' + targetPdfId, '') || '',
-    dirty: false,
-    timestamp: Date.now()
-  };
-
-  // Strictly preserve Notes tab (content) untouched — only update Case Digest tab (digest)
-  const notesContent = (_activePdfId === targetPdfId && _domBoundPdfId === targetPdfId && $notesEditor())
-    ? ($notesEditor().innerHTML ?? cached.content ?? '')
-    : (cached.content ?? '');
-
-  const digestEd = $digestEditor();
-  const currentDigestRaw = (_activePdfId === targetPdfId && _domBoundPdfId === targetPdfId && digestEd)
-    ? (digestEd.innerHTML ?? cached.digest ?? '')
-    : (cached.digest ?? '');
+  let notesContent = '';
+  let currentDigestRaw = '';
+  if (isCurrentPdf) {
+    const cached = _notepadCache.get(targetPdfId) || {
+      content: safeStorageGet('local_notepad_' + targetPdfId, '') || '',
+      digest: safeStorageGet('local_digest_' + targetPdfId, '') || '',
+      dirty: false,
+      timestamp: Date.now()
+    };
+    const notesEd = $notesEditor();
+    const digestEd = $digestEditor();
+    notesContent = notesEd ? (notesEd.innerHTML ?? cached.content ?? '') : (cached.content ?? '');
+    currentDigestRaw = digestEd ? (digestEd.innerHTML ?? cached.digest ?? '') : (cached.digest ?? '');
+  } else {
+    // Target PDF is not open in the viewer: hydrate & save headlessly without touching DOM/_activePdfId
+    const hydrated = await _hydrateNotepadCacheHeadless(targetPdfId);
+    notesContent = hydrated.content ?? '';
+    currentDigestRaw = hydrated.digest ?? '';
+  }
 
   const hasExistingDigest = Boolean(
     currentDigestRaw &&
@@ -1693,7 +1795,15 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
     nextDigest = `${currentDigestRaw.replace(/(?:<br\s*\/?>\s*)+$/i, '')}<br><hr style="border:none;border-top:1px solid var(--navy-b);margin:14px 0;"><br>${formattedHtml}`;
   }
 
-  if (digestEd && _activePdfId === targetPdfId) {
+  const digestEd = isCurrentPdf ? $digestEditor() : null;
+  const savedToDom = Boolean(
+    isCurrentPdf &&
+    digestEd &&
+    getTruePdfId(S.curPDF) === targetPdfId &&
+    _activePdfId === targetPdfId &&
+    _domBoundPdfId === targetPdfId
+  );
+  if (savedToDom) {
     digestEd.innerHTML = nextDigest;
     _domBoundPdfId = targetPdfId;
     try {
@@ -1711,16 +1821,29 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
   safeStorageSet('local_digest_' + targetPdfId, nextDigest);
   setWriteTs(targetPdfId);
   await saveHistorySnapshot(targetPdfId, notesContent, nextDigest);
-  executeSaveForPdf(targetPdfId);
+  await executeSaveForPdf(targetPdfId);
   import('./library.js').then(m => m.renderLibrary?.()).catch(() => {});
 
   const providerLabel = (sourceLabel && String(sourceLabel).trim()) || 'Case';
-  toast(
-    hasExistingDigest && effectiveMode === 'append'
-      ? `Appended ${providerLabel} Digest to the bottom of Case Digest tab!`
-      : `Saved ${providerLabel} Digest into Case Digest tab!`
-  );
-  return true;
+  if (savedToDom) {
+    toast(
+      hasExistingDigest && effectiveMode === 'append'
+        ? `Appended ${providerLabel} Digest to the bottom of Case Digest tab!`
+        : `Saved ${providerLabel} Digest into Case Digest tab!`
+    );
+  } else {
+    const resolvedPdfName = String(
+      options?.pdfName ||
+      S.pdfs?.find(p => String(p.id) === targetPdfId || String(p.linked_pdf_id || '') === targetPdfId)?.name ||
+      'target PDF'
+    ).trim();
+    toast(
+      hasExistingDigest && effectiveMode === 'append'
+        ? `${providerLabel} Case Digest appended to "${resolvedPdfName}" (background)`
+        : `${providerLabel} Case Digest saved to "${resolvedPdfName}" (background)`
+    );
+  }
+  return strictTarget ? { ok: true, targetPdfId, background: !savedToDom } : true;
 }
 
 if (typeof window !== 'undefined') {

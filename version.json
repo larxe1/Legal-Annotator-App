@@ -1,7 +1,7 @@
 {
-    "version":  "1.25.4",
-    "build":  78,
-    "updatedAt":  "2026-11-17T00:02:52Z",
-    "notes":  "Fixed large-PDF Gemini Studio failures by eliminating duplicate IPC prompt payloads, adding timeouts to cloud settings lookups, surfacing extraction progress and clipboard/launch errors, resetting global footer regex state, and verifying native OS paste before submission.",
+    "version":  "1.25.5",
+    "build":  79,
+    "updatedAt":  "2026-11-17T00:30:08Z",
+    "notes":  "Saved completed Gemini digests to their original source PDF instead of a newly opened PDF, preserved spaces across line breaks when capturing highlights, and fixed right-panel highlight click scrolling to land on the exact highlight.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

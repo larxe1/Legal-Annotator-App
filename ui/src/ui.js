@@ -916,9 +916,11 @@ export async function scrollToPageAndRatio(pageNum, ratio = 0, smooth = false) {
   _isJumping = true;
 
   const { ensurePageRendered } = await import('./viewer.js');
-  await ensurePageRendered(pageNum);
+  await Promise.all([
+    ensurePageRendered(pageNum),
+    pageNum > 1 ? ensurePageRendered(pageNum - 1) : Promise.resolve(),
+  ]);
   if (myJump !== _jumpGen) return; // a newer jump took over
-  if (pageNum > 1) ensurePageRendered(pageNum - 1);
 
   const scrollEl = document.getElementById('canvas-scroll');
   const wrap = S.pages?.[pageNum]?.wrap;
@@ -932,19 +934,19 @@ export async function scrollToPageAndRatio(pageNum, ratio = 0, smooth = false) {
       scrollEl.scrollTo({ top: exactTop, behavior: 'smooth' });
     } else {
       scrollEl.scrollTop = exactTop;
+      const settle = () => {
+        if (myJump !== _jumpGen) return;
+        const t = targetTop();
+        if (Math.abs(scrollEl.scrollTop - t) > 8) scrollEl.scrollTop = t;
+      };
+      requestAnimationFrame(settle);
+      setTimeout(settle, 120);
     }
-    const settle = () => {
-      if (myJump !== _jumpGen) return;
-      const t = targetTop();
-      if (Math.abs(scrollEl.scrollTop - t) > 8) scrollEl.scrollTop = t;
-    };
-    requestAnimationFrame(settle);
-    setTimeout(settle, 120);
   }
 
   setTimeout(() => {
     if (myJump === _jumpGen) _isJumping = false;
-  }, 280);
+  }, smooth ? 450 : 280);
 }
 
 // ── Page navigation ──

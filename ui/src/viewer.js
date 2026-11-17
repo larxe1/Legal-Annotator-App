@@ -880,6 +880,7 @@ export async function reRenderAll() {
       if (pg.rendered || pg.rendering) {
         pg.rendered = false;
         pg.rendering = false;
+        pg._renderPromise = null;
         pg.pdfCanvas = null;
         pg.drawCanvas = null;
         pg.txtLayer = null;
@@ -941,146 +942,159 @@ export async function ensurePageRendered(pageNum, container = null) {
     wrap.className = 'pg-wrap';
     wrap.dataset.page = pageNum;
     scroll.appendChild(wrap);
-    S.pages[pageNum] = { wrap, rendered: false, rendering: false, viewport: null, textItems: [] };
+    S.pages[pageNum] = { wrap, rendered: false, rendering: false, _renderPromise: null, viewport: null, textItems: [] };
   }
   const pgState = S.pages[pageNum];
-  if (pgState.rendered || pgState.rendering) return;
+  if (pgState.rendered) return;
+  if (pgState.rendering && pgState._renderPromise) {
+    return pgState._renderPromise;
+  }
+  if (pgState.rendering) return;
+
   pgState.rendering = true;
   const myScaleGen = _renderScaleGen;
 
-  try {
-    const page = await S.pdfDoc.getPage(pageNum);
-    if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
-    const vp = page.getViewport({ scale: S.scale });
-    pgState.viewport = vp;
+  const renderTask = (async () => {
+    try {
+      const page = await S.pdfDoc.getPage(pageNum);
+      if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
+      const vp = page.getViewport({ scale: S.scale });
+      pgState.viewport = vp;
 
-    const wrap = pgState.wrap;
-    const prevHeight = wrap.offsetHeight || vp.height;
-    const scrollEl = document.getElementById('canvas-scroll');
-    // Only pages lying entirely above the viewport need scroll compensation —
-    // a page that straddles the top edge keeps its top fixed so the visible
-    // content does not shift.
-    const wasFullyAbove = !!scrollEl && (wrap.offsetTop + prevHeight) <= scrollEl.scrollTop;
-    wrap.style.width  = vp.width  + 'px';
-    wrap.style.height = vp.height + 'px';
-    wrap.innerHTML = ''; // remove placeholder
+      const wrap = pgState.wrap;
+      const prevHeight = wrap.offsetHeight || vp.height;
+      const scrollEl = document.getElementById('canvas-scroll');
+      // Only pages lying entirely above the viewport need scroll compensation —
+      // a page that straddles the top edge keeps its top fixed so the visible
+      // content does not shift.
+      const wasFullyAbove = !!scrollEl && (wrap.offsetTop + prevHeight) <= scrollEl.scrollTop;
+      wrap.style.width  = vp.width  + 'px';
+      wrap.style.height = vp.height + 'px';
+      wrap.innerHTML = ''; // remove placeholder
 
-    if (scrollEl && wasFullyAbove && Math.abs(vp.height - prevHeight) > 1) {
-      scrollEl.scrollTop += (vp.height - prevHeight);
-    }
+      if (scrollEl && wasFullyAbove && Math.abs(vp.height - prevHeight) > 1) {
+        scrollEl.scrollTop += (vp.height - prevHeight);
+      }
 
-    const pdfCanvas = document.createElement('canvas');
-    pdfCanvas.width  = vp.width;
-    pdfCanvas.height = vp.height;
+      const pdfCanvas = document.createElement('canvas');
+      pdfCanvas.width  = vp.width;
+      pdfCanvas.height = vp.height;
 
-    const drawCanvas = document.createElement('canvas');
-    drawCanvas.width  = vp.width;
-    drawCanvas.height = vp.height;
-    drawCanvas.className   = 'draw-canvas' + (S.mode === 'draw' ? ' active' : '');
-    drawCanvas.dataset.page = pageNum;
+      const drawCanvas = document.createElement('canvas');
+      drawCanvas.width  = vp.width;
+      drawCanvas.height = vp.height;
+      drawCanvas.className   = 'draw-canvas' + (S.mode === 'draw' ? ' active' : '');
+      drawCanvas.dataset.page = pageNum;
 
-    const txtLayer = document.createElement('div');
-    txtLayer.className = 'txt-layer' + (S.mode === 'text' || S.mode === 'select' ? ' sel' : '');
-    txtLayer.style.width  = vp.width  + 'px';
-    txtLayer.style.height = vp.height + 'px';
+      const txtLayer = document.createElement('div');
+      txtLayer.className = 'txt-layer' + (S.mode === 'text' || S.mode === 'select' ? ' sel' : '');
+      txtLayer.style.width  = vp.width  + 'px';
+      txtLayer.style.height = vp.height + 'px';
 
-    const annOv = document.createElement('div');
-    annOv.className       = 'ann-ov';
-    annOv.dataset.page    = pageNum;
-    annOv.style.width  = vp.width  + 'px';
-    annOv.style.height = vp.height + 'px';
+      const annOv = document.createElement('div');
+      annOv.className       = 'ann-ov';
+      annOv.dataset.page    = pageNum;
+      annOv.style.width  = vp.width  + 'px';
+      annOv.style.height = vp.height + 'px';
 
-    const srchOv = document.createElement('div');
-    srchOv.className    = 'srch-ov';
-    srchOv.dataset.page = pageNum;
-    srchOv.style.width  = vp.width  + 'px';
-    srchOv.style.height = vp.height + 'px';
+      const srchOv = document.createElement('div');
+      srchOv.className    = 'srch-ov';
+      srchOv.dataset.page = pageNum;
+      srchOv.style.width  = vp.width  + 'px';
+      srchOv.style.height = vp.height + 'px';
 
-    wrap.append(pdfCanvas, annOv, srchOv, txtLayer, drawCanvas);
+      wrap.append(pdfCanvas, annOv, srchOv, txtLayer, drawCanvas);
 
-    // Render PDF page canvas
-    await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: vp }).promise;
-    if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
+      // Render PDF page canvas
+      await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: vp }).promise;
+      if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
 
-    // Build text layer.
-    // tx[5] is the PDF baseline in CSS pixel coordinates (Y already flipped by vp.transform).
-    // CSS renders font baselines at ~0.8× the em-size from the span's top edge, so:
-    //   top = tx[5] - fh * 0.8   (places the span so its internal baseline == tx[5])
-    // The old code used tx[5] - fh (1.0×), which sat ~15-20% of fh too high vs the canvas.
-    const tc = await page.getTextContent();
-    if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
-    const textItems = [];
-    for (const item of tc.items) {
-      if (!item.str || !item.transform) continue;
-      const span = document.createElement('span');
-      const tx   = pdfjsLib.Util.transform(vp.transform, item.transform);
-      const fh   = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-      const angle = Math.atan2(tx[1], tx[0]);
-      const fontFam = resolvePdfFontFamily(tc.styles, item.fontName);
-      const targetW = Math.abs(item.width || 0) * S.scale;
-      const scaleX  = computeSpanScaleX(item.str, fh, fontFam, targetW);
-      const topY    = tx[5] - fh * 0.82;
-      span.textContent = item.str;
-      span.style.cssText = `left:${tx[4]}px;top:${topY}px;height:${fh}px;line-height:1;font-size:${fh}px;font-family:${fontFam}`;
-      const tf = buildSpanTransform(angle, scaleX);
-      if (tf) span.style.transform = tf;
-      txtLayer.appendChild(span);
-      textItems.push({
-        str: item.str,
-        x: tx[4],
-        y: topY,
-        w: targetW,
-        h: item.height ? item.height * S.scale : fh,
-      });
-    }
+      // Build text layer.
+      // tx[5] is the PDF baseline in CSS pixel coordinates (Y already flipped by vp.transform).
+      // CSS renders font baselines at ~0.8× the em-size from the span's top edge, so:
+      //   top = tx[5] - fh * 0.8   (places the span so its internal baseline == tx[5])
+      // The old code used tx[5] - fh (1.0×), which sat ~15-20% of fh too high vs the canvas.
+      const tc = await page.getTextContent();
+      if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
+      const textItems = [];
+      for (const item of tc.items) {
+        if (!item.str || !item.transform) continue;
+        const span = document.createElement('span');
+        const tx   = pdfjsLib.Util.transform(vp.transform, item.transform);
+        const fh   = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+        const angle = Math.atan2(tx[1], tx[0]);
+        const fontFam = resolvePdfFontFamily(tc.styles, item.fontName);
+        const targetW = Math.abs(item.width || 0) * S.scale;
+        const scaleX  = computeSpanScaleX(item.str, fh, fontFam, targetW);
+        const topY    = tx[5] - fh * 0.82;
+        span.textContent = item.str;
+        span.style.cssText = `left:${tx[4]}px;top:${topY}px;height:${fh}px;line-height:1;font-size:${fh}px;font-family:${fontFam}`;
+        const tf = buildSpanTransform(angle, scaleX);
+        if (tf) span.style.transform = tf;
+        txtLayer.appendChild(span);
+        textItems.push({
+          str: item.str,
+          x: tx[4],
+          y: topY,
+          w: targetW,
+          h: item.height ? item.height * S.scale : fh,
+        });
+      }
 
-    pgState.pdfCanvas = pdfCanvas;
-    pgState.drawCanvas = drawCanvas;
-    pgState.txtLayer = txtLayer;
-    pgState.annOv = annOv;
-    pgState.srchOv = srchOv;
-    pgState.textItems = textItems;
-    pgState.rendered = true;
+      pgState.pdfCanvas = pdfCanvas;
+      pgState.drawCanvas = drawCanvas;
+      pgState.txtLayer = txtLayer;
+      pgState.annOv = annOv;
+      pgState.srchOv = srchOv;
+      pgState.textItems = textItems;
+      pgState.rendered = true;
 
-    // Apply OCR layer if OCR data exists for this page or page is scanned
-    import('./ocr.js').then(m => m.applyOcrToRenderedPage?.(pageNum)).catch(() => {});
+      // Apply OCR layer if OCR data exists for this page or page is scanned
+      import('./ocr.js').then(m => m.applyOcrToRenderedPage?.(pageNum)).catch(() => {});
 
-    // Setup listeners & visuals
-    setupAllListeners(pageNum);
-    applyModeVisuals(pageNum);
+      // Setup listeners & visuals
+      setupAllListeners(pageNum);
+      applyModeVisuals(pageNum);
 
-    // Redraw annotations on this page
-    const { drawAnnotation } = await import('./annotate.js');
-    for (const ann of S.annotations.filter(a => a.page === pageNum)) {
-      drawAnnotation(ann);
-    }
+      // Redraw annotations on this page
+      const { drawAnnotation } = await import('./annotate.js');
+      for (const ann of S.annotations.filter(a => a.page === pageNum)) {
+        drawAnnotation(ann);
+      }
 
-    // Redraw drawings on this page
-    if (S.drawData[pageNum]) {
-      const { renderCanvas } = await import('./draw.js');
-      renderCanvas(drawCanvas, S.drawData[pageNum]);
-    }
+      // Redraw drawings on this page
+      if (S.drawData[pageNum]) {
+        const { renderCanvas } = await import('./draw.js');
+        renderCanvas(drawCanvas, S.drawData[pageNum]);
+      }
 
-    // Redraw search highlights on this page
-    const { drawSearchHL } = await import('./search.js');
-    for (let i = 0; i < S.searchResults.length; i++) {
-      const res = S.searchResults[i];
-      if (res.page === pageNum) {
-        drawSearchHL(res, S.searchIdx === i);
+      // Redraw search highlights on this page
+      const { drawSearchHL } = await import('./search.js');
+      for (let i = 0; i < S.searchResults.length; i++) {
+        const res = S.searchResults[i];
+        if (res.page === pageNum) {
+          drawSearchHL(res, S.searchIdx === i);
+        }
+      }
+
+      _renderedPages.add(pageNum);
+      if (S.totalPages > 50 && _renderedPages.size > MAX_RENDERED_CANVAS_PAGES) {
+        scheduleUnrenderFarPages();
+      }
+    } catch (err) {
+      console.error(`Failed to render page ${pageNum}:`, err);
+    } finally {
+      if (myScaleGen === _renderScaleGen) {
+        pgState.rendering = false;
+      }
+      if (pgState._renderPromise === renderTask) {
+        pgState._renderPromise = null;
       }
     }
+  })();
 
-    _renderedPages.add(pageNum);
-    if (S.totalPages > 50 && _renderedPages.size > MAX_RENDERED_CANVAS_PAGES) {
-      scheduleUnrenderFarPages();
-    }
-  } catch (err) {
-    console.error(`Failed to render page ${pageNum}:`, err);
-  } finally {
-    if (myScaleGen === _renderScaleGen) {
-      pgState.rendering = false;
-    }
-  }
+  pgState._renderPromise = renderTask;
+  return renderTask;
 }
 
 // Backward compatibility alias
@@ -1190,13 +1204,73 @@ function setupAllListeners(pageNum) {
 }
 
 // ── Text selection highlight ──
+function extractRangeTextWithSpacing(range, txtLayer) {
+  if (!range || !txtLayer) return '';
+  const spans = txtLayer.querySelectorAll('span');
+  if (!spans.length) return '';
+
+  const pieces = [];
+  for (const span of spans) {
+    if (!range.intersectsNode(span)) continue;
+    const spanRange = document.createRange();
+    spanRange.selectNodeContents(span);
+    try {
+      if (range.compareBoundaryPoints(Range.START_TO_START, spanRange) > 0) {
+        spanRange.setStart(range.startContainer, range.startOffset);
+      }
+      if (range.compareBoundaryPoints(Range.END_TO_END, spanRange) < 0) {
+        spanRange.setEnd(range.endContainer, range.endOffset);
+      }
+    } catch {
+      continue;
+    }
+    if (spanRange.collapsed) continue;
+    const subText = spanRange.toString();
+    if (!subText) continue;
+
+    let rect = spanRange.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) {
+      rect = span.getBoundingClientRect();
+    }
+    if (!rect || (rect.width === 0 && rect.height === 0)) continue;
+
+    pieces.push({ el: span, text: subText, rect });
+  }
+
+  if (!pieces.length) return '';
+
+  let out = pieces[0].text;
+  for (let i = 1; i < pieces.length; i++) {
+    const prev = pieces[i - 1];
+    const curr = pieces[i];
+    const lineHeight = Math.max(prev.rect.height, curr.rect.height, 10);
+    const isNewLine =
+      (curr.rect.top - prev.rect.top > lineHeight * 0.35) ||
+      (curr.rect.bottom <= prev.rect.top + 2);
+    const hasBoundarySpace = /\s$/.test(prev.text) || /^\s/.test(curr.text);
+
+    if (isNewLine) {
+      if (!hasBoundarySpace) out += ' ';
+    } else {
+      const gap = curr.rect.left - prev.rect.right;
+      const fontSize = parseFloat(getComputedStyle(curr.el).fontSize) || lineHeight * 0.85;
+      if (gap > fontSize * 0.14 && !hasBoundarySpace) {
+        out += ' ';
+      }
+    }
+    out += curr.text;
+  }
+
+  return out.trim();
+}
+
 function onTextUp(pageNum) {
   if (S.mode !== 'text') return;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
-  const text  = sel.toString().trim();
   const range = sel.getRangeAt(0);
   const pg    = S.pages[pageNum]; if (!pg) return;
+  const text  = extractRangeTextWithSpacing(range, pg.txtLayer) || sel.toString().trim();
   const wr    = pg.wrap.getBoundingClientRect();
   let rects = Array.from(range.getClientRects())
     .filter(r => r.width > 1 && r.height > 1)

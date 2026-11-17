@@ -14,12 +14,91 @@ use std::{
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 static GEMINI_JOB_STATE: OnceLock<Arc<Mutex<serde_json::Value>>> = OnceLock::new();
+static GEMINI_JOB_HISTORY: OnceLock<Arc<Mutex<std::collections::VecDeque<GeminiJobRecord>>>> =
+    OnceLock::new();
 static GEMINI_MOUSE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[derive(Clone, Debug)]
+struct GeminiJobRecord {
+    job_id: u64,
+    pdf_id: String,
+    pdf_name: String,
+    subject_id: String,
+}
 
 fn get_gemini_job_state() -> Arc<Mutex<serde_json::Value>> {
     GEMINI_JOB_STATE
         .get_or_init(|| Arc::new(Mutex::new(serde_json::json!({}))))
         .clone()
+}
+
+fn get_gemini_job_history() -> Arc<Mutex<std::collections::VecDeque<GeminiJobRecord>>> {
+    GEMINI_JOB_HISTORY
+        .get_or_init(|| Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(32))))
+        .clone()
+}
+
+fn record_gemini_job_history(job_id: u64, pdf_id: &str, pdf_name: &str, subject_id: &str) {
+    if job_id == 0 {
+        return;
+    }
+    let history_arc = get_gemini_job_history();
+    if let Ok(mut hist) = history_arc.lock() {
+        hist.retain(|r| r.job_id != job_id);
+        while hist.len() >= 32 {
+            hist.pop_front();
+        }
+        hist.push_back(GeminiJobRecord {
+            job_id,
+            pdf_id: pdf_id.trim().to_string(),
+            pdf_name: pdf_name.trim().to_string(),
+            subject_id: subject_id.trim().to_string(),
+        });
+    };
+}
+
+fn lookup_gemini_job_record(
+    job_id: u64,
+    state_arc: &Arc<Mutex<serde_json::Value>>,
+) -> Option<GeminiJobRecord> {
+    if job_id > 0 {
+        let history_arc = get_gemini_job_history();
+        if let Ok(hist) = history_arc.lock() {
+            if let Some(rec) = hist.iter().rev().find(|r| r.job_id == job_id) {
+                return Some(rec.clone());
+            }
+        };
+    }
+    if let Ok(st) = state_arc.lock() {
+        let state_job_id = st.get("jobId").and_then(|v| v.as_u64()).unwrap_or(0);
+        if job_id == 0 || job_id == state_job_id {
+            let pdf_id = st
+                .get("pdfId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let pdf_name = st
+                .get("pdfName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let subject_id = st
+                .get("subjectId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            return Some(GeminiJobRecord {
+                job_id: if job_id > 0 { job_id } else { state_job_id },
+                pdf_id,
+                pdf_name,
+                subject_id,
+            });
+        }
+    }
+    None
 }
 
 fn gemini_prefs_path() -> PathBuf {
@@ -130,6 +209,30 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   var _inMemoryPromptText = '';
   var _inMemoryPromptJobId = 0;
+  var _jobMetaById = {};
+
+  function rememberJobMeta(src) {
+    if (!src || typeof src !== 'object') return null;
+    var jid = Number(src.jobId || 0);
+    var snap = {
+      jobId: jid,
+      pdfId: String(src.pdfId || ''),
+      pdfName: String(src.pdfName || ''),
+      subjectId: String(src.subjectId || ''),
+      digestMode: src.digestMode === 'append' ? 'append' : 'replace'
+    };
+    if (jid > 0) {
+      _jobMetaById[String(jid)] = snap;
+      var keys = Object.keys(_jobMetaById);
+      if (keys.length > 32) {
+        keys.sort(function(a, b) { return Number(a) - Number(b); });
+        while (keys.length > 32) {
+          delete _jobMetaById[keys.shift()];
+        }
+      }
+    }
+    return snap;
+  }
 
   function sanitizeStateForCache(src) {
     var out = {};
@@ -149,6 +252,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           _state[ik] = window.__INITIAL_GEMINI_JOB__[ik];
         }
       }
+      rememberJobMeta(_state);
     }
     var cached = sessionStorage.getItem('la_gemini_state_cache');
     if (cached) {
@@ -164,6 +268,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         }
       }
     }
+    rememberJobMeta(_state);
     sessionStorage.setItem('la_gemini_state_cache', JSON.stringify(sanitizeStateForCache(_state)));
   } catch (e) {}
 
@@ -2034,7 +2139,15 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       var baseSnap = getLatestGeminiAnswerSnapshot();
       var jid = String(_state.jobId || Date.now());
       if (!_state.jobId) _state.jobId = Number(jid);
+      var boundMeta = rememberJobMeta(_state) || {
+        jobId: Number(jid),
+        pdfId: String(_state.pdfId || ''),
+        pdfName: String(_state.pdfName || ''),
+        subjectId: String(_state.subjectId || ''),
+        digestMode: _state.digestMode === 'append' ? 'append' : 'replace'
+      };
       sessionStorage.setItem('la_gemini_awaiting_autosend_job_id', jid);
+      sessionStorage.setItem('la_gemini_awaiting_autosend_meta', JSON.stringify(boundMeta));
       sessionStorage.setItem('la_gemini_baseline_text', baseSnap.text || '');
       _autoSendLastText = '';
       _autoSendStableSince = 0;
@@ -2075,6 +2188,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
     if (sessionStorage.getItem('la_gemini_autosent_job_id') === awaitingJobId) {
       sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
+      sessionStorage.removeItem('la_gemini_awaiting_autosend_meta');
       _awaitingLastChangeAt = 0;
       _awaitingStoppedAt = 0;
       return;
@@ -2138,11 +2252,48 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       return;
     }
 
+    var boundMeta = _jobMetaById[String(awaitingJobId)] || null;
+    if (!boundMeta) {
+      try {
+        var rawBound = sessionStorage.getItem('la_gemini_awaiting_autosend_meta');
+        if (rawBound) {
+          var parsedBound = JSON.parse(rawBound);
+          if (parsedBound && String(parsedBound.jobId || '') === String(awaitingJobId)) {
+            boundMeta = parsedBound;
+          }
+        }
+      } catch (e) {}
+    }
+    var stateMatchesAwaiting = String(_state.jobId || '') === String(awaitingJobId);
+    if (!stateMatchesAwaiting && (!boundMeta || !boundMeta.pdfId)) {
+      if (Number(_state.jobId || 0) > Number(awaitingJobId || 0)) {
+        sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
+        sessionStorage.removeItem('la_gemini_awaiting_autosend_meta');
+        _awaitingLastChangeAt = 0;
+        _awaitingStoppedAt = 0;
+      }
+      return;
+    }
+    var sendMeta = boundMeta ? {
+      jobId: Number(boundMeta.jobId || awaitingJobId || 0),
+      pdfId: String(boundMeta.pdfId || (stateMatchesAwaiting ? (_state.pdfId || '') : '')),
+      pdfName: String(boundMeta.pdfName || (stateMatchesAwaiting ? (_state.pdfName || '') : '')),
+      subjectId: String(boundMeta.subjectId || (stateMatchesAwaiting ? (_state.subjectId || '') : '')),
+      digestMode: (boundMeta.digestMode || (stateMatchesAwaiting ? _state.digestMode : 'replace')) === 'append' ? 'append' : 'replace'
+    } : {
+      jobId: Number(_state.jobId || 0),
+      pdfId: String(_state.pdfId || ''),
+      pdfName: String(_state.pdfName || ''),
+      subjectId: String(_state.subjectId || ''),
+      digestMode: _state.digestMode === 'append' ? 'append' : 'replace'
+    };
+
     sessionStorage.setItem('la_gemini_autosent_job_id', awaitingJobId);
     sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
+    sessionStorage.removeItem('la_gemini_awaiting_autosend_meta');
     _awaitingLastChangeAt = 0;
     _awaitingStoppedAt = 0;
-    sendDigestPayload(snap.html, snap.text);
+    sendDigestPayload(snap.html, snap.text, sendMeta);
   }
 
   var _promptTextCallbacks = [];
@@ -2343,6 +2494,13 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   };
 
   function extractAndSendDigest() {
+    var capturedMeta = rememberJobMeta(_state) || {
+      jobId: Number(_state.jobId || 0),
+      pdfId: String(_state.pdfId || ''),
+      pdfName: String(_state.pdfName || ''),
+      subjectId: String(_state.subjectId || ''),
+      digestMode: _state.digestMode === 'append' ? 'append' : 'replace'
+    };
     var sel = window.getSelection ? window.getSelection() : null;
     if (sel && !sel.isCollapsed && sel.toString().trim().length > 20) {
       var range = sel.getRangeAt(0);
@@ -2351,20 +2509,20 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       stripThinkingFromClone(div);
       stripLeadingPreambleFromClone(div);
       stripSourcesFromClone(div);
-      sendDigestPayload(div.innerHTML, stripLeadingPreambleTextInStudio(stripTrailingSourcesTextInStudio(sel.toString().trim())));
+      sendDigestPayload(div.innerHTML, stripLeadingPreambleTextInStudio(stripTrailingSourcesTextInStudio(sel.toString().trim())), capturedMeta);
       return;
     }
 
     var snap = getLatestGeminiAnswerSnapshot();
     if (snap.text && snap.text.length > 10) {
-      sendDigestPayload(snap.html, snap.text);
+      sendDigestPayload(snap.html, snap.text, capturedMeta);
       return;
     }
 
     if (navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function(clipText) {
         if (clipText && clipText.trim().length > 10) {
-          sendDigestPayload('', stripLeadingPreambleTextInStudio(stripTrailingSourcesTextInStudio(clipText.trim())));
+          sendDigestPayload('', stripLeadingPreambleTextInStudio(stripTrailingSourcesTextInStudio(clipText.trim())), capturedMeta);
         } else {
           showStatus('No Gemini answer found yet — wait for answer or select text.', '#f87171');
           emitStudioStatus('error', 'No answer found', 'No Gemini answer found yet — wait for reply or select text in Studio.', true);
@@ -2379,14 +2537,24 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
   }
 
-  function sendDigestPayload(html, text) {
+  function sendDigestPayload(html, text, jobMeta) {
+    var meta = (jobMeta && typeof jobMeta === 'object') ? jobMeta : null;
+    var targetJobId = meta ? Number(meta.jobId || 0) : Number(_state.jobId || 0);
+    var canReadLiveState = !meta || (targetJobId > 0 && Number(_state.jobId || 0) === targetJobId);
+    var storedMeta = targetJobId > 0 ? _jobMetaById[String(targetJobId)] : null;
+    var pdfId = (meta && meta.pdfId) ? String(meta.pdfId) : ((storedMeta && storedMeta.pdfId) ? String(storedMeta.pdfId) : (canReadLiveState ? String(_state.pdfId || '') : ''));
+    var pdfName = (meta && meta.pdfName) ? String(meta.pdfName) : ((storedMeta && storedMeta.pdfName) ? String(storedMeta.pdfName) : (canReadLiveState ? String(_state.pdfName || '') : ''));
+    var subjectId = (meta && meta.subjectId) ? String(meta.subjectId) : ((storedMeta && storedMeta.subjectId) ? String(storedMeta.subjectId) : (canReadLiveState ? String(_state.subjectId || '') : ''));
+    var rawMode = (meta && meta.digestMode) ? meta.digestMode : ((storedMeta && storedMeta.digestMode) ? storedMeta.digestMode : (canReadLiveState ? _state.digestMode : 'replace'));
+    var digestMode = rawMode === 'append' ? 'append' : 'replace';
     showStatus('Sending to Case Digest tab…', '#fbbf24');
     sendBridgeMsg({
       action: 'send_digest',
-      pdfId: _state.pdfId || '',
-      pdfName: _state.pdfName || '',
-      subjectId: _state.subjectId || '',
-      digestMode: _state.digestMode === 'append' ? 'append' : 'replace',
+      jobId: targetJobId,
+      pdfId: pdfId,
+      pdfName: pdfName,
+      subjectId: subjectId,
+      digestMode: digestMode,
       html: html || '',
       text: text || ''
     });
@@ -2420,6 +2588,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           returnToNotebookHome();
         }
       }, 200);
+    } else {
+      showStatus('Digest cannot be saved — missing target PDF ID.', '#f87171');
     }
   };
 
@@ -2510,6 +2680,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     if (isNewJob) {
       sessionStorage.removeItem('la_gemini_handled_job_id');
       sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
+      sessionStorage.removeItem('la_gemini_awaiting_autosend_meta');
       sessionStorage.removeItem('la_gemini_auto_opened_job_id');
       _isPasting = false;
       clearPastePollTimer();
@@ -2527,6 +2698,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         _jobTimer = null;
       }
     }
+    rememberJobMeta(_state);
     saveStateCache();
     ensureStudioBar();
 
@@ -2875,6 +3047,7 @@ pub async fn desktop_open_gemini_studio(
     if let Ok(mut g) = state_arc.lock() {
         *g = job_val.clone();
     }
+    record_gemini_job_history(job_id, &pdf_id, &pdf_name, &eff_subject_id);
 
     let job_meta_val = build_gemini_job_meta(&job_val);
     let job_meta_json_str = serde_json::to_string(&job_meta_val).unwrap_or_else(|_| "{}".to_string());
@@ -3052,22 +3225,127 @@ pub async fn desktop_open_gemini_studio(
                                 let _ = main_win.eval(&js);
                             }
                         } else if action == "send_digest" {
-                            if let Some(main_win) = app_for_nav.get_webview_window("main") {
-                                let js = format!(
-                                    "window.__onGeminiDigestReceived && window.__onGeminiDigestReceived({});",
-                                    json_str
-                                );
-                                let _ = main_win.eval(&js);
+                            let req_job_id = msg_val
+                                .get("jobId")
+                                .and_then(|v| {
+                                    v.as_u64().or_else(|| {
+                                        v.as_str().and_then(|s| s.trim().parse::<u64>().ok())
+                                    })
+                                })
+                                .unwrap_or(0);
+                            let mut digest_val = msg_val.clone();
+                            let msg_pdf_id = digest_val
+                                .get("pdfId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            let msg_pdf_name = digest_val
+                                .get("pdfName")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            let msg_subject_id = digest_val
+                                .get("subjectId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            let mut final_pdf_id = msg_pdf_id;
+                            let mut final_pdf_name = msg_pdf_name;
+                            let mut final_subject_id = msg_subject_id;
+                            let mut final_job_id = req_job_id;
+                            if let Some(rec) = lookup_gemini_job_record(req_job_id, &state_for_nav) {
+                                if final_job_id == 0 && rec.job_id > 0 {
+                                    final_job_id = rec.job_id;
+                                }
+                                if final_pdf_id.is_empty() {
+                                    if !rec.pdf_id.is_empty() {
+                                        final_pdf_id = rec.pdf_id.clone();
+                                    }
+                                    if final_pdf_name.is_empty() && !rec.pdf_name.is_empty() {
+                                        final_pdf_name = rec.pdf_name.clone();
+                                    }
+                                } else if req_job_id > 0
+                                    && !rec.pdf_id.is_empty()
+                                    && final_pdf_id != rec.pdf_id
+                                {
+                                    eprintln!(
+                                        "[GeminiStudio] send_digest pdfId mismatch for job {}: client='{}' -> using authoritative '{}'",
+                                        req_job_id, final_pdf_id, rec.pdf_id
+                                    );
+                                    final_pdf_id = rec.pdf_id.clone();
+                                    if !rec.pdf_name.is_empty() {
+                                        final_pdf_name = rec.pdf_name.clone();
+                                    }
+                                } else if final_pdf_name.is_empty() && !rec.pdf_name.is_empty() {
+                                    final_pdf_name = rec.pdf_name.clone();
+                                }
+                                if final_subject_id.is_empty() && !rec.subject_id.is_empty() {
+                                    final_subject_id = rec.subject_id.clone();
+                                }
                             }
-                            let app_ack = app_for_nav.clone();
-                            std::thread::spawn(move || {
-                                std::thread::sleep(std::time::Duration::from_millis(60));
-                                if let Some(gw) = app_ack.get_webview_window("gemini-studio") {
-                                    let _ = gw.eval(
-                                        "window.__onGeminiDigestSentAck && window.__onGeminiDigestSentAck(true);",
+                            if final_pdf_id.is_empty() {
+                                emit_gemini_studio_status(
+                                    &app_for_nav,
+                                    serde_json::json!({
+                                        "action": "studio_error",
+                                        "state": "error",
+                                        "stepLabel": "Digest not saved",
+                                        "message": "Digest cannot be saved: missing target PDF ID",
+                                        "pdfId": "",
+                                        "jobId": final_job_id,
+                                        "canRetry": true
+                                    }),
+                                );
+                                let app_ack = app_for_nav.clone();
+                                std::thread::spawn(move || {
+                                    std::thread::sleep(std::time::Duration::from_millis(60));
+                                    if let Some(gw) = app_ack.get_webview_window("gemini-studio") {
+                                        let _ = gw.eval(
+                                            "window.__onGeminiDigestSentAck && window.__onGeminiDigestSentAck(false);",
+                                        );
+                                    }
+                                });
+                            } else {
+                                if let Some(obj) = digest_val.as_object_mut() {
+                                    obj.insert(
+                                        "jobId".to_string(),
+                                        serde_json::json!(final_job_id),
+                                    );
+                                    obj.insert(
+                                        "pdfId".to_string(),
+                                        serde_json::Value::String(final_pdf_id),
+                                    );
+                                    obj.insert(
+                                        "pdfName".to_string(),
+                                        serde_json::Value::String(final_pdf_name),
+                                    );
+                                    obj.insert(
+                                        "subjectId".to_string(),
+                                        serde_json::Value::String(final_subject_id),
                                     );
                                 }
-                            });
+                                let forward_json = serde_json::to_string(&digest_val)
+                                    .unwrap_or_else(|_| json_str.clone());
+                                if let Some(main_win) = app_for_nav.get_webview_window("main") {
+                                    let js = format!(
+                                        "window.__onGeminiDigestReceived && window.__onGeminiDigestReceived({});",
+                                        forward_json
+                                    );
+                                    let _ = main_win.eval(&js);
+                                }
+                                let app_ack = app_for_nav.clone();
+                                std::thread::spawn(move || {
+                                    std::thread::sleep(std::time::Duration::from_millis(60));
+                                    if let Some(gw) = app_ack.get_webview_window("gemini-studio") {
+                                        let _ = gw.eval(
+                                            "window.__onGeminiDigestSentAck && window.__onGeminiDigestSentAck(true);",
+                                        );
+                                    }
+                                });
+                            }
                         } else if action == "native_click" || action == "native_hover" {
                             let is_click = action == "native_click";
                             let css_x = msg_val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);

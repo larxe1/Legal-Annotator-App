@@ -2989,30 +2989,61 @@ if (typeof window !== 'undefined') {
     }
   };
 
-  window.__onPerplexityDigestReceived = async (msg) => {
+  const _getTruePdfId = (pdfObj) => (pdfObj ? String(pdfObj.linked_pdf_id || pdfObj.id || '') : '');
+  const _resolveDigestTargetName = (targetPdfId, fallbackName = '') => {
+    const clean = String(fallbackName || '').trim();
+    if (clean) return clean;
+    const match = Array.isArray(S.pdfs)
+      ? S.pdfs.find(p => String(p.linked_pdf_id || p.id || '') === String(targetPdfId) || String(p.id) === String(targetPdfId))
+      : null;
+    return String(match?.name || 'selected PDF');
+  };
+  const _handleStudioDigestReceived = async (provider, msg) => {
     if (!msg || typeof msg !== 'object') return;
+    const targetPdfId = String(msg.pdfId || '').trim();
+    if (!targetPdfId) {
+      toast('Cannot auto-save digest: missing target PDF ID');
+      return;
+    }
+    const isGemini = provider === 'gemini';
+    const targetPdfName = _resolveDigestTargetName(targetPdfId, msg.pdfName);
+    const mode = isGemini
+      ? (msg.digestMode === 'append' ? 'append' : 'replace')
+      : (msg.digestMode === 'replace' ? 'replace' : 'append');
+    const sourceLabel = isGemini ? 'Gemini' : 'Perplexity';
     const { importDigestIntoCaseDigestTab } = await import('./notepad.js');
-    const ok = await importDigestIntoCaseDigestTab(
-      msg.pdfId || '',
+    const importRes = await importDigestIntoCaseDigestTab(
+      targetPdfId,
       msg.html || '',
       msg.text || '',
-      msg.digestMode === 'replace' ? 'replace' : 'append'
+      mode,
+      sourceLabel,
+      { strictTarget: true, pdfName: targetPdfName }
     );
+    const ok = Boolean(importRes && (importRes === true || importRes.ok));
     if (ok) {
-      applyPerplexityStudioStatus({
+      const savedInBackground = typeof importRes?.background === 'boolean'
+        ? importRes.background
+        : (_getTruePdfId(S.curPDF) !== targetPdfId);
+      applyDigestMonitorStatus(isGemini ? 'gemini' : 'perplexity', {
         state: 'done',
-        stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Perplexity Studio',
-        message: 'Saved into Case Digest',
-        pdfId: msg.pdfId || '',
+        stepLabel: _batchDigestState.running ? 'Batch Digest' : (isGemini ? 'Gemini Studio' : 'Perplexity Studio'),
+        message: savedInBackground
+          ? `Saved to "${targetPdfName}" (background)`
+          : 'Saved into Case Digest',
+        pdfId: targetPdfId,
+        pdfName: targetPdfName,
         hideStripAfterMs: _batchDigestState.running ? undefined : 4000,
       });
     }
     if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
-      if (!_batchDigestState.currentPdfId || !msg.pdfId || String(msg.pdfId) === String(_batchDigestState.currentPdfId)) {
+      if (!_batchDigestState.currentPdfId || String(targetPdfId) === String(_batchDigestState.currentPdfId)) {
         _batchDigestState.resolveCurrentPdf(ok);
       }
     }
   };
+
+  window.__onPerplexityDigestReceived = (msg) => _handleStudioDigestReceived('perplexity', msg);
 
   window.__onGeminiStudioStatus = (payload) => {
     applyDigestMonitorStatus('gemini', payload);
@@ -3080,29 +3111,5 @@ if (typeof window !== 'undefined') {
     }
   };
 
-  window.__onGeminiDigestReceived = async (msg) => {
-    if (!msg || typeof msg !== 'object') return;
-    const { importDigestIntoCaseDigestTab } = await import('./notepad.js');
-    const ok = await importDigestIntoCaseDigestTab(
-      msg.pdfId || '',
-      msg.html || '',
-      msg.text || '',
-      msg.digestMode === 'append' ? 'append' : 'replace',
-      'Gemini'
-    );
-    if (ok) {
-      applyDigestMonitorStatus('gemini', {
-        state: 'done',
-        stepLabel: _batchDigestState.running ? 'Batch Digest' : 'Gemini Studio',
-        message: 'Saved into Case Digest',
-        pdfId: msg.pdfId || '',
-        hideStripAfterMs: _batchDigestState.running ? undefined : 4000,
-      });
-    }
-    if (typeof _batchDigestState.resolveCurrentPdf === 'function') {
-      if (!_batchDigestState.currentPdfId || !msg.pdfId || String(msg.pdfId) === String(_batchDigestState.currentPdfId)) {
-        _batchDigestState.resolveCurrentPdf(ok);
-      }
-    }
-  };
+  window.__onGeminiDigestReceived = (msg) => _handleStudioDigestReceived('gemini', msg);
 }
