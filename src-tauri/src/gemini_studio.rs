@@ -204,7 +204,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     autoSendDigest: true,
     jobId: 0,
     hasPromptText: false,
-    promptLength: 0
+    promptLength: 0,
+    expectedPromptLen: 0,
+    expectedPromptNonWsLen: 0
   };
 
   var _inMemoryPromptText = '';
@@ -1658,13 +1660,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
   function setGeminiInputText(inputEl, text) {
     if (!inputEl) return false;
-    var trimmedLen = String(text || '').trim().length;
-    var expectedMin = trimmedLen > 20 ? 21 : trimmedLen;
+    var expectedMetrics = getExpectedPromptMetrics(String(text || ''));
     function hasInputText() {
-      var raw = (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT')
-        ? (inputEl.value || '')
-        : (inputEl.innerText || inputEl.textContent || '');
-      return raw.replace(/\u200B/g, '').trim().length >= expectedMin && expectedMin > 0;
+      return isGeminiInputComplete(measureGeminiInput(inputEl), expectedMetrics);
     }
 
     inputEl.focus();
@@ -2313,6 +2311,13 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     if (txt && (!jid || jid === Number(_state.jobId || 0))) {
       _inMemoryPromptText = txt;
       _inMemoryPromptJobId = Number(_state.jobId || jid || 0);
+      var trimmedTxt = txt.trim();
+      if (trimmedTxt.length > 0) {
+        _state.promptLength = trimmedTxt.length;
+        _state.expectedPromptLen = trimmedTxt.length;
+        _state.expectedPromptNonWsLen = trimmedTxt.replace(/\s+/g, '').length;
+        saveStateCache();
+      }
     }
     var cbs = _promptTextCallbacks.splice(0);
     for (var i = 0; i < cbs.length; i++) {
@@ -2323,6 +2328,13 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   function requestPromptTextFallback(cb) {
     var curJobId = Number(_state.jobId || 0);
     if (_inMemoryPromptText && _inMemoryPromptJobId === curJobId && curJobId > 0) {
+      var memTrimmed = _inMemoryPromptText.trim();
+      if (memTrimmed.length > 0 && (!Number(_state.expectedPromptLen || 0) || !Number(_state.expectedPromptNonWsLen || 0))) {
+        _state.promptLength = memTrimmed.length;
+        _state.expectedPromptLen = memTrimmed.length;
+        _state.expectedPromptNonWsLen = memTrimmed.replace(/\s+/g, '').length;
+        saveStateCache();
+      }
       cb(_inMemoryPromptText);
       return;
     }
@@ -2341,12 +2353,63 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     });
   }
 
-  function readGeminiInputLength(el) {
-    if (!el) return 0;
+  function measureGeminiInput(el) {
+    if (!el) return { trimmedLen: 0, nonWsLen: 0 };
     var raw = (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')
       ? (el.value || '')
       : (el.innerText || el.textContent || '');
-    return raw.replace(/\u200B/g, '').trim().length;
+    var cleaned = raw.replace(/\u200B/g, '').trim();
+    return {
+      trimmedLen: cleaned.length,
+      nonWsLen: cleaned.replace(/\s+/g, '').length
+    };
+  }
+
+  function getExpectedPromptMetrics(overrideText) {
+    if (typeof overrideText === 'string') {
+      var t = overrideText.trim();
+      return {
+        trimmedLen: t.length,
+        nonWsLen: t.replace(/\s+/g, '').length
+      };
+    }
+    var curJobId = Number(_state.jobId || 0);
+    if (_inMemoryPromptText && _inMemoryPromptJobId === curJobId && curJobId > 0) {
+      var mt = _inMemoryPromptText.trim();
+      if (mt.length > 0) {
+        return {
+          trimmedLen: mt.length,
+          nonWsLen: mt.replace(/\s+/g, '').length
+        };
+      }
+    }
+    return {
+      trimmedLen: Number(_state.expectedPromptLen || _state.promptLength || 0),
+      nonWsLen: Number(_state.expectedPromptNonWsLen || 0)
+    };
+  }
+
+  function isGeminiInputComplete(metrics, expected) {
+    if (!metrics || metrics.trimmedLen <= 0) return false;
+    var expTrimmed = expected ? Number(expected.trimmedLen || 0) : 0;
+    var expNonWs = expected ? Number(expected.nonWsLen || 0) : 0;
+    if (expNonWs > 0) {
+      var minNonWs = expNonWs <= 20
+        ? expNonWs
+        : Math.max(16, Math.floor(expNonWs * 0.8));
+      return metrics.nonWsLen >= minNonWs && metrics.trimmedLen >= minNonWs;
+    }
+    if (expTrimmed > 0) {
+      var minTrimmed = expTrimmed <= 20
+        ? expTrimmed
+        : Math.max(16, Math.floor(expTrimmed * 0.75));
+      return metrics.trimmedLen >= minTrimmed;
+    }
+    return metrics.trimmedLen > 20;
+  }
+
+  function readGeminiInputLength(el) {
+    return measureGeminiInput(el).trimmedLen;
   }
 
   var _pastePollTimer = null;
@@ -2415,10 +2478,13 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     _awaitingStoppedAt = 0;
     _hasSeenGenerationForJob = false;
 
-    function finishPasteSuccess(len) {
+    function finishPasteSuccess(metricsOrLen) {
       clearPastePollTimer();
       _isPasting = false;
-      showStatus('Case pasted (' + len.toLocaleString() + ' chars)! Select model & submit manually — will auto-save to Case Digest when done.', '#4ade80');
+      var displayLen = typeof metricsOrLen === 'number'
+        ? metricsOrLen
+        : Number((metricsOrLen && metricsOrLen.trimmedLen) || 0);
+      showStatus('Case pasted (' + displayLen.toLocaleString() + ' chars)! Select model & submit manually — will auto-save to Case Digest when done.', '#4ade80');
       emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted — select model & submit manually! Will auto-save when done.', false, true);
     }
 
@@ -2431,25 +2497,31 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     function runFallbackPaste() {
-      showStatus('OS paste empty — trying fallback text injection…', '#fbbf24');
+      showStatus('OS paste empty or incomplete — trying fallback text injection…', '#fbbf24');
       requestPromptTextFallback(function(promptText) {
         var trimmedPrompt = String(promptText || '').trim();
         if (!trimmedPrompt) {
           finishPasteFailure('Paste failed and prompt text could not be retrieved — retry Gemini Digest from Legal Annotator.');
           return;
         }
+        var expected = getExpectedPromptMetrics(trimmedPrompt);
         var box = findGeminiPromptInput();
         if (box && setGeminiInputText(box, trimmedPrompt)) {
           typeTrailingSpaceKeystroke(box);
-          var immediateLen = readGeminiInputLength(findGeminiPromptInput() || box);
-          if (immediateLen > 20) {
-            finishPasteSuccess(immediateLen);
+          var immediateMetrics = measureGeminiInput(findGeminiPromptInput() || box);
+          if (isGeminiInputComplete(immediateMetrics, expected)) {
+            finishPasteSuccess(immediateMetrics);
             return;
           }
           setTimeout(function() {
-            var delayedLen = readGeminiInputLength(findGeminiPromptInput() || box);
-            if (delayedLen > 20) finishPasteSuccess(delayedLen);
-            else finishPasteFailure('Fallback paste left Ask Gemini empty — click inside Ask Gemini and press Ctrl+V.');
+            var delayedMetrics = measureGeminiInput(findGeminiPromptInput() || box);
+            if (isGeminiInputComplete(delayedMetrics, expected)) {
+              finishPasteSuccess(delayedMetrics);
+            } else {
+              finishPasteFailure(delayedMetrics.trimmedLen > 0
+                ? 'Fallback paste was incomplete — click inside Ask Gemini and press Ctrl+V.'
+                : 'Fallback paste left Ask Gemini empty — click inside Ask Gemini and press Ctrl+V.');
+            }
           }, 150);
           return;
         }
@@ -2457,17 +2529,22 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       });
     }
 
-    var boxLen = readGeminiInputLength(findGeminiPromptInput());
-    if (boxLen > 20) {
-      finishPasteSuccess(boxLen);
+    var boxMetrics = measureGeminiInput(findGeminiPromptInput());
+    if (isGeminiInputComplete(boxMetrics, getExpectedPromptMetrics())) {
+      finishPasteSuccess(boxMetrics);
       return;
     }
 
     if (fromFallback) {
       setTimeout(function() {
-        var recheckLen = readGeminiInputLength(findGeminiPromptInput());
-        if (ok && recheckLen > 20) finishPasteSuccess(recheckLen);
-        else finishPasteFailure('Fallback paste left Ask Gemini empty — click inside Ask Gemini and press Ctrl+V.');
+        var recheckMetrics = measureGeminiInput(findGeminiPromptInput());
+        if (ok && isGeminiInputComplete(recheckMetrics, getExpectedPromptMetrics())) {
+          finishPasteSuccess(recheckMetrics);
+        } else {
+          finishPasteFailure(recheckMetrics.trimmedLen > 0
+            ? 'Fallback paste was incomplete — click inside Ask Gemini and press Ctrl+V.'
+            : 'Fallback paste left Ask Gemini empty — click inside Ask Gemini and press Ctrl+V.');
+        }
       }, 150);
       return;
     }
@@ -2478,15 +2555,27 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     }
 
     var pollTicks = 0;
-    var maxPollTicks = 10; // ~1.5s across 150ms ticks for large 70-page pastes
+    var maxPollTicks = 16; // ~2.4s across 150ms ticks for large 70-page pastes
+    var lastNonWsLen = boxMetrics.nonWsLen;
+    var lastTrimmedLen = boxMetrics.trimmedLen;
+    var lastGrowthTick = 0;
     _pastePollTimer = setInterval(function() {
       pollTicks++;
-      var len = readGeminiInputLength(findGeminiPromptInput());
-      if (len > 20) {
-        finishPasteSuccess(len);
+      var m = measureGeminiInput(findGeminiPromptInput());
+      if (isGeminiInputComplete(m, getExpectedPromptMetrics())) {
+        finishPasteSuccess(m);
         return;
       }
+      var isGrowing = (m.nonWsLen > lastNonWsLen) || (m.trimmedLen > lastTrimmedLen);
+      if (isGrowing) {
+        lastNonWsLen = m.nonWsLen;
+        lastTrimmedLen = m.trimmedLen;
+        lastGrowthTick = pollTicks;
+      }
       if (pollTicks >= maxPollTicks) {
+        if (isGrowing || (m.nonWsLen > 0 && (pollTicks - lastGrowthTick <= 2) && pollTicks < 24)) {
+          return;
+        }
         clearPastePollTimer();
         runFallbackPaste();
       }
@@ -2670,11 +2759,19 @@ const GEMINI_INIT_SCRIPT: &str = r#"
   window.__GEMINI_STUDIO_RECEIVE_JOB = function(job) {
     if (!job || typeof job !== 'object') return;
     var isNewJob = job.jobId && String(job.jobId) !== String(_state.jobId);
+    if (isNewJob) {
+      _state.promptLength = 0;
+      _state.expectedPromptLen = 0;
+      _state.expectedPromptNonWsLen = 0;
+    }
     for (var k in job) {
       if (k === 'pdfText' || k === 'fullPromptText' || k === 'instructionText') continue;
       if (job[k] !== undefined && job[k] !== null) {
         _state[k] = job[k];
       }
+    }
+    if (!Number(_state.expectedPromptLen || 0) && Number(_state.promptLength || 0) > 0) {
+      _state.expectedPromptLen = Number(_state.promptLength || 0);
     }
     _state.pinnedNotebookUrl = normalizeNotebookUrl(_state.pinnedNotebookUrl) || normalizeNotebookUrl(window.location.href);
     if (isNewJob) {
@@ -2874,11 +2971,17 @@ pub fn desktop_focus_gemini_studio(app: tauri::AppHandle) -> Result<bool, String
 }
 
 fn build_gemini_job_meta(job: &serde_json::Value) -> serde_json::Value {
-    let prompt_len = job
+    let prompt_str = job
         .get("fullPromptText")
         .and_then(|v| v.as_str())
-        .map(|s| s.trim().len())
-        .unwrap_or(0);
+        .unwrap_or("");
+    let prompt_trimmed = prompt_str.trim();
+    let prompt_len = prompt_trimmed.encode_utf16().count();
+    let prompt_non_ws_len: usize = prompt_trimmed
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.len_utf16())
+        .sum();
     serde_json::json!({
         "pdfId": job.get("pdfId").cloned().unwrap_or_else(|| serde_json::json!("")),
         "pdfName": job.get("pdfName").cloned().unwrap_or_else(|| serde_json::json!("Current PDF")),
@@ -2894,6 +2997,8 @@ fn build_gemini_job_meta(job: &serde_json::Value) -> serde_json::Value {
         "jobId": job.get("jobId").cloned().unwrap_or_else(|| serde_json::json!(0)),
         "hasPromptText": prompt_len > 0,
         "promptLength": prompt_len,
+        "expectedPromptLen": prompt_len,
+        "expectedPromptNonWsLen": prompt_non_ws_len,
     })
 }
 
@@ -3511,11 +3616,11 @@ pub async fn desktop_open_gemini_studio(
                                         let _ = gw.set_focus();
                                         crate::perform_native_os_ctrl_v();
                                         let post_paste_ms: u64 = if prompt_text.len() > 100_000 {
-                                            350
+                                            650
                                         } else if prompt_text.len() > 25_000 {
-                                            250
+                                            500
                                         } else {
-                                            180
+                                            400
                                         };
                                         std::thread::sleep(std::time::Duration::from_millis(
                                             post_paste_ms,

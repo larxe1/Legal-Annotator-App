@@ -1,7 +1,7 @@
 {
-    "version":  "1.25.5",
-    "build":  79,
-    "updatedAt":  "2026-11-17T00:30:08Z",
-    "notes":  "Saved completed Gemini digests to their original source PDF instead of a newly opened PDF, preserved spaces across line breaks when capturing highlights, and fixed right-panel highlight click scrolling to land on the exact highlight.",
+    "version":  "1.25.6",
+    "build":  80,
+    "updatedAt":  "2026-11-17T02:27:32Z",
+    "notes":  "Moved the Gemini digest skill trigger to Line 1 at the top of the prompt and hardened Gemini Studio paste settle delays and pasted-length verification.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }

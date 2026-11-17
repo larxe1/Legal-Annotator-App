@@ -47,18 +47,41 @@ export function getFolderBreadcrumb(folderId) {
 const GLOBAL_MAIN_INSTR_KEY = 'copy_instr_global_main_v1';
 const GLOBAL_FOOTER_INSTR_KEY = 'copy_instr_global_footer_v1';
 
-export const DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE =
+const LEGACY_DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE =
   'Create a digest for this case. The topic is {topic}, specifically {subtopic}.';
 
-export const DEFAULT_DIGEST_FOOTER_INSTRUCTION =
+const LEGACY_DEFAULT_DIGEST_FOOTER_INSTRUCTION =
   '---\nApply both the ph-case-digest and strict-source-verification skills. Begin Line 1 with "I have accessed the text from..." followed immediately by "### 1. Recit-Ready Summary Table" (no case title banner above it), and end with "### 6. Sources, Syllabus Note & Self-QA Verification (exclude)".';
+
+export const DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE =
+  'Load and apply both the ph-case-digest and strict-source-verification skills first. Create a digest for this case. The topic is {topic}, specifically {subtopic}. Begin Line 1 with "I have accessed the text from..." followed immediately by "### 1. Recit-Ready Summary Table" (no case title banner above it), and end with "### 6. Sources, Syllabus Note & Self-QA Verification (exclude)".';
+
+export const DEFAULT_DIGEST_FOOTER_INSTRUCTION = '';
+
+/**
+ * Reads a global copy instruction setting, migrating exact legacy unedited defaults
+ * to the current default while preserving intentional '' or custom user edits.
+ */
+function readMigratedGlobalCopySetting(key, legacyDefault, currentDefault) {
+  const stored = safeStorageGet(key, null);
+  if (stored === null) return currentDefault;
+  if (stored === legacyDefault) {
+    safeStorageSet(key, currentDefault);
+    dbSetSetting(key, currentDefault).catch(() => {});
+    return currentDefault;
+  }
+  return stored;
+}
 
 /**
  * Reads the saved global Main Instruction template (preserving '' if intentionally cleared).
  */
 export function getGlobalMainCopyInstructionTemplate() {
-  const stored = safeStorageGet(GLOBAL_MAIN_INSTR_KEY, null);
-  return stored === null ? DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE : stored;
+  return readMigratedGlobalCopySetting(
+    GLOBAL_MAIN_INSTR_KEY,
+    LEGACY_DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE,
+    DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE
+  );
 }
 
 /**
@@ -75,8 +98,11 @@ export function saveGlobalMainCopyInstructionTemplate(text) {
  * Reads the saved global Bottom Instruction (preserving '' if intentionally cleared).
  */
 export function getGlobalFooterCopyInstruction() {
-  const stored = safeStorageGet(GLOBAL_FOOTER_INSTR_KEY, null);
-  return stored === null ? DEFAULT_DIGEST_FOOTER_INSTRUCTION : stored;
+  return readMigratedGlobalCopySetting(
+    GLOBAL_FOOTER_INSTR_KEY,
+    LEGACY_DEFAULT_DIGEST_FOOTER_INSTRUCTION,
+    DEFAULT_DIGEST_FOOTER_INSTRUCTION
+  );
 }
 
 /**
@@ -271,17 +297,25 @@ function updateCopyInstrAutoPreview(folderId, mainVal) {
 async function hydrateGlobalCopyInstructionsFromCloud() {
   try {
     let changed = false;
-    if (safeStorageGet(GLOBAL_MAIN_INSTR_KEY, null) === null) {
-      const cloudMain = await dbGetSetting(GLOBAL_MAIN_INSTR_KEY);
-      if (typeof cloudMain === 'string' && safeStorageGet(GLOBAL_MAIN_INSTR_KEY, null) === null) {
-        safeStorageSet(GLOBAL_MAIN_INSTR_KEY, cloudMain);
-        changed = true;
-      }
-    }
-    if (safeStorageGet(GLOBAL_FOOTER_INSTR_KEY, null) === null) {
-      const cloudFooter = await dbGetSetting(GLOBAL_FOOTER_INSTR_KEY);
-      if (typeof cloudFooter === 'string' && safeStorageGet(GLOBAL_FOOTER_INSTR_KEY, null) === null) {
-        safeStorageSet(GLOBAL_FOOTER_INSTR_KEY, cloudFooter);
+    const settings = [
+      [GLOBAL_MAIN_INSTR_KEY, LEGACY_DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE, DEFAULT_GLOBAL_MAIN_INSTRUCTION_TEMPLATE],
+      [GLOBAL_FOOTER_INSTR_KEY, LEGACY_DEFAULT_DIGEST_FOOTER_INSTRUCTION, DEFAULT_DIGEST_FOOTER_INSTRUCTION],
+    ];
+    for (const [key, legacyDefault, currentDefault] of settings) {
+      const localVal = safeStorageGet(key, null);
+      if (localVal === null) {
+        const cloudVal = await dbGetSetting(key);
+        if (typeof cloudVal === 'string' && safeStorageGet(key, null) === null) {
+          const migrated = cloudVal === legacyDefault ? currentDefault : cloudVal;
+          safeStorageSet(key, migrated);
+          if (migrated !== cloudVal) {
+            dbSetSetting(key, migrated).catch(() => {});
+          }
+          changed = true;
+        }
+      } else if (localVal === legacyDefault) {
+        safeStorageSet(key, currentDefault);
+        dbSetSetting(key, currentDefault).catch(() => {});
         changed = true;
       }
     }
