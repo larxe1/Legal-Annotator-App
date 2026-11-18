@@ -1,7 +1,7 @@
 {
-    "updatedAt":  "2026-11-18T09:43:08Z",
-    "build":  86,
-    "version":  "1.25.12",
+    "updatedAt":  "2026-11-18T12:59:00Z",
+    "build":  87,
+    "version":  "1.25.13",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Added a one-click Paste Digest button to the Notepad toolbar that reads Case Digests from the clipboard, strips leading preamble up to the Summary Table, removes trailing Sources/Syllabus Note/Self-QA Verification exclusions, formats cleanly, and saves to the Case Digest tab."
+    "notes":  "Fixed blank lines appearing between bullet points when pasting Case Digests from Gemini by stripping paragraph-wrapper line breaks and formatting newlines inside lists, tightening Case Digest bullet spacing, and improving mixed-Markdown plain-text digest pasting."
 }

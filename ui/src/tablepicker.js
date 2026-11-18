@@ -118,8 +118,8 @@ function parseTextToTable(text) {
   if (hasTabs) {
     rows = lines.map(l => l.split('\t').map(c => c.trim()));
   } else {
-    // Check if lines have markdown | separators
-    const isMarkdownTable = lines.some(l => l.includes('|'));
+    // Check if lines have markdown | separators (all non-empty lines must be pipe-delimited)
+    const isMarkdownTable = lines.every(l => l.includes('|'));
     if (isMarkdownTable) {
       rows = lines
         .filter(l => !l.match(/^[\s|:-]+$/)) // Skip markdown divider like |---|---|
@@ -184,37 +184,246 @@ function parseTextToList(text) {
   return null;
 }
 
-export function sanitizeRichPasteHtml(html, text = '') {
-  if (!html && text) {
-    const tableHtml = parseTextToTable(text);
-    if (tableHtml) return tableHtml;
-    const listHtml = parseTextToList(text);
-    if (listHtml) return listHtml;
-    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r?\n/g, '<br>');
+const _IGNORE_WS_CONTAINERS = new Set(['ul', 'ol', 'table', 'thead', 'tbody', 'tfoot', 'tr']);
+const _BLOCK_ELEMENTS = new Set([
+  'p', 'div', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'table', 'thead', 'tbody', 'tfoot', 'tr', 'blockquote', 'hr',
+  'section', 'article', 'header', 'footer'
+]);
+
+function escapeHtmlText(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function renderInlineMarkdown(str) {
+  let s = escapeHtmlText(str);
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  s = s.replace(/__([^_]+)__/g, '<b>$1</b>');
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<i>$2</i>');
+  return s;
+}
+
+function parseMixedMarkdownToHtml(text) {
+  if (!text) return null;
+  const rawLines = text.replace(/\r\n?/g, '\n').split('\n');
+  const hasMarkdownSyntax = rawLines.some(l =>
+    /^\s*(?:#{1,6}\s+|[•\-\*]\s+|\d+[\.\)]\s+|>\s+|\|.*\|)/.test(l)
+  );
+  if (!hasMarkdownSyntax) return null;
+
+  const bulletRe = /^(\s*)[•\-\*]\s+(.*)$/;
+  const orderedRe = /^(\s*)\d+[\.\)]\s+(.*)$/;
+  const headingRe = /^(#{1,6})\s+(.*)$/;
+  const quoteRe = /^>\s?(.*)$/;
+  const tableDividerRe = /^\|?[\s:|-]+\|[\s:|-]*$/;
+
+  const out = [];
+  const listStack = [];
+  let prevBlockType = null; // 'text' | 'block' | 'blank'
+
+  const closeListsTo = (targetLen = 0) => {
+    while (listStack.length > targetLen) {
+      const top = listStack.pop();
+      if (top.liOpen) out.push('</li>');
+      out.push(`</${top.tag}>`);
+      prevBlockType = 'block';
+    }
+  };
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      // Look ahead: if inside a list and the next non-blank line is also a list item,
+      // stay in the list without emitting <br> between <li> elements.
+      let nextIdx = i + 1;
+      while (nextIdx < rawLines.length && !rawLines[nextIdx].trim()) nextIdx++;
+      if (listStack.length > 0 && nextIdx < rawLines.length) {
+        const nextLine = rawLines[nextIdx];
+        if (bulletRe.test(nextLine) || orderedRe.test(nextLine)) {
+          continue;
+        }
+      }
+      closeListsTo(0);
+      if (prevBlockType === 'text') {
+        out.push('<br>');
+        prevBlockType = 'blank';
+      }
+      continue;
+    }
+
+    // Markdown pipe table block
+    if (trimmed.includes('|') && i + 1 < rawLines.length && tableDividerRe.test(rawLines[i + 1].trim())) {
+      closeListsTo(0);
+      const tableLines = [];
+      while (i < rawLines.length && rawLines[i].includes('|')) {
+        tableLines.push(rawLines[i]);
+        i++;
+      }
+      i--; // compensate for loop increment
+      const tableRows = tableLines
+        .filter(l => !/^[\s|:-]+$/.test(l))
+        .map(l => l.split('|').map(c => c.trim()).filter((c, idx, arr) =>
+          (idx > 0 && idx < arr.length - 1) || (idx === 0 && c !== '') || (idx === arr.length - 1 && c !== '')
+        ))
+        .filter(r => r.length >= 2);
+      if (tableRows.length >= 1) {
+        let tbl = '<table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:break-word;"><tbody>';
+        for (let r = 0; r < tableRows.length; r++) {
+          tbl += '<tr>';
+          for (let c = 0; c < tableRows[r].length; c++) {
+            const cellTag = r === 0 ? 'th' : 'td';
+            const style = r === 0
+              ? 'border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:break-word; overflow-wrap:anywhere;'
+              : 'border:1px solid var(--navy-b); padding:6px 10px; word-break:break-word; overflow-wrap:anywhere;';
+            const content = tableRows[r][c] ? renderInlineMarkdown(tableRows[r][c]) : '<br>';
+            tbl += `<${cellTag} style="${style}">${content}</${cellTag}>`;
+          }
+          tbl += '</tr>';
+        }
+        tbl += '</tbody></table>';
+        out.push(tbl);
+        prevBlockType = 'block';
+        continue;
+      }
+    }
+
+    // Headings
+    const hMatch = trimmed.match(headingRe);
+    if (hMatch) {
+      closeListsTo(0);
+      const lvl = hMatch[1].length;
+      out.push(`<h${lvl} style="margin:8px 0 4px;">${renderInlineMarkdown(hMatch[2])}</h${lvl}>`);
+      prevBlockType = 'block';
+      continue;
+    }
+
+    // Blockquotes
+    const qMatch = trimmed.match(quoteRe);
+    if (qMatch) {
+      closeListsTo(0);
+      out.push(`<blockquote style="border-left:3px solid var(--gold); margin:8px 0; padding-left:10px; color:var(--text-d);">${renderInlineMarkdown(qMatch[1])}</blockquote>`);
+      prevBlockType = 'block';
+      continue;
+    }
+
+    // Bullet or ordered list items (supports nested indentation)
+    const bMatch = line.match(bulletRe);
+    const oMatch = bMatch ? null : line.match(orderedRe);
+    if (bMatch || oMatch) {
+      const m = bMatch || oMatch;
+      const indent = m[1].replace(/\t/g, '  ').length;
+      const listTag = bMatch ? 'ul' : 'ol';
+
+      while (listStack.length > 0 && indent < listStack[listStack.length - 1].indent) {
+        const top = listStack.pop();
+        if (top.liOpen) out.push('</li>');
+        out.push(`</${top.tag}>`);
+      }
+
+      if (listStack.length === 0 || indent > listStack[listStack.length - 1].indent) {
+        out.push(`<${listTag} style="margin:6px 0; padding-left:24px;">`);
+        listStack.push({ tag: listTag, indent, liOpen: false });
+      } else {
+        const top = listStack[listStack.length - 1];
+        if (top.tag !== listTag) {
+          if (top.liOpen) out.push('</li>');
+          out.push(`</${top.tag}>`);
+          listStack.pop();
+          out.push(`<${listTag} style="margin:6px 0; padding-left:24px;">`);
+          listStack.push({ tag: listTag, indent, liOpen: false });
+        } else if (top.liOpen) {
+          out.push('</li>');
+          top.liOpen = false;
+        }
+      }
+
+      out.push(`<li>${renderInlineMarkdown(m[2]) || '<br>'}`);
+      listStack[listStack.length - 1].liOpen = true;
+      prevBlockType = 'block';
+      continue;
+    }
+
+    // Plain line
+    closeListsTo(0);
+    if (prevBlockType === 'text' || prevBlockType === 'blank') {
+      out.push('<br>');
+    }
+    out.push(renderInlineMarkdown(trimmed));
+    prevBlockType = 'text';
   }
-  if (!html) return '';
 
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('.ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder, button, svg').forEach(el => el.remove());
+  closeListsTo(0);
+  return out.join('').replace(/(?:<br\s*\/?>\s*)+$/i, '');
+}
 
-  const hasHtmlTable = doc.querySelector('table');
-  if (!hasHtmlTable && text) {
-    const tableFromText = parseTextToTable(text);
-    if (tableFromText) return tableFromText;
+function cleanListItemInner(html) {
+  let s = html
+    // Strip leading <br>s and whitespace
+    .replace(/^(?:\s|<br\s*\/?>)+/i, '')
+    // Strip trailing <br>s and whitespace
+    .replace(/(?:\s|<br\s*\/?>)+$/i, '')
+    // Strip <br>s and whitespace immediately preceding a nested <ul> or <ol>
+    .replace(/(?:\s|<br\s*\/?>)+(?=<(?:ul|ol)\b)/gi, '')
+    // Strip <br>s and whitespace immediately following a nested </ul> or </ol>
+    .replace(/(<\/(?:ul|ol)>)(?:\s|<br\s*\/?>)+/gi, '$1')
+    // Collapse consecutive <br>s inside <li> caused by <p> wrappers
+    .replace(/(?:<br\s*\/?>\s*){2,}/gi, '<br>');
+  // Strip trailing <br> trapped inside closing inline tags (e.g. <b><p>Text</p></b> -> <b>Text<br></b>)
+  s = s.replace(/(?:\s|<br\s*\/?>)+(?=(?:<\/(?:b|strong|i|em|u|s|strike|span|a)>)+$)/gi, '');
+  // Drop empty inline wrappers if nothing remains inside
+  s = s.replace(/^<(b|strong|i|em|u|s|strike|span)>\s*<\/\1>$/i, '').trim();
+  return s;
+}
+
+function cleanClipboardHtmlDoc(doc, stripSelector) {
+  doc.querySelectorAll(stripSelector).forEach(el => el.remove());
+
+  function siblingElementOrNull(node, dir) {
+    let cur = dir === 'prev' ? node.previousSibling : node.nextSibling;
+    while (cur && cur.nodeType === 8 /* COMMENT_NODE */) {
+      cur = dir === 'prev' ? cur.previousSibling : cur.nextSibling;
+    }
+    return cur;
   }
 
   function cleanNode(node) {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent;
     if (node.nodeType !== Node.ELEMENT_NODE) return '';
-    if (node.matches && node.matches('.ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder, button, svg')) {
-      return '';
-    }
-
-    let inner = '';
-    node.childNodes.forEach(c => inner += cleanNode(c));
-    if (!inner && !['br', 'hr', 'td', 'th', 'li'].includes(node.tagName.toLowerCase())) return '';
+    if (node.matches && node.matches(stripSelector)) return '';
 
     const tag = node.tagName.toLowerCase();
+    let inner = '';
+    node.childNodes.forEach(c => {
+      if (c.nodeType === Node.TEXT_NODE && !/\S/.test(c.textContent)) {
+        // Ignore pure-whitespace text nodes inside list/table structural containers
+        // so formatting \n indentation never becomes blank lines under white-space: pre-wrap.
+        if (_IGNORE_WS_CONTAINERS.has(tag)) return;
+        if (tag !== 'pre' && tag !== 'code' && /[\r\n]/.test(c.textContent)) {
+          const prev = siblingElementOrNull(c, 'prev');
+          const next = siblingElementOrNull(c, 'next');
+          const prevIsBlock = !prev || (prev.nodeType === Node.ELEMENT_NODE && _BLOCK_ELEMENTS.has(prev.tagName.toLowerCase()));
+          const nextIsBlock = !next || (next.nodeType === Node.ELEMENT_NODE && _BLOCK_ELEMENTS.has(next.tagName.toLowerCase()));
+          if (prevIsBlock || nextIsBlock) return;
+          inner += ' ';
+          return;
+        }
+      }
+      inner += cleanNode(c);
+    });
+
+    if (tag === 'li') {
+      inner = cleanListItemInner(inner);
+    }
+
+    if (!inner && !['br', 'hr', 'td', 'th', 'li'].includes(tag)) return '';
+
     const style = node.style || {};
     const fontWeight = (style.fontWeight || '').toLowerCase();
     const fontStyle = (style.fontStyle || '').toLowerCase();
@@ -227,10 +436,12 @@ export function sanitizeRichPasteHtml(html, text = '') {
     const isUnderline = (tag === 'u' && !textDeco.includes('none')) || textDeco.includes('underline');
     const isStrike = ['s', 'strike'].includes(tag) || textDeco.includes('line-through');
 
-    if (isStrike) inner = `<s>${inner}</s>`;
-    if (isUnderline) inner = `<u>${inner}</u>`;
-    if (isItalic) inner = `<i>${inner}</i>`;
-    if (isBold) inner = `<b>${inner}</b>`;
+    if (inner) {
+      if (isStrike) inner = `<s>${inner}</s>`;
+      if (isUnderline) inner = `<u>${inner}</u>`;
+      if (isItalic) inner = `<i>${inner}</i>`;
+      if (isBold) inner = `<b>${inner}</b>`;
+    }
 
     if (tag === 'sup') return `<sup>${inner}</sup>`;
     if (tag === 'sub') return `<sub>${inner}</sub>`;
@@ -273,14 +484,46 @@ export function sanitizeRichPasteHtml(html, text = '') {
       return `<td style="border:1px solid var(--navy-b); padding:6px 10px; word-break:break-word; overflow-wrap:anywhere;"${colspan}${rowspan}>${inner || '<br>'}</td>`;
     }
     if (['p', 'div'].includes(tag)) {
-      return inner ? `${inner}<br>` : '<br>';
+      if (!inner || /^(?:<br\s*\/?>\s*)+$/i.test(inner)) return '<br>';
+      if (/(?:<br\s*\/?>|<\/(?:ul|ol|table|h[1-6]|blockquote)>)\s*$/i.test(inner)) return inner;
+      return `${inner}<br>`;
     }
     if (tag === 'br') return '<br>';
     return inner;
   }
 
   let cleanHtml = cleanNode(doc.body);
+  // Remove stray <br>s immediately between adjacent lists (</ul><br><ul>)
+  cleanHtml = cleanHtml.replace(/(<\/(?:ul|ol)>)\s*(?:<br\s*\/?>\s*)+(?=<(?:ul|ol)\b)/gi, '$1');
+  // Remove a single stray <br> immediately before <ul>/<ol> (e.g. from <p>Intro:</p><ul>...</ul>)
+  // while keeping any intentional blank line (<br><br> -> <br>).
+  cleanHtml = cleanHtml.replace(/<br\s*\/?>\s*(?=<(?:ul|ol)\b)/gi, '');
   cleanHtml = cleanHtml.replace(/(?:<br\s*\/?>\s*)+$/i, '');
+  return cleanHtml;
+}
+
+export function sanitizeRichPasteHtml(html, text = '') {
+  if (!html && text) {
+    const tableHtml = parseTextToTable(text);
+    if (tableHtml) return tableHtml;
+    const mdHtml = parseMixedMarkdownToHtml(text);
+    if (mdHtml) return mdHtml;
+    const listHtml = parseTextToList(text);
+    if (listHtml) return listHtml;
+    return escapeHtmlText(text).replace(/\r?\n/g, '<br>');
+  }
+  if (!html) return '';
+
+  const stripSelector = '.ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder, button, svg';
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
+  const hasHtmlTable = doc.querySelector('table');
+  if (!hasHtmlTable && text) {
+    const tableFromText = parseTextToTable(text);
+    if (tableFromText) return tableFromText;
+  }
+
+  const cleanHtml = cleanClipboardHtmlDoc(doc, stripSelector);
   return cleanHtml || text.replace(/\n/g, '<br>');
 }
 
@@ -312,10 +555,8 @@ export function handlePaste(e) {
   
   e.preventDefault();
   
+  const stripSelector = '.ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder';
   const doc = new DOMParser().parseFromString(html, 'text/html');
-
-  // Strip all PDF viewer overlay elements (highlights, text layer absolute positioning, canvas, etc.)
-  doc.querySelectorAll('.ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder').forEach(el => el.remove());
 
   const hasHtmlTable = doc.querySelector('table');
 
@@ -328,111 +569,7 @@ export function handlePaste(e) {
     }
   }
 
-  function cleanNode(node) {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
-    if (node.nodeType !== Node.ELEMENT_NODE) return '';
-    
-    // Skip any overlay or ghost element
-    if (node.matches && node.matches('.ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder')) {
-      return '';
-    }
-
-    let inner = '';
-    node.childNodes.forEach(c => inner += cleanNode(c));
-    if (!inner && !['br', 'hr', 'td', 'th', 'li'].includes(node.tagName.toLowerCase())) return '';
-
-    const tag = node.tagName.toLowerCase();
-    const style = node.style || {};
-    const fontWeight = (style.fontWeight || '').toLowerCase();
-    const fontStyle = (style.fontStyle || '').toLowerCase();
-    const textDeco = (style.textDecoration || '').toLowerCase();
-    
-    // Google Docs wraps all clipboard HTML in <b style="font-weight:normal;" id="docs-internal-guid-...">
-    const isGoogleDocsWrapper = node.id?.startsWith('docs-internal-guid') || (tag === 'b' && (fontWeight === 'normal' || fontWeight === '400' || fontWeight === 'lighter'));
-
-    // Determine semantic formatting
-    const isBold = (['b', 'strong'].includes(tag) && !isGoogleDocsWrapper && fontWeight !== 'normal' && fontWeight !== '400' && fontWeight !== 'lighter') ||
-                   (fontWeight === 'bold' || fontWeight === '700' || fontWeight === '800' || fontWeight === '900' || parseInt(fontWeight) >= 600);
-    const isItalic = (['i', 'em'].includes(tag) && fontStyle !== 'normal') || fontStyle === 'italic';
-    const isUnderline = (tag === 'u' && !textDeco.includes('none')) || textDeco.includes('underline');
-    const isStrike = ['s', 'strike'].includes(tag) || textDeco.includes('line-through');
-
-    // Apply inline formats in clean order
-    if (isStrike) inner = `<s>${inner}</s>`;
-    if (isUnderline) inner = `<u>${inner}</u>`;
-    if (isItalic) inner = `<i>${inner}</i>`;
-    if (isBold) inner = `<b>${inner}</b>`;
-
-    if (tag === 'sup') return `<sup>${inner}</sup>`;
-    if (tag === 'sub') return `<sub>${inner}</sub>`;
-
-    if (tag === 'a') {
-      const href = node.getAttribute('href') || '#';
-      if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('mailto:') || href.startsWith('#')) {
-        return `<a href="${href}" target="_blank" rel="noopener">${inner}</a>`;
-      }
-      return inner;
-    }
-
-    if (tag === 'span') {
-      if (node.classList?.contains('dim-text')) {
-        return `<span class="dim-text" style="opacity: 0.45; color: #94a3b8; display: inline; transition: opacity .15s;">${inner}</span>`;
-      }
-      return inner;
-    }
-    
-    // Preserve lists
-    if (['ul', 'ol'].includes(tag)) {
-      return `<${tag} style="margin:6px 0; padding-left:24px;">${inner}</${tag}>`;
-    }
-    if (tag === 'li') {
-      return `<li>${inner || '<br>'}</li>`;
-    }
-
-    // Preserve headings
-    if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) {
-      return `<${tag} style="margin:8px 0 4px;">${inner}</${tag}>`;
-    }
-
-    // Preserve blockquotes
-    if (tag === 'blockquote') {
-      return `<blockquote style="border-left:3px solid var(--gold); margin:8px 0; padding-left:10px; color:var(--text-d);">${inner}</blockquote>`;
-    }
-
-    // Preserve tables with strict containment
-    if (tag === 'table') {
-      return `<table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:break-word;">${inner}</table>`;
-    }
-    if (['tbody', 'thead', 'tfoot'].includes(tag)) {
-      return `<${tag}>${inner}</${tag}>`;
-    }
-    if (tag === 'tr') {
-      return `<tr>${inner}</tr>`;
-    }
-    if (tag === 'th') {
-      const colspan = node.getAttribute('colspan') ? ` colspan="${node.getAttribute('colspan')}"` : '';
-      const rowspan = node.getAttribute('rowspan') ? ` rowspan="${node.getAttribute('rowspan')}"` : '';
-      return `<th style="border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:break-word; overflow-wrap:anywhere;"${colspan}${rowspan}>${inner || '<br>'}</th>`;
-    }
-    if (tag === 'td') {
-      const colspan = node.getAttribute('colspan') ? ` colspan="${node.getAttribute('colspan')}"` : '';
-      const rowspan = node.getAttribute('rowspan') ? ` rowspan="${node.getAttribute('rowspan')}"` : '';
-      return `<td style="border:1px solid var(--navy-b); padding:6px 10px; word-break:break-word; overflow-wrap:anywhere;"${colspan}${rowspan}>${inner || '<br>'}</td>`;
-    }
-    
-    // Convert block elements to line breaks
-    if (['p', 'div'].includes(tag)) {
-      return inner ? `${inner}<br>` : '<br>';
-    }
-    if (tag === 'br') {
-      return '<br>';
-    }
-    
-    return inner;
-  }
-  
-  let cleanHtml = cleanNode(doc.body);
-  cleanHtml = cleanHtml.replace(/(?:<br\s*\/?>\s*)+$/i, '');
+  const cleanHtml = cleanClipboardHtmlDoc(doc, stripSelector);
   document.execCommand('insertHTML', false, cleanHtml || text.replace(/\n/g, '<br>'));
   targetEl?.dispatchEvent(new Event('input', { bubbles: true }));
 }

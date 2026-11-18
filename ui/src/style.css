@@ -2165,6 +2165,7 @@ body.sidebar-collapsed #app:not(.sidebar-autohide):not([data-rail-autohide="true
 .note-body ul, .note-body ol {
   padding-left: 28px !important;
   margin: 6px 0 !important;
+  white-space: normal;
 }
 
 #folder-doc-editor li,
@@ -2175,6 +2176,11 @@ body.sidebar-collapsed #app:not(.sidebar-autohide):not([data-rail-autohide="true
 .note-body li {
   margin: 3px 0 !important;
   display: list-item !important;
+  white-space: pre-wrap;
+}
+
+#np-digest-editor li {
+  margin: 2px 0 !important;
 }
 
 #folder-doc-editor ul ul, #folder-doc-editor ol ol, #folder-doc-editor ul ol, #folder-doc-editor ol ul,
