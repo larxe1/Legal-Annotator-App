@@ -1603,10 +1603,7 @@ export async function focusOrReopenGeminiStudio() {
     } catch {}
   }
 
-  const activeFolderId = getActiveSubfolderId();
-  const { subjectId } = getSubjectInfoForFolder(activeFolderId);
-  const pinnedForSubj = await getPinnedGeminiNotebookForSubject(subjectId);
-  const targetUrl = _lastGeminiUrl || pinnedForSubj || 'https://gemini.google.com/notebooks';
+  const targetUrl = _lastGeminiUrl || 'https://gemini.google.com/app';
   try {
     const win = window.open(targetUrl, '_blank');
     if (win) {
@@ -2364,7 +2361,7 @@ async function _runBatchGeminiDigestQueue(pdfQueue, startToastMsg) {
         };
       });
 
-      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Gemini Notebook…`, true, { provider: 'gemini', state: 'extracting', countLabel: stepLabel });
+      updateBatchDigestBanner(`Submitting "${pdfItem.name}" to Gemini…`, true, { provider: 'gemini', state: 'extracting', countLabel: stepLabel });
       await openGeminiDigestForCurrentPdf({
         forceAutoSubmit: true,
         forceAutoSend: true,
@@ -2414,8 +2411,8 @@ async function _runBatchGeminiDigestQueue(pdfQueue, startToastMsg) {
 
 /**
  * Right-click handler for a Folder/Subfolder in the Library sidebar:
- * Automatically processes every PDF in the folder one-by-one in the Subject's
- * Gemini Notebook, waits for each digest to finish and save into Case Digest,
+ * Automatically processes every PDF in the folder one-by-one in Gemini,
+ * waits for each digest to finish and save into Case Digest,
  * and moves to the next PDF automatically.
  */
 export async function runBatchGeminiDigestForFolders(foldersOrFolder) {
@@ -2458,9 +2455,8 @@ export async function runBatchGeminiDigestForPdfs(pdfsOrPdf) {
 }
 
 /**
- * Extracts entire PDF text + Subfolder Instruction, copies to clipboard, resolves
- * the Subject's pinned Gemini Notebook URL, and opens the Gemini Digest Studio
- * window (or falls back to opening Gemini in the browser).
+ * Extracts entire PDF text + Subfolder Instruction, copies to clipboard, and
+ * opens the Gemini Digest Studio window (or falls back to opening Gemini in the browser).
  */
 export async function openGeminiDigestForCurrentPdf(opts = {}) {
   if (_isDigestingGemini) {
@@ -2516,7 +2512,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
   });
 
   try {
-    toast(`Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Gemini Notebook…`);
+    toast(`Extracting PDF text (${total} page${total === 1 ? '' : 's'}) for Gemini…`);
 
     const extracted = await extractPdfDigestPromptPayload({
       doc,
@@ -2560,7 +2556,6 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
     const copiedOk = await copyToClipboard(fullPromptText);
 
     const { subjectId, subjectName } = getSubjectInfoForFolder(activeFolderId);
-    const pinnedNotebookUrl = await getPinnedGeminiNotebookForSubject(subjectId);
     const { modelLabel, thinkingLevel } = await resolveGeminiModelPrefs();
 
     const autoSubmitPref = false;
@@ -2578,7 +2573,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
       instructionText: instructionText ? String(instructionText) : '',
       pdfText: '',
       fullPromptText: String(fullPromptText || ''),
-      pinnedNotebookUrl: pinnedNotebookUrl ? String(pinnedNotebookUrl) : null,
+      pinnedNotebookUrl: null,
       modelLabel: String(modelLabel || '4 Hydrogen'),
       thinkingLevel: String(thinkingLevel || 'High'),
       autoSubmit: Boolean(autoSubmitPref),
@@ -2586,7 +2581,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
       autoSendDigest: Boolean(autoSendPref),
     };
     _lastGeminiStudioPayload = studioPayload;
-    _lastGeminiUrl = pinnedNotebookUrl || 'https://gemini.google.com/notebooks';
+    _lastGeminiUrl = 'https://gemini.google.com/app';
 
     if (hasDesktopStudio) {
       let opened = false;
@@ -2677,9 +2672,7 @@ export async function openGeminiDigestForCurrentPdf(opts = {}) {
       });
     }
     if (copiedOk) {
-      toast(pinnedNotebookUrl
-        ? `Copied case + instructions! Paste (Ctrl+V) in your ${subjectName || 'Subject'} Gemini Notebook.`
-        : 'Copied case + instructions! Open your Subject Notebook in Gemini and paste (Ctrl+V).');
+      toast('Copied case + instructions! Paste (Ctrl+V) in Gemini.');
     } else {
       toast('Warning: Could not copy case + instructions to clipboard — please copy text manually.');
     }

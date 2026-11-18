@@ -1,7 +1,7 @@
 {
-    "updatedAt":  "2026-11-18T09:26:55Z",
-    "build":  84,
-    "version":  "1.25.10",
+    "updatedAt":  "2026-11-18T09:31:31Z",
+    "build":  85,
+    "version":  "1.25.11",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Switched Gemini Studio to clipboard-only prompt copy (manual Ctrl+V paste) with no automated prompt-box pasting or injection, while retaining Auto-Send when the digest finishes."
+    "notes":  "Switched Gemini Studio to open directly on the Gemini homepage (gemini.google.com/app) instead of Notebooks, while retaining clipboard-only prompt copy and Auto-Send."
 }
