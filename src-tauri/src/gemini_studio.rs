@@ -270,6 +270,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         }
       }
     }
+    _state.autoSubmit = false;
     rememberJobMeta(_state);
     sessionStorage.setItem('la_gemini_state_cache', JSON.stringify(sanitizeStateForCache(_state)));
   } catch (e) {}
@@ -363,7 +364,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       pinnedNotebookUrl: _state.pinnedNotebookUrl || '',
       modelLabel: (_state.modelLabel || '4 Hydrogen').trim() || '4 Hydrogen',
       thinkingLevel: _state.thinkingLevel != null ? String(_state.thinkingLevel).trim() : 'High',
-      autoSubmit: !!_state.autoSubmit,
+      autoSubmit: false,
       digestMode: _state.digestMode === 'append' ? 'append' : 'replace',
       autoSendDigest: _state.autoSendDigest !== false
     });
@@ -469,10 +470,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
 
     var autoSubBtn = document.getElementById('la-gemini-autosubmit-btn');
     if (autoSubBtn) {
-      autoSubBtn.textContent = _state.autoSubmit ? '☑ Auto Click & Submit: ON' : '☐ Auto Click & Submit: OFF';
-      autoSubBtn.title = _state.autoSubmit
-        ? 'Auto Click & Submit is ON — automatically selects Model/Thinking and clicks Submit after pasting'
-        : 'Auto Click & Submit is OFF — select Model/Thinking and submit manually in Gemini';
+      autoSubBtn.textContent = _state.autoSubmit ? '☑ Auto-Submit: ON' : '☐ Auto-Submit: OFF';
       autoSubBtn.style.borderColor = _state.autoSubmit ? 'rgba(96,165,250,0.55)' : '#334155';
       autoSubBtn.style.color = _state.autoSubmit ? '#93c5fd' : '#94a3b8';
     }
@@ -632,9 +630,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       mkEl('button', {
         id: 'la-gemini-autosubmit-btn',
         type: 'button',
-        style: btnStyle,
-        title: 'Toggle whether Gemini Studio automatically selects Model/Thinking and clicks Submit after pasting',
-        text: '☐ Auto Click & Submit: OFF'
+        style: btnStyle + ';display:none;',
+        title: 'Manual submit enabled — select model and submit manually in Gemini',
+        text: '☐ Auto-Submit: OFF'
       }),
       mkEl('button', {
         id: 'la-gemini-autosend-btn',
@@ -794,10 +792,10 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     });
 
     document.getElementById('la-gemini-autosubmit-btn').addEventListener('click', function() {
-      _state.autoSubmit = !_state.autoSubmit;
+      _state.autoSubmit = false;
       syncPrefsToApp();
       updateBarUI();
-      showStatus(_state.autoSubmit ? 'Auto Click & Submit enabled' : 'Auto Click & Submit disabled (manual mode)', '#93c5fd');
+      showStatus('Manual submit enabled — select model and submit manually in Gemini', '#93c5fd');
     });
 
     document.getElementById('la-gemini-autosend-btn').addEventListener('click', function() {
@@ -2489,84 +2487,12 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       if (_pasteSeq !== myPasteSeq || _handledPasteSeq === myPasteSeq) return;
       _handledPasteSeq = myPasteSeq;
       clearPastePollTimer();
+      _isPasting = false;
       var displayLen = typeof metricsOrLen === 'number'
         ? metricsOrLen
         : Number((metricsOrLen && metricsOrLen.trimmedLen) || 0);
-
-      if (!_state.autoSubmit) {
-        _isPasting = false;
-        showStatus('Case pasted (' + displayLen.toLocaleString() + ' chars)! Select model & submit manually — will auto-save to Case Digest when done.', '#4ade80');
-        emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted — select model & submit manually! Will auto-save when done.', false, true);
-        return;
-      }
-
-      showStatus('Case pasted! Selecting model & thinking…', '#93c5fd');
-      emitStudioStatus('streaming', 'Selecting model', 'Case pasted (' + displayLen.toLocaleString() + ' chars) — selecting ' + getModelPillText() + '…', false, false);
-      setTimeout(function() {
-        if (_pasteSeq !== myPasteSeq) return;
-        var inputForModel = findGeminiPromptInput();
-        ensureGeminiModelSelected(inputForModel, function(modelOk) {
-          if (_pasteSeq !== myPasteSeq) return;
-          if (!_state.autoSubmit) {
-            _isPasting = false;
-            showStatus('Case pasted & ' + getModelPillText() + ' selected! Click Send or press Enter to submit.', '#4ade80');
-            emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted & ' + getModelPillText() + ' selected — click Send to submit!', false, true);
-            return;
-          }
-
-          showStatus(
-            modelOk
-              ? ('Model ' + getModelPillText() + ' ready — clicking Submit…')
-              : 'Model selection finished — clicking Submit…',
-            '#93c5fd'
-          );
-          var submitAttempts = 0;
-          function tryClickSubmitBtn() {
-            if (_pasteSeq !== myPasteSeq) return;
-            if (!_state.autoSubmit) {
-              _isPasting = false;
-              showStatus('Case pasted & ' + getModelPillText() + ' selected! Submit manually in Gemini.', '#4ade80');
-              emitStudioStatus('streaming', 'Ready to Submit', 'Auto Click & Submit turned off — submit manually in Gemini.', false, true);
-              return;
-            }
-            submitAttempts++;
-            if (document.querySelector('.cdk-overlay-pane [role="menu"], .cdk-overlay-pane [role="listbox"], .cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane [role="menuitemradio"]')) {
-              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-              if (submitAttempts < 10) {
-                setTimeout(tryClickSubmitBtn, 220);
-                return;
-              }
-            }
-            var pInput = findGeminiPromptInput();
-            var hasPromptText = !!(pInput && readGeminiInputLength(pInput) > 0);
-            if (!hasPromptText) {
-              if (submitAttempts < 10) {
-                setTimeout(tryClickSubmitBtn, 220);
-                return;
-              }
-              _isPasting = false;
-              showStatus('Prompt text missing before submit — please verify and submit manually in Gemini.', '#fbbf24');
-              emitStudioStatus('streaming', 'Ready to Submit', 'Prompt input appeared empty before submit — verify and submit manually in Gemini.', false, true);
-              return;
-            }
-            var sendBtn = findGeminiSendButton(pInput);
-            if (sendBtn && nativeOsClickElement(sendBtn, 'Clicking Submit')) {
-              _isPasting = false;
-              showStatus('Prompt submitted to Gemini!', '#4ade80');
-              emitStudioStatus('streaming', 'Prompt submitted', 'Prompt submitted to Gemini!', false, true);
-              return;
-            }
-            if (submitAttempts < 10) {
-              setTimeout(tryClickSubmitBtn, 220);
-              return;
-            }
-            _isPasting = false;
-            showStatus('Case pasted & model ready — Send button not found, submit manually in Gemini.', '#fbbf24');
-            emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted & model ready — click Send in Gemini to submit manually.', false, true);
-          }
-          setTimeout(tryClickSubmitBtn, 420);
-        });
-      }, 350);
+      showStatus('Case pasted (' + displayLen.toLocaleString() + ' chars)! Select model & submit manually — will auto-save to Case Digest when done.', '#4ade80');
+      emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted — select model & submit manually! Will auto-save when done.', false, true);
     }
 
     function finishPasteFailure(reason) {
@@ -2853,6 +2779,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         _state[k] = job[k];
       }
     }
+    _state.autoSubmit = false;
     if (!Number(_state.expectedPromptLen || 0) && Number(_state.promptLength || 0) > 0) {
       _state.expectedPromptLen = Number(_state.promptLength || 0);
     }
@@ -3168,12 +3095,8 @@ pub async fn desktop_open_gemini_studio(
         })
         .unwrap_or_else(|| "High".to_string());
 
-    let eff_auto_submit = auto_submit.unwrap_or_else(|| {
-        disk_prefs
-            .get("autoSubmit")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    });
+    let _ = auto_submit;
+    let eff_auto_submit = false;
 
     let eff_digest_mode = digest_mode
         .filter(|s| s == "replace" || s == "append")
@@ -3389,10 +3312,10 @@ pub async fn desktop_open_gemini_studio(
                                     }
                                 }
                             }
-                            if let Some(a) = msg_val.get("autoSubmit").and_then(|v| v.as_bool()) {
-                                prefs["autoSubmit"] = serde_json::Value::Bool(a);
+                            if msg_val.get("autoSubmit").is_some() {
+                                prefs["autoSubmit"] = serde_json::Value::Bool(false);
                                 if let Ok(mut st) = state_for_nav.lock() {
-                                    st["autoSubmit"] = serde_json::Value::Bool(a);
+                                    st["autoSubmit"] = serde_json::Value::Bool(false);
                                 }
                             }
                             if let Some(m) = msg_val.get("digestMode").and_then(|v| v.as_str()) {
