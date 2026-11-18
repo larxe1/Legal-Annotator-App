@@ -1,7 +1,7 @@
 {
-    "updatedAt":  "2026-11-18T09:31:31Z",
-    "build":  85,
-    "version":  "1.25.11",
+    "updatedAt":  "2026-11-18T09:43:08Z",
+    "build":  86,
+    "version":  "1.25.12",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Switched Gemini Studio to open directly on the Gemini homepage (gemini.google.com/app) instead of Notebooks, while retaining clipboard-only prompt copy and Auto-Send."
+    "notes":  "Added a one-click Paste Digest button to the Notepad toolbar that reads Case Digests from the clipboard, strips leading preamble up to the Summary Table, removes trailing Sources/Syllabus Note/Self-QA Verification exclusions, formats cleanly, and saves to the Case Digest tab."
 }

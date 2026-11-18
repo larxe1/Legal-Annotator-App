@@ -1456,13 +1456,36 @@ export function switchNotepadTab(tab) {
   }
 }
 
+function _isTrailingExclusionHeading(line = '') {
+  const raw = String(line || '').trim();
+  if (!raw || raw.length > 260) return false;
+  if (/\(\s*exclude\s*\)/i.test(raw)) return true;
+  if (raw.startsWith('|')) return false;
+  const norm = raw
+    .replace(/^(?:#{1,6}\s*|\*{1,3}\s*|__\s*|(?:[IVX]+|\d+)[\.\)]\s*|[-•*]\s*)+/i, '')
+    .replace(/[*_]+$/g, '')
+    .trim();
+  if (!norm) return false;
+  if (/^(?:sources?|references?)(?:\s*[,&/+]\s*(?:syllabus\s+note|self[\s\-]*qa(?:\s+verification)?|notes?|verification))*\s*:?\s*$/i.test(norm)) {
+    return true;
+  }
+  if (/^(?:sources?|references?)\s*[,&]\s*(?:syllabus\s+note|self[\s\-]*qa)/i.test(norm)) return true;
+  if (/^syllabus\s+note\b(?:\s*:|\s*$)/i.test(norm)) return true;
+  if (/^self[\s\-]*qa(?:\s+verification)?\b(?:\s*:|\s*$)/i.test(norm)) return true;
+  return false;
+}
+
 function stripTrailingSourcesText(text = '') {
   if (!text) return '';
   let cleaned = String(text);
   const lines = cleaned.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const lineTxt = lines[i].trim();
-    if (lineTxt.length > 0 && lineTxt.length <= 260 && /\(\s*exclude\s*\)/i.test(lineTxt)) {
+    if (_isTrailingExclusionHeading(lineTxt)) {
+      cleaned = lines.slice(0, i).join('\n');
+      break;
+    }
+    if (!lineTxt.startsWith('|') && /^(?:#{1,6}\s*|\*{1,3}\s*)?(?:sources?|references?)\*?\*?\s*:/i.test(lineTxt) && lineTxt.length <= 360) {
       cleaned = lines.slice(0, i).join('\n');
       break;
     }
@@ -1470,14 +1493,17 @@ function stripTrailingSourcesText(text = '') {
   return cleaned
     .replace(/\n\s*(?:#{1,6}\s*|\*\*)?(?:Sources?|References?)\*?\*?\s*:?\s*\n[\s\S]*$/i, '')
     .replace(/\n\s*(?:Sources?|References?)\s*:\s*[^\n]+(?:\[lawphil\.net\]|\[chanrobles\.com\]|\[elibrary\.judiciary\.gov\.ph\]|G\.R\.\s*No\.)[\s\S]*$/i, '')
+    .replace(/(?:\r?\n\s*(?:---+|___+|\*\*\*+)\s*)+$/i, '')
     .trim();
 }
+
+const _LEADING_AI_PREAMBLE_RE = /\b(?:i\s+have\s+(?:accessed|read|reviewed|received|extracted)\s+the\s+(?:full\s+)?text\s+(?:from|of)|accessed\s+the\s+(?:full\s+)?text\s+from|full\s+text\s+of\s+the\s+(?:decision|case|ponencia)|from\s+the\s+text\s+you\s+(?:pasted|provided|shared)|complete\s+ponencia|did\s+not\s+pull\s+(?:it\s+|this\s+)?from\s+(?:lawphil|the\s+sc|sc\s+e-?library)|based\s+on\s+the\s+(?:full\s+)?text\s+you\s+(?:pasted|provided)|here\s+is\s+the\s+(?:case\s+)?digest)\b/i;
 
 function stripLeadingPreambleText(text = '') {
   if (!text) return '';
   let cleaned = String(text).trim();
 
-  // 1. If a markdown table is present, always start directly at the first markdown table row
+  // 1. If a markdown pipe table or tab-separated table is present, always start directly at the first table row
   const lines = cleaned.split(/\r?\n/);
   for (let i = 0; i < lines.length - 1; i++) {
     const line = lines[i].trim();
@@ -1491,19 +1517,40 @@ function stripLeadingPreambleText(text = '') {
         }
       }
     }
+    if (lines[i].includes('\t')) {
+      let nextIdx = i + 1;
+      while (nextIdx < lines.length && !lines[nextIdx].trim()) nextIdx++;
+      if (nextIdx < lines.length && lines[nextIdx].includes('\t')) {
+        const colsA = lines[i].split('\t').length;
+        const colsB = lines[nextIdx].split('\t').length;
+        if (colsA >= 2 && colsB >= 2) {
+          return lines.slice(i).join('\n').trim();
+        }
+      }
+    }
   }
 
-  // 2. Fallback if no markdown pipe table: strip everything up to and including "RECIT READY SUMMARY" / "RECIT-READY SUMMARY"
+  // 2. Fallback if no table: strip everything up to and including "RECIT READY SUMMARY" / "RECIT-READY SUMMARY"
   const recitMatch = cleaned.match(/(?:^|\n)\s*(?:#{1,6}\s*|\*{1,2}\s*|\d+[\.\)]\s*|[IVX]+[\.\)]\s*)*recit[\s\-]*ready\s+summary\b[^\n]*(?:\n+|$)/i);
   if (recitMatch && typeof recitMatch.index === 'number') {
     cleaned = cleaned.slice(recitMatch.index + recitMatch[0].length).trim();
   }
 
-  // 3. Fallback: strip leading Perplexity meta-introductory sentences ("I have the full text of the decision from the text you pasted...", etc.)
-  cleaned = cleaned.replace(
-    /^(?:\s*[^\n]*\b(?:full text of the (?:decision|case|ponencia)|from the text you (?:pasted|provided|shared)|complete ponencia|did not pull (?:it |this )?from (?:lawphil|the sc|sc e-?library)|based on the (?:full )?text you (?:pasted|provided)|here is the (?:case )?digest)\b[^\n]*(?:\n+|$))+/i,
-    ''
-  ).trim();
+  // 3. Fallback: strip leading AI meta-introductory sentences ("I have accessed the text from...", etc.)
+  const cleanedLines = cleaned.split(/\r?\n/);
+  while (cleanedLines.length > 0) {
+    const first = cleanedLines[0].trim();
+    if (!first) {
+      cleanedLines.shift();
+      continue;
+    }
+    if (first.length < 650 && _LEADING_AI_PREAMBLE_RE.test(first)) {
+      cleanedLines.shift();
+      continue;
+    }
+    break;
+  }
+  cleaned = cleanedLines.join('\n').trim();
 
   return cleaned;
 }
@@ -1557,17 +1604,19 @@ function stripLeadingPreambleHtml(html = '') {
       }
     }
 
-    // 3. Also strip any leading Perplexity meta-commentary paragraph at the top ("I have the full text of the decision...", etc.)
-    const topBlocks = Array.from(root.children);
-    for (let i = 0; i < Math.min(topBlocks.length, 4); i++) {
-      const block = topBlocks[i];
+    // 3. Also strip any leading AI meta-commentary paragraph at the top ("I have accessed the text from...", etc.)
+    const leafBlocks = Array.from(root.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6, blockquote')).filter(
+      el => !el.querySelector('table, p, h1, h2, h3, h4, h5, h6')
+    );
+    for (let i = 0; i < Math.min(leafBlocks.length, 6); i++) {
+      const block = leafBlocks[i];
       if (!block || !block.isConnected) continue;
       const bTxt = (block.textContent || '').trim();
-      if (
-        bTxt.length < 650 &&
-        /\b(?:full text of the (?:decision|case|ponencia)|from the text you (?:pasted|provided|shared)|complete ponencia|did not pull (?:it |this )?from (?:lawphil|the sc|sc e-?library)|based on the (?:full )?text you (?:pasted|provided)|here is the (?:case )?digest)\b/i.test(bTxt)
-      ) {
+      if (!bTxt) continue;
+      if (bTxt.length < 650 && _LEADING_AI_PREAMBLE_RE.test(bTxt)) {
         removePrecedingNodes(block, false);
+      } else {
+        break;
       }
     }
 
@@ -1603,10 +1652,10 @@ function stripTrailingSourcesHtml(html = '') {
     const allEls = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div, li, strong, b'));
     for (let i = 0; i < allEls.length; i++) {
       const el = allEls[i];
-      if (!el.isConnected) continue;
+      if (!el.isConnected || el.closest('table')) continue;
       const txt = (el.textContent || '').trim();
       const firstLine = (txt.split(/\r?\n/)[0] || '').trim();
-      if (firstLine.length > 0 && firstLine.length <= 260 && /\(\s*exclude\s*\)/i.test(firstLine)) {
+      if (_isTrailingExclusionHeading(firstLine)) {
         const block = el.closest('h1, h2, h3, h4, h5, h6, li, p') || el;
         removeNodeAndFollowing(block);
         break;
@@ -1623,11 +1672,12 @@ function stripTrailingSourcesHtml(html = '') {
           break;
         }
       } else if (
-        (el.tagName === 'P' || el.tagName === 'DIV' || el.tagName === 'LI') &&
-        /^(?:sources?|references?)\s*:?\s*(?:\n|\r|$)/i.test(txt) &&
+        (el.tagName === 'P' || el.tagName === 'DIV' || el.tagName === 'LI' || el.tagName === 'STRONG' || el.tagName === 'B') &&
+        /^(?:sources?|references?)\s*:\s*/i.test(firstLine) &&
         txt.length < 500
       ) {
-        removeNodeAndFollowing(el);
+        const block = el.closest('h1, h2, h3, h4, h5, h6, li, p') || el;
+        removeNodeAndFollowing(block);
         break;
       }
     }
@@ -1636,16 +1686,29 @@ function stripTrailingSourcesHtml(html = '') {
     const tailBlocks = Array.from(root.querySelectorAll('p, li, div'));
     if (tailBlocks.length > 0) {
       const lastEl = tailBlocks[tailBlocks.length - 1];
-      const lastTxt = (lastEl.textContent || '').trim();
-      if (
-        lastTxt.length < 350 &&
-        /\[(?:lawphil\.net|chanrobles\.com|elibrary\.judiciary\.gov\.ph|sc\.judiciary\.gov\.ph)\]\.?$/i.test(lastTxt)
-      ) {
-        const parentList = lastEl.tagName === 'LI' ? lastEl.closest('ul, ol') : null;
-        lastEl.remove();
-        if (parentList && !parentList.textContent.trim()) {
-          parentList.remove();
+      if (!lastEl.closest('table')) {
+        const lastTxt = (lastEl.textContent || '').trim();
+        if (
+          lastTxt.length < 350 &&
+          /\[(?:lawphil\.net|chanrobles\.com|elibrary\.judiciary\.gov\.ph|sc\.judiciary\.gov\.ph)\]\.?$/i.test(lastTxt)
+        ) {
+          const parentList = lastEl.tagName === 'LI' ? lastEl.closest('ul, ol') : null;
+          lastEl.remove();
+          if (parentList && !parentList.textContent.trim()) {
+            parentList.remove();
+          }
         }
+      }
+    }
+
+    // Remove trailing <hr> / <br> / empty blocks left right above stripped trailing sections
+    while (root.lastElementChild) {
+      const last = root.lastElementChild;
+      const tag = last.tagName;
+      if (tag === 'HR' || tag === 'BR' || ((tag === 'P' || tag === 'DIV') && !last.textContent.trim() && !last.querySelector('table, img'))) {
+        last.remove();
+      } else {
+        break;
       }
     }
 
@@ -1848,6 +1911,64 @@ export async function importDigestIntoCaseDigestTab(pdfId, rawHtml = '', rawText
 
 if (typeof window !== 'undefined') {
   window.__importDigestIntoCaseDigestTab = importDigestIntoCaseDigestTab;
+}
+
+export async function pasteDigestFromClipboard() {
+  const targetPdfId = String(getTruePdfId(S.curPDF) || _activePdfId || '').trim();
+  if (!targetPdfId) {
+    toast('Open a PDF first so the Case Digest knows which case to save to.');
+    return false;
+  }
+
+  if (!navigator.clipboard || (typeof navigator.clipboard.read !== 'function' && typeof navigator.clipboard.readText !== 'function')) {
+    toast('Clipboard access is unavailable here — press Ctrl+V directly in the Case Digest tab.');
+    return false;
+  }
+
+  let rawHtml = '';
+  let rawText = '';
+  let readErrored = false;
+
+  try {
+    if (typeof navigator.clipboard.read === 'function') {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        if (!rawHtml && item.types.includes('text/html')) {
+          const blob = await item.getType('text/html');
+          rawHtml = await blob.text();
+        }
+        if (!rawText && item.types.includes('text/plain')) {
+          const blob = await item.getType('text/plain');
+          rawText = await blob.text();
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Notepad] navigator.clipboard.read() failed, falling back to readText():', err);
+    readErrored = true;
+  }
+
+  if (!rawHtml && !rawText) {
+    try {
+      if (typeof navigator.clipboard.readText === 'function') {
+        rawText = await navigator.clipboard.readText();
+      }
+    } catch (err) {
+      console.warn('[Notepad] navigator.clipboard.readText() failed:', err);
+      if (readErrored || !rawText) {
+        toast('Clipboard access was blocked — allow clipboard permission or press Ctrl+V in the Case Digest tab.');
+        return false;
+      }
+    }
+  }
+
+  if (!String(rawHtml || '').trim() && !String(rawText || '').trim()) {
+    toast('Clipboard is empty — copy a Case Digest first.');
+    return false;
+  }
+
+  const digestMode = safeStorageGet('gemini_digest_mode_v2', 'replace') === 'append' ? 'append' : 'replace';
+  return importDigestIntoCaseDigestTab(targetPdfId, rawHtml, rawText, digestMode, 'Clipboard');
 }
 
 // ── Called whenever the active PDF changes in viewer or dual-view ──
@@ -3144,6 +3265,10 @@ export function initNotepad() {
       if (btn.id === 'np-copy-summary-table') {
         const fallbackEd = activeEd === $digestEditor() ? $notesEditor() : $digestEditor();
         copyFirstSummaryTable(activeEd, fallbackEd);
+        return;
+      }
+      if (btn.id === 'np-paste-digest') {
+        pasteDigestFromClipboard();
         return;
       }
       if (btn.id === 'np-link-pdf') {
