@@ -1,7 +1,7 @@
 {
-    "version":  "1.25.9",
-    "build":  83,
-    "updatedAt":  "2026-11-18T09:17:41Z",
-    "notes":  "Removed the Gemini Auto Click \u0026 Submit Settings toggle and automated model-click/auto-submit behavior while preserving reliable Studio paste verification.",
-    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
+    "updatedAt":  "2026-11-18T09:26:55Z",
+    "build":  84,
+    "version":  "1.25.10",
+    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
+    "notes":  "Switched Gemini Studio to clipboard-only prompt copy (manual Ctrl+V paste) with no automated prompt-box pasting or injection, while retaining Auto-Send when the digest finishes."
 }

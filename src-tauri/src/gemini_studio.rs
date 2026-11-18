@@ -652,8 +652,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         id: 'la-gemini-paste-btn',
         type: 'button',
         style: btnStyle,
-        title: 'Paste Subfolder Instruction + PDF Text into Gemini'
-      }, [makeSvgCopy(), 'Paste Case']),
+        title: 'Copy Subfolder Instruction + PDF Text to clipboard'
+      }, [makeSvgCopy(), 'Copy Prompt']),
       mkEl('span', {
         id: 'la-gemini-status',
         style: 'font-size:11px;color:#93c5fd;white-space:nowrap;margin-left:auto;margin-right:4px;'
@@ -813,7 +813,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     });
 
     document.getElementById('la-gemini-paste-btn').addEventListener('click', function() {
-      pasteAndMaybeSubmit(true);
+      copyPromptToClipboard(true);
     });
 
     document.getElementById('la-gemini-send-btn').addEventListener('click', function() {
@@ -1659,234 +1659,9 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     waitForPillAndRun();
   }
 
-  function setGeminiInputText(inputEl, text) {
-    if (!inputEl) return false;
-    var expectedMetrics = getExpectedPromptMetrics(String(text || ''));
-    function hasInputText() {
-      return isGeminiInputComplete(measureGeminiInput(inputEl), expectedMetrics);
-    }
-
-    inputEl.focus();
-
-    if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
-      try {
-        var proto = window.HTMLTextAreaElement && inputEl.tagName === 'TEXTAREA'
-          ? window.HTMLTextAreaElement.prototype
-          : Object.getPrototypeOf(inputEl);
-        var desc = Object.getOwnPropertyDescriptor(proto, 'value');
-        var setter = desc && desc.set;
-        if (setter) setter.call(inputEl, text);
-        else inputEl.value = text;
-        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-        if (hasInputText()) return true;
-      } catch (e) {}
-    }
-
-    try {
-      if (window.getSelection && document.createRange) {
-        var sel = window.getSelection();
-        var range = document.createRange();
-        range.selectNodeContents(inputEl);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-      var dt = new DataTransfer();
-      dt.setData('text/plain', text);
-      var pasteEvt = new ClipboardEvent('paste', {
-        clipboardData: dt,
-        bubbles: true,
-        cancelable: true
-      });
-      inputEl.dispatchEvent(pasteEvt);
-      if (hasInputText()) return true;
-    } catch (e) {}
-
-    try {
-      inputEl.focus();
-      if (window.getSelection && document.createRange) {
-        var sel2 = window.getSelection();
-        var range2 = document.createRange();
-        range2.selectNodeContents(inputEl);
-        sel2.removeAllRanges();
-        sel2.addRange(range2);
-      }
-      document.execCommand('selectAll', false, null);
-      document.execCommand('insertText', false, text);
-      try {
-        inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-      } catch (ie) {
-        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      if (hasInputText()) return true;
-    } catch (e) {}
-
-    // Pure-DOM Quill / rich-textarea fallback (no innerHTML so Trusted Types stay happy)
-    try {
-      while (inputEl.firstChild) inputEl.removeChild(inputEl.firstChild);
-      var lines = String(text || '').split(/\r?\n/);
-      for (var li = 0; li < lines.length; li++) {
-        var p = document.createElement('p');
-        if (lines[li]) p.textContent = lines[li];
-        else p.appendChild(document.createElement('br'));
-        inputEl.appendChild(p);
-      }
-      if (inputEl.classList) inputEl.classList.remove('ql-blank');
-      try {
-        inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-      } catch (ie2) {
-        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-      return hasInputText();
-    } catch (e2) {}
-    return false;
-  }
-
-  function typeTrailingSpaceKeystroke(inputEl) {
-    if (!inputEl || !inputEl.isConnected) return;
-    try { inputEl.focus(); } catch (e) {}
-
-    if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
-      try {
-        var cur = inputEl.value || '';
-        if (typeof inputEl.setSelectionRange === 'function') {
-          inputEl.setSelectionRange(cur.length, cur.length);
-        }
-        inputEl.dispatchEvent(new KeyboardEvent('keydown', {
-          key: ' ',
-          code: 'Space',
-          keyCode: 32,
-          which: 32,
-          bubbles: true,
-          cancelable: true
-        }));
-        var insertedInput = false;
-        try {
-          insertedInput = document.execCommand('insertText', false, ' ');
-        } catch (ec) {}
-        if (!insertedInput || (inputEl.value || '').length <= cur.length) {
-          var proto = window.HTMLTextAreaElement && inputEl.tagName === 'TEXTAREA'
-            ? window.HTMLTextAreaElement.prototype
-            : Object.getPrototypeOf(inputEl);
-          var desc = Object.getOwnPropertyDescriptor(proto, 'value');
-          var setter = desc && desc.set;
-          var nextVal = cur + ' ';
-          if (setter) setter.call(inputEl, nextVal);
-          else inputEl.value = nextVal;
-        }
-        try {
-          inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ' ' }));
-        } catch (ie) {
-          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        inputEl.dispatchEvent(new KeyboardEvent('keyup', {
-          key: ' ',
-          code: 'Space',
-          keyCode: 32,
-          which: 32,
-          bubbles: true
-        }));
-      } catch (e) {}
-      return;
-    }
-
-    try {
-      if (window.getSelection && document.createRange) {
-        var sel = window.getSelection();
-        var range = document.createRange();
-        range.selectNodeContents(inputEl);
-        range.collapse(false);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-      inputEl.dispatchEvent(new KeyboardEvent('keydown', {
-        key: ' ',
-        code: 'Space',
-        keyCode: 32,
-        which: 32,
-        bubbles: true,
-        cancelable: true
-      }));
-      try {
-        inputEl.dispatchEvent(new InputEvent('beforeinput', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: ' '
-        }));
-      } catch (bi) {}
-      var insertedCe = false;
-      try {
-        insertedCe = document.execCommand('insertText', false, ' ');
-      } catch (ec2) {}
-      if (!insertedCe) {
-        var targetNode = inputEl.lastChild || inputEl;
-        if (targetNode && targetNode.nodeType === 1) {
-          targetNode.appendChild(document.createTextNode(' '));
-        } else {
-          inputEl.appendChild(document.createTextNode(' '));
-        }
-      }
-      try {
-        inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ' ' }));
-      } catch (ie2) {
-        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      inputEl.dispatchEvent(new KeyboardEvent('keyup', {
-        key: ' ',
-        code: 'Space',
-        keyCode: 32,
-        which: 32,
-        bubbles: true
-      }));
-    } catch (e2) {}
-  }
-
-  function triggerGeminiSubmit(inputEl) {
-    var container = (inputEl && (inputEl.closest('form') || inputEl.closest('.input-area, .text-input-field, rich-textarea')?.parentElement?.parentElement)) || document;
-    var btnSelectors = [
-      'button[aria-label*="Send" i]:not([disabled])',
-      'button[aria-label*="Submit" i]:not([disabled])',
-      'button.send-button:not([disabled])',
-      'button[data-test-id*="send" i]:not([disabled])',
-      'button[mattooltip*="Send" i]:not([disabled])'
-    ];
-    var roots = container !== document ? [container, document] : [document];
-    for (var ri = 0; ri < roots.length; ri++) {
-      var root = roots[ri];
-      for (var i = 0; i < btnSelectors.length; i++) {
-        var btns = Array.from(root.querySelectorAll(btnSelectors[i]));
-        for (var j = 0; j < btns.length; j++) {
-          var btn = btns[j];
-          if (!btn || btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
-          if (btn.closest('#la-gemini-studio-bar') || btn.closest('#la-gemini-fab-send') || btn.closest('#la-gemini-model-popover')) continue;
-          var r = btn.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) {
-            realPointerClick(btn);
-            return true;
-          }
-        }
-      }
-    }
-    if (inputEl) {
-      inputEl.focus();
-      inputEl.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      }));
-      return true;
-    }
-    return false;
-  }
-
-  var _isPasting = false;
-  var _pasteSeq = 0;
-  var _handledPasteSeq = 0;
+  var _isCopying = false;
+  var _copySeq = 0;
+  var _handledCopySeq = 0;
   var _autoSendLastText = '';
   var _autoSendStableSince = 0;
 
@@ -2161,7 +1936,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     var url = (window.location.href || '').toLowerCase();
     var hasInput = !!findGeminiPromptInput();
     if (/accounts\.google\.com|\/servicelogin|\/signin/.test(url)) {
-      emitStudioStatus('error', 'Sign-in required', 'Sign in to Google/Gemini inside the Studio window, then click Paste Case.', true);
+      emitStudioStatus('error', 'Sign-in required', 'Sign in to Google/Gemini inside the Studio window, then click Copy Prompt.', true);
       return true;
     }
     var bodyTxt = '';
@@ -2169,7 +1944,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       bodyTxt = ((document.body && document.body.innerText) || '').slice(0, 2500);
     } catch (e) {}
     if (!hasInput && /\b(sign in to continue|choose an account|use your google account)\b/i.test(bodyTxt)) {
-      emitStudioStatus('error', 'Sign-in required', 'Sign in to Google/Gemini inside the Studio window, then click Paste Case.', true);
+      emitStudioStatus('error', 'Sign-in required', 'Sign in to Google/Gemini inside the Studio window, then click Copy Prompt.', true);
       return true;
     }
     if (!hasInput && /\b(something went wrong|unusual traffic|verify you are human|rate limit)\b/i.test(bodyTxt)) {
@@ -2356,75 +2131,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
     });
   }
 
-  function measureGeminiInput(el) {
-    if (!el) return { trimmedLen: 0, nonWsLen: 0 };
-    var raw = (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')
-      ? (el.value || '')
-      : (el.innerText || el.textContent || '');
-    var cleaned = raw.replace(/\u200B/g, '').trim();
-    return {
-      trimmedLen: cleaned.length,
-      nonWsLen: cleaned.replace(/\s+/g, '').length
-    };
-  }
-
-  function getExpectedPromptMetrics(overrideText) {
-    if (typeof overrideText === 'string') {
-      var t = overrideText.trim();
-      return {
-        trimmedLen: t.length,
-        nonWsLen: t.replace(/\s+/g, '').length
-      };
-    }
-    var curJobId = Number(_state.jobId || 0);
-    if (_inMemoryPromptText && _inMemoryPromptJobId === curJobId && curJobId > 0) {
-      var mt = _inMemoryPromptText.trim();
-      if (mt.length > 0) {
-        return {
-          trimmedLen: mt.length,
-          nonWsLen: mt.replace(/\s+/g, '').length
-        };
-      }
-    }
-    return {
-      trimmedLen: Number(_state.expectedPromptLen || _state.promptLength || 0),
-      nonWsLen: Number(_state.expectedPromptNonWsLen || 0)
-    };
-  }
-
-  function isGeminiInputComplete(metrics, expected) {
-    if (!metrics || metrics.trimmedLen <= 0) return false;
-    var expTrimmed = expected ? Number(expected.trimmedLen || 0) : 0;
-    var expNonWs = expected ? Number(expected.nonWsLen || 0) : 0;
-    if (expNonWs > 0) {
-      var minNonWs = expNonWs <= 20
-        ? expNonWs
-        : Math.max(16, Math.floor(expNonWs * 0.8));
-      return metrics.nonWsLen >= minNonWs && metrics.trimmedLen >= minNonWs;
-    }
-    if (expTrimmed > 0) {
-      var minTrimmed = expTrimmed <= 20
-        ? expTrimmed
-        : Math.max(16, Math.floor(expTrimmed * 0.75));
-      return metrics.trimmedLen >= minTrimmed;
-    }
-    return metrics.trimmedLen > 20;
-  }
-
-  function readGeminiInputLength(el) {
-    return measureGeminiInput(el).trimmedLen;
-  }
-
-  var _pastePollTimer = null;
-  function clearPastePollTimer() {
-    if (_pastePollTimer) {
-      clearInterval(_pastePollTimer);
-      _pastePollTimer = null;
-    }
-  }
-
-  function pasteAndMaybeSubmit(manualTrigger) {
-    if (_isPasting) return false;
+  function copyPromptToClipboard(manualTrigger) {
+    if (_isCopying && !manualTrigger) return false;
     var hasPrompt = !!(_state.hasPromptText || (_inMemoryPromptJobId === Number(_state.jobId || 0) && _inMemoryPromptText && _inMemoryPromptText.trim()));
     if (!hasPrompt) {
       showStatus('No PDF text loaded yet — click "Case Digest (Gemini)" in Legal Annotator.', '#f87171');
@@ -2432,163 +2140,67 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       return false;
     }
 
-    var activeInput = findGeminiPromptInput();
-    if (!activeInput || !activeInput.isConnected) {
-      if (manualTrigger) showStatus('Waiting for Gemini "Ask Gemini" prompt box…', '#fbbf24');
-      return false;
-    }
-
-    _isPasting = true;
-    _pasteSeq++;
-    clearPastePollTimer();
-    try { activeInput.scrollIntoView({ block: 'center' }); } catch (e) {}
-    var pos = getElementScreenCenter(activeInput);
+    _isCopying = true;
+    _copySeq++;
 
     if (_state.jobId) {
       sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
     }
     armAutoSendWatcher();
 
-    if (!pos || pos.cy < 44) {
-      showStatus('Loading prompt text for fallback paste…', '#93c5fd');
-      requestPromptTextFallback(function(promptText) {
-        var trimmedPrompt = String(promptText || '').trim();
-        if (!trimmedPrompt) {
-          window.__onNativePasteSubmitDone(false, true);
-          return;
-        }
-        var curBox = findGeminiPromptInput() || activeInput;
-        var fallbackOk = curBox ? setGeminiInputText(curBox, trimmedPrompt) : false;
-        if (fallbackOk && curBox) typeTrailingSpaceKeystroke(curBox);
-        window.__onNativePasteSubmitDone(fallbackOk, true);
-      });
-      return true;
-    }
-
-    showStatus('Pasting prompt & case text via OS Ctrl+V…', '#93c5fd');
+    showStatus('Copying prompt & case text to clipboard…', '#93c5fd');
     sendBridgeMsg({
-      action: 'native_paste_and_submit',
-      x: pos.cx,
-      y: pos.cy,
-      dpr: window.devicePixelRatio || 1
+      action: 'copy_prompt_to_clipboard'
     });
 
     return true;
   }
 
-  window.__onNativePasteSubmitDone = function(ok, fromFallback) {
-    clearPastePollTimer();
-    var myPasteSeq = _pasteSeq;
+  window.__onClipboardCopyDone = function(ok) {
+    var myCopySeq = _copySeq;
     _awaitingLastChangeAt = Date.now();
     _awaitingStoppedAt = 0;
     _hasSeenGenerationForJob = false;
 
-    function finishPasteSuccess(metricsOrLen) {
-      if (_pasteSeq !== myPasteSeq || _handledPasteSeq === myPasteSeq) return;
-      _handledPasteSeq = myPasteSeq;
-      clearPastePollTimer();
-      _isPasting = false;
-      var displayLen = typeof metricsOrLen === 'number'
-        ? metricsOrLen
-        : Number((metricsOrLen && metricsOrLen.trimmedLen) || 0);
-      showStatus('Case pasted (' + displayLen.toLocaleString() + ' chars)! Select model & submit manually — will auto-save to Case Digest when done.', '#4ade80');
-      emitStudioStatus('streaming', 'Ready to Submit', 'Case pasted — select model & submit manually! Will auto-save when done.', false, true);
+    function finishCopySuccess() {
+      if (_copySeq !== myCopySeq || _handledCopySeq === myCopySeq) return;
+      _handledCopySeq = myCopySeq;
+      _isCopying = false;
+      var msg = 'Prompt copied to clipboard! Click Ask Gemini, press Ctrl+V, select model & submit — will auto-send when done.';
+      showStatus(msg, '#4ade80');
+      emitStudioStatus('streaming', 'Ready to Paste', msg, false, true);
     }
 
-    function finishPasteFailure(reason) {
-      if (_pasteSeq !== myPasteSeq || _handledPasteSeq === myPasteSeq) return;
-      _handledPasteSeq = myPasteSeq;
-      clearPastePollTimer();
-      _isPasting = false;
-      var msg = reason || 'Could not paste automatically — click inside Ask Gemini and press Ctrl+V.';
+    function finishCopyFailure(reason) {
+      if (_copySeq !== myCopySeq || _handledCopySeq === myCopySeq) return;
+      _handledCopySeq = myCopySeq;
+      _isCopying = false;
+      var msg = reason || 'Could not copy prompt to clipboard — click Copy Prompt above or retry from Legal Annotator.';
       showStatus(msg, '#f87171');
-      emitStudioStatus('error', 'Paste failed', msg, true, true);
+      emitStudioStatus('error', 'Clipboard copy failed', msg, true, true);
     }
 
-    function runFallbackPaste() {
-      showStatus('OS paste empty or incomplete — trying fallback text injection…', '#fbbf24');
-      requestPromptTextFallback(function(promptText) {
-        var trimmedPrompt = String(promptText || '').trim();
-        if (!trimmedPrompt) {
-          finishPasteFailure('Paste failed and prompt text could not be retrieved — retry Gemini Digest from Legal Annotator.');
-          return;
-        }
-        var expected = getExpectedPromptMetrics(trimmedPrompt);
-        var box = findGeminiPromptInput();
-        if (box && setGeminiInputText(box, trimmedPrompt)) {
-          typeTrailingSpaceKeystroke(box);
-          var immediateMetrics = measureGeminiInput(findGeminiPromptInput() || box);
-          if (isGeminiInputComplete(immediateMetrics, expected)) {
-            finishPasteSuccess(immediateMetrics);
-            return;
-          }
-          setTimeout(function() {
-            var delayedMetrics = measureGeminiInput(findGeminiPromptInput() || box);
-            if (isGeminiInputComplete(delayedMetrics, expected)) {
-              finishPasteSuccess(delayedMetrics);
-            } else {
-              finishPasteFailure(delayedMetrics.trimmedLen > 0
-                ? 'Fallback paste was incomplete — click inside Ask Gemini and press Ctrl+V.'
-                : 'Fallback paste left Ask Gemini empty — click inside Ask Gemini and press Ctrl+V.');
-            }
-          }, 150);
-          return;
-        }
-        finishPasteFailure('Could not paste into Ask Gemini — click inside Ask Gemini and press Ctrl+V.');
-      });
-    }
-
-    var boxMetrics = measureGeminiInput(findGeminiPromptInput());
-    if (isGeminiInputComplete(boxMetrics, getExpectedPromptMetrics())) {
-      finishPasteSuccess(boxMetrics);
+    if (ok) {
+      finishCopySuccess();
       return;
     }
 
-    if (fromFallback) {
-      setTimeout(function() {
-        var recheckMetrics = measureGeminiInput(findGeminiPromptInput());
-        if (ok && isGeminiInputComplete(recheckMetrics, getExpectedPromptMetrics())) {
-          finishPasteSuccess(recheckMetrics);
-        } else {
-          finishPasteFailure(recheckMetrics.trimmedLen > 0
-            ? 'Fallback paste was incomplete — click inside Ask Gemini and press Ctrl+V.'
-            : 'Fallback paste left Ask Gemini empty — click inside Ask Gemini and press Ctrl+V.');
-        }
-      }, 150);
-      return;
-    }
-
-    if (!ok) {
-      runFallbackPaste();
-      return;
-    }
-
-    var pollTicks = 0;
-    var maxPollTicks = 16; // ~2.4s across 150ms ticks for large 70-page pastes
-    var lastNonWsLen = boxMetrics.nonWsLen;
-    var lastTrimmedLen = boxMetrics.trimmedLen;
-    var lastGrowthTick = 0;
-    _pastePollTimer = setInterval(function() {
-      pollTicks++;
-      var m = measureGeminiInput(findGeminiPromptInput());
-      if (isGeminiInputComplete(m, getExpectedPromptMetrics())) {
-        finishPasteSuccess(m);
+    requestPromptTextFallback(function(promptText) {
+      var trimmedPrompt = String(promptText || '').trim();
+      if (!trimmedPrompt) {
+        finishCopyFailure('Prompt text could not be retrieved — retry Gemini Digest from Legal Annotator.');
         return;
       }
-      var isGrowing = (m.nonWsLen > lastNonWsLen) || (m.trimmedLen > lastTrimmedLen);
-      if (isGrowing) {
-        lastNonWsLen = m.nonWsLen;
-        lastTrimmedLen = m.trimmedLen;
-        lastGrowthTick = pollTicks;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(trimmedPrompt).then(function() {
+          finishCopySuccess();
+        }).catch(function() {
+          finishCopyFailure('Could not write prompt to clipboard — click Copy Prompt above to retry.');
+        });
+      } else {
+        finishCopyFailure('Clipboard API unavailable — click Copy Prompt above to retry.');
       }
-      if (pollTicks >= maxPollTicks) {
-        if (isGrowing || (m.nonWsLen > 0 && (pollTicks - lastGrowthTick <= 2) && pollTicks < 24)) {
-          return;
-        }
-        clearPastePollTimer();
-        runFallbackPaste();
-      }
-    }, 150);
+    });
   };
 
   function extractAndSendDigest() {
@@ -2720,7 +2332,7 @@ const GEMINI_INIT_SCRIPT: &str = r#"
           if (tryAutoOpenSubjectNotebook()) return;
         }
       }
-      showStatus('Open your "' + (_state.subjectName || 'Subject') + '" Notebook and click Pin (or click Paste Case).', '#fbbf24');
+      showStatus('Open your "' + (_state.subjectName || 'Subject') + '" Notebook and click Pin (or click Copy Prompt).', '#fbbf24');
       return;
     }
 
@@ -2751,15 +2363,15 @@ const GEMINI_INIT_SCRIPT: &str = r#"
         clearInterval(_jobTimer);
         _jobTimer = null;
         setTimeout(function() {
-          pasteAndMaybeSubmit(false);
+          copyPromptToClipboard(false);
         }, 50);
       } else if (attempts >= 45) {
         clearInterval(_jobTimer);
         _jobTimer = null;
         sessionStorage.setItem('la_gemini_handled_job_id', String(_state.jobId));
-        showStatus('Click "Paste Case" above when prompt box is ready.', '#fbbf24');
+        showStatus('Click "Copy Prompt" above when prompt box is ready.', '#fbbf24');
         if (!detectStudioPageBlocker()) {
-          emitStudioStatus('error', 'Prompt box missing', 'Gemini "Ask Gemini" box not found — focus Studio and click Paste Case.', true);
+          emitStudioStatus('error', 'Prompt box missing', 'Gemini "Ask Gemini" box not found — focus Studio and click Copy Prompt.', true);
         }
       }
     }, 150);
@@ -2789,9 +2401,8 @@ const GEMINI_INIT_SCRIPT: &str = r#"
       sessionStorage.removeItem('la_gemini_awaiting_autosend_job_id');
       sessionStorage.removeItem('la_gemini_awaiting_autosend_meta');
       sessionStorage.removeItem('la_gemini_auto_opened_job_id');
-      _isPasting = false;
-      _pasteSeq++;
-      clearPastePollTimer();
+      _isCopying = false;
+      _copySeq++;
       _inMemoryPromptText = '';
       _inMemoryPromptJobId = 0;
       _promptTextCallbacks = [];
@@ -3142,6 +2753,12 @@ pub async fn desktop_open_gemini_studio(
     } else {
         pdf_text
     };
+    if !eff_full_prompt.is_empty() && !crate::set_native_os_clipboard_text(&eff_full_prompt) {
+        eprintln!(
+            "[GeminiStudio] Auto-copy to OS clipboard on open failed (len={})",
+            eff_full_prompt.len()
+        );
+    }
     let job_id = crate::now_ms();
     let job_val = serde_json::json!({
         "pdfId": pdf_id,
@@ -3552,11 +3169,8 @@ pub async fn desktop_open_gemini_studio(
                                     }
                                 }
                             });
-                        } else if action == "native_paste_and_submit" {
-                            let css_x = msg_val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let css_y = msg_val.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let js_dpr = msg_val.get("dpr").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let (prompt_text, pdf_id_for_paste) = state_for_nav
+                        } else if action == "copy_prompt_to_clipboard" {
+                            let (prompt_text, pdf_id_for_copy) = state_for_nav
                                 .lock()
                                 .ok()
                                 .map(|st| {
@@ -3572,96 +3186,49 @@ pub async fn desktop_open_gemini_studio(
                                     )
                                 })
                                 .unwrap_or_default();
-                            let app_paste = app_for_nav.clone();
+                            let app_copy = app_for_nav.clone();
                             std::thread::spawn(move || {
-                                let _guard = GEMINI_MOUSE_LOCK
-                                    .get_or_init(|| Mutex::new(()))
-                                    .lock();
                                 let mut ok = false;
-                                let mut clipboard_failed = false;
                                 if prompt_text.is_empty() {
                                     emit_gemini_studio_status(
-                                        &app_paste,
+                                        &app_copy,
                                         serde_json::json!({
                                             "action": "studio_error",
                                             "state": "error",
                                             "stepLabel": "No prompt text",
                                             "message": "No prompt text found in Gemini Studio state — retry Gemini Digest from Legal Annotator.",
-                                            "pdfId": pdf_id_for_paste,
+                                            "pdfId": pdf_id_for_copy,
                                             "canRetry": true
                                         }),
                                     );
                                 } else if !crate::set_native_os_clipboard_text(&prompt_text) {
-                                    clipboard_failed = true;
                                     eprintln!(
                                         "[GeminiStudio] set_native_os_clipboard_text failed (len={})",
                                         prompt_text.len()
                                     );
-                                    emit_gemini_studio_status(
-                                        &app_paste,
-                                        serde_json::json!({
-                                            "action": "studio_error",
-                                            "state": "error",
-                                            "stepLabel": "Clipboard busy",
-                                            "message": "OS clipboard write failed — trying fallback paste in Gemini Studio…",
-                                            "pdfId": pdf_id_for_paste,
-                                            "canRetry": true
-                                        }),
-                                    );
-                                } else if let Some(gw) =
-                                    app_paste.get_webview_window("gemini-studio")
-                                {
-                                    let _ = gw.show();
-                                    let _ = gw.unminimize();
-                                    let _ = gw.set_focus();
-                                    std::thread::sleep(std::time::Duration::from_millis(40));
-                                    if let Ok(inner_pos) = gw.inner_position() {
-                                        let win_scale = gw.scale_factor().unwrap_or(1.0);
-                                        let scale = if js_dpr > 0.2 { js_dpr } else { win_scale };
-                                        let screen_x =
-                                            inner_pos.x + (css_x * scale).round() as i32;
-                                        let screen_y =
-                                            inner_pos.y + (css_y * scale).round() as i32;
-                                        crate::perform_native_os_mouse_click(screen_x, screen_y);
-                                        std::thread::sleep(std::time::Duration::from_millis(70));
-                                        let _ = gw.set_focus();
-                                        crate::perform_native_os_ctrl_v();
-                                        let post_paste_ms: u64 = if prompt_text.len() > 100_000 {
-                                            650
-                                        } else if prompt_text.len() > 25_000 {
-                                            500
-                                        } else {
-                                            400
-                                        };
-                                        std::thread::sleep(std::time::Duration::from_millis(
-                                            post_paste_ms,
-                                        ));
-                                        let _ = gw.set_focus();
-                                        crate::perform_native_os_key_space();
-                                        ok = true;
-                                    }
+                                } else {
+                                    ok = true;
                                 }
-                                std::thread::sleep(std::time::Duration::from_millis(40));
-                                if let Some(gw) = app_paste.get_webview_window("gemini-studio") {
+                                if let Some(gw) = app_copy.get_webview_window("gemini-studio") {
                                     let js = format!(
-                                        "window.__onNativePasteSubmitDone && window.__onNativePasteSubmitDone({});",
+                                        "window.__onClipboardCopyDone && window.__onClipboardCopyDone({});",
                                         if ok { "true" } else { "false" }
                                     );
                                     if let Err(e) = gw.eval(&js) {
                                         eprintln!(
-                                            "[GeminiStudio] __onNativePasteSubmitDone eval failed: {}",
+                                            "[GeminiStudio] __onClipboardCopyDone eval failed: {}",
                                             e
                                         );
                                     }
-                                } else if !clipboard_failed && !prompt_text.is_empty() {
+                                } else if !prompt_text.is_empty() {
                                     emit_gemini_studio_status(
-                                        &app_paste,
+                                        &app_copy,
                                         serde_json::json!({
                                             "action": "studio_error",
                                             "state": "error",
                                             "stepLabel": "Studio closed",
-                                            "message": "Gemini Studio window was not available for paste.",
-                                            "pdfId": pdf_id_for_paste,
+                                            "message": "Gemini Studio window was not available for clipboard copy.",
+                                            "pdfId": pdf_id_for_copy,
                                             "canRetry": true
                                         }),
                                     );
