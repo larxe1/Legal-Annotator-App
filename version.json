@@ -1,7 +1,7 @@
 {
-    "updatedAt":  "2026-11-18T12:59:00Z",
-    "build":  87,
-    "version":  "1.25.13",
+    "updatedAt":  "2026-11-18T13:04:44Z",
+    "build":  88,
+    "version":  "1.25.14",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Fixed blank lines appearing between bullet points when pasting Case Digests from Gemini by stripping paragraph-wrapper line breaks and formatting newlines inside lists, tightening Case Digest bullet spacing, and improving mixed-Markdown plain-text digest pasting."
+    "notes":  "Updated Legal Print Studio pagination to start every new case on a clean new page (moving any preceding subfolder heading with the case) across single-column, two-column, full-notes, and Summary Tables Only layouts so case summary tables never start mid-page or get split at the top."
 }

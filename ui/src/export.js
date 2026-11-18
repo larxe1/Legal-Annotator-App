@@ -1563,7 +1563,18 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             return colEl.children.length === 0 || !hasMeaningfulDom(colEl);
           }
 
-          function advanceColumn(queue) {
+          function pageHasMeaningfulNonHeading(pageObj) {
+            if (!pageObj || !pageObj.cols) return false;
+            return pageObj.cols.some(function(col) {
+              return Array.from(col.childNodes).some(function(child) {
+                if (child.nodeType === 3) return (child.nodeValue || '').trim().length > 0;
+                if (child.nodeType === 1) return !isHeadingEl(child) && hasMeaningfulDom(child);
+                return false;
+              });
+            });
+          }
+
+          function advanceColumn(queue, forceNewPage) {
             var prevCol = curPage.cols[curColIdx];
             var trailingHeadings = [];
             if (queue) {
@@ -1574,7 +1585,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
               }
             }
             var prevPage = curPage;
-            if (isTwoCol && curColIdx === 0) {
+            if (!forceNewPage && isTwoCol && curColIdx === 0) {
               curColIdx = 1;
             } else {
               curPage = createPageSheet(pages.length + 1);
@@ -1593,6 +1604,10 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
               next.colEl.appendChild(trailingHeadings[th]);
             }
             return next;
+          }
+
+          function advanceToNewPage(queue) {
+            return advanceColumn(queue, true);
           }
 
           var rawChildren = Array.from(flowSource.childNodes).map(function(n) {
@@ -1615,6 +1630,24 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
                 var textWrap = document.createElement('div');
                 textWrap.textContent = node.nodeValue;
                 node = textWrap;
+              }
+
+              // Always start every fresh case on a clean new page so its summary table never starts mid-page.
+              var isFreshCase = node.nodeType === 1 &&
+                node.classList &&
+                node.classList.contains('case-section') &&
+                !node.classList.contains('is-continuation');
+              if (isFreshCase) {
+                if (pageHasMeaningfulNonHeading(curPage)) {
+                  cur = advanceToNewPage(queue);
+                } else if (curColIdx > 0) {
+                  var col0 = curPage.cols[0];
+                  while (cur.colEl.firstChild) {
+                    col0.appendChild(cur.colEl.firstChild);
+                  }
+                  curColIdx = 0;
+                  cur = currentSlot();
+                }
               }
 
               var colWasEmpty = cur.colEl.children.length === 0;
@@ -1657,17 +1690,6 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
                 queue.unshift(node);
               }
             }
-          }
-
-          function pageHasMeaningfulNonHeading(pageObj) {
-            if (!pageObj || !pageObj.cols) return false;
-            return pageObj.cols.some(function(col) {
-              return Array.from(col.childNodes).some(function(child) {
-                if (child.nodeType === 3) return (child.nodeValue || '').trim().length > 0;
-                if (child.nodeType === 1) return !isHeadingEl(child) && hasMeaningfulDom(child);
-                return false;
-              });
-            });
           }
 
           var cleanIdx = 0;
