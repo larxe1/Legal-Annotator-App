@@ -89,11 +89,11 @@ export function showTablePicker(btn, editorElement) {
 
 function insertTable(rows, cols, editorElement) {
   // Construct the HTML for the table with strict bounds containment
-  let html = `<br><table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:break-word;"><tbody>`;
+  let html = `<br><table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:normal; overflow-wrap:break-word;"><tbody>`;
   for (let r = 0; r < rows; r++) {
     html += `<tr>`;
     for (let c = 0; c < cols; c++) {
-      html += `<td style="border:1px solid var(--navy-b); padding:6px 10px; word-break:break-word; overflow-wrap:anywhere;"><br></td>`;
+      html += `<td style="border:1px solid var(--navy-b); padding:6px 10px; word-break:normal; overflow-wrap:break-word;"><br></td>`;
     }
     html += `</tr>`;
   }
@@ -107,22 +107,38 @@ function insertTable(rows, cols, editorElement) {
 // ───────────────────────────────────────────────
 // PASTE SANITIZER & TABLE IMPORTER
 // ───────────────────────────────────────────────
+function _isEmptyCellText(val) {
+  return !String(val || '').replace(/&nbsp;|&#160;|\u00a0/gi, '').trim();
+}
+
+function _hasMeaningfulTableRowHtml(inner) {
+  if (/<(?:img|svg|input|hr)\b/i.test(inner)) return true;
+  const plain = String(inner || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;|&#160;|\u00a0/gi, '')
+    .trim();
+  return plain.length > 0;
+}
+
 function parseTextToTable(text) {
   if (!text) return null;
   const lines = text.split(/\r?\n/).map(l => l.trimEnd()).filter(l => l.length > 0);
   if (lines.length < 2) return null;
 
   let rows = [];
+  let isMarkdownTable = false;
   const hasTabs = lines.some(l => l.includes('\t'));
 
   if (hasTabs) {
     rows = lines.map(l => l.split('\t').map(c => c.trim()));
   } else {
     // Check if lines have markdown | separators (all non-empty lines must be pipe-delimited)
-    const isMarkdownTable = lines.every(l => l.includes('|'));
+    isMarkdownTable = lines.every(l => l.includes('|'));
     if (isMarkdownTable) {
+      // Only skip true divider lines containing at least one '-' so empty header rows like `| | |` are tracked
+      const mdDividerRe = /^[\s|:-]*-[\s|:-]*$/;
       rows = lines
-        .filter(l => !l.match(/^[\s|:-]+$/)) // Skip markdown divider like |---|---|
+        .filter(l => !mdDividerRe.test(l))
         .map(l => l.split('|').map(c => c.trim()).filter((c, idx, arr) => {
           return (idx > 0 && idx < arr.length - 1) || (idx === 0 && c !== '') || (idx === arr.length - 1 && c !== '');
         }));
@@ -137,18 +153,27 @@ function parseTextToTable(text) {
     }
   }
 
-  // Must have at least 2 rows and 2 columns
-  if (rows.length >= 2 && rows[0].length >= 2) {
-    let html = `<br><table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:break-word;"><tbody>`;
+  const hadEmptyHeader = rows.length > 0 && rows[0].every(c => _isEmptyCellText(c));
+  rows = rows.filter(r => r.some(c => !_isEmptyCellText(c)));
+
+  // Must have at least 2 rows (or 1 data row for explicit markdown tables) and 2 columns
+  const minRows = isMarkdownTable ? 1 : 2;
+  if (rows.length >= minRows && rows[0].length >= 2) {
+    const useHeaderRow = !hadEmptyHeader;
+    let html = `<br><table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:normal; overflow-wrap:break-word;"><tbody>`;
     for (let r = 0; r < rows.length; r++) {
       html += `<tr>`;
       for (let c = 0; c < rows[r].length; c++) {
         const cellText = rows[r][c] || '';
-        const tag = r === 0 ? 'th' : 'td';
-        const style = r === 0
-          ? 'border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:break-word; overflow-wrap:anywhere;'
-          : 'border:1px solid var(--navy-b); padding:6px 10px; word-break:break-word; overflow-wrap:anywhere;';
-        html += `<${tag} style="${style}">${cellText ? cellText.replace(/\n/g, '<br>') : '<br>'}</${tag}>`;
+        const isHeaderCell = r === 0 && useHeaderRow;
+        const tag = isHeaderCell ? 'th' : 'td';
+        const style = isHeaderCell
+          ? 'border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:normal; overflow-wrap:break-word;'
+          : 'border:1px solid var(--navy-b); padding:6px 10px; word-break:normal; overflow-wrap:break-word;';
+        const rendered = cellText
+          ? (isMarkdownTable ? renderInlineMarkdown(cellText).replace(/\n/g, '<br>') : cellText.replace(/\n/g, '<br>'))
+          : '<br>';
+        html += `<${tag} style="${style}">${rendered}</${tag}>`;
       }
       html += `</tr>`;
     }
@@ -220,7 +245,7 @@ function parseMixedMarkdownToHtml(text) {
   const orderedRe = /^(\s*)\d+[\.\)]\s+(.*)$/;
   const headingRe = /^(#{1,6})\s+(.*)$/;
   const quoteRe = /^>\s?(.*)$/;
-  const tableDividerRe = /^\|?[\s:|-]+\|[\s:|-]*$/;
+  const tableDividerRe = /^\|?(?=[\s:|-]*-)[\s:|-]+\|[\s:|-]*$/;
 
   const out = [];
   const listStack = [];
@@ -267,21 +292,26 @@ function parseMixedMarkdownToHtml(text) {
         i++;
       }
       i--; // compensate for loop increment
-      const tableRows = tableLines
-        .filter(l => !/^[\s|:-]+$/.test(l))
+      const mdDividerRe = /^[\s|:-]*-[\s|:-]*$/;
+      let tableRows = tableLines
+        .filter(l => !mdDividerRe.test(l))
         .map(l => l.split('|').map(c => c.trim()).filter((c, idx, arr) =>
           (idx > 0 && idx < arr.length - 1) || (idx === 0 && c !== '') || (idx === arr.length - 1 && c !== '')
         ))
         .filter(r => r.length >= 2);
+      const hadEmptyHeader = tableRows.length > 0 && tableRows[0].every(c => _isEmptyCellText(c));
+      tableRows = tableRows.filter(r => r.some(c => !_isEmptyCellText(c)));
       if (tableRows.length >= 1) {
-        let tbl = '<table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:break-word;"><tbody>';
+        const useHeaderRow = !hadEmptyHeader;
+        let tbl = '<table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:normal; overflow-wrap:break-word;"><tbody>';
         for (let r = 0; r < tableRows.length; r++) {
           tbl += '<tr>';
           for (let c = 0; c < tableRows[r].length; c++) {
-            const cellTag = r === 0 ? 'th' : 'td';
-            const style = r === 0
-              ? 'border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:break-word; overflow-wrap:anywhere;'
-              : 'border:1px solid var(--navy-b); padding:6px 10px; word-break:break-word; overflow-wrap:anywhere;';
+            const isHeaderCell = r === 0 && useHeaderRow;
+            const cellTag = isHeaderCell ? 'th' : 'td';
+            const style = isHeaderCell
+              ? 'border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:normal; overflow-wrap:break-word;'
+              : 'border:1px solid var(--navy-b); padding:6px 10px; word-break:normal; overflow-wrap:break-word;';
             const content = tableRows[r][c] ? renderInlineMarkdown(tableRows[r][c]) : '<br>';
             tbl += `<${cellTag} style="${style}">${content}</${cellTag}>`;
           }
@@ -469,19 +499,26 @@ function cleanClipboardHtmlDoc(doc, stripSelector) {
       return `<blockquote style="border-left:3px solid var(--gold); margin:8px 0; padding-left:10px; color:var(--text-d);">${inner}</blockquote>`;
     }
     if (tag === 'table') {
-      return `<table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:break-word;">${inner}</table>`;
+      if (!inner.trim()) return '';
+      return `<table class="note-table" style="width:100%; max-width:100%; border-collapse:collapse; margin:10px 0; table-layout:auto; word-break:normal; overflow-wrap:break-word;">${inner}</table>`;
     }
-    if (['tbody', 'thead', 'tfoot'].includes(tag)) return `<${tag}>${inner}</${tag}>`;
-    if (tag === 'tr') return `<tr>${inner}</tr>`;
+    if (['tbody', 'thead', 'tfoot'].includes(tag)) {
+      if (!inner.trim()) return '';
+      return `<${tag}>${inner}</${tag}>`;
+    }
+    if (tag === 'tr') {
+      if (!_hasMeaningfulTableRowHtml(inner)) return '';
+      return `<tr>${inner}</tr>`;
+    }
     if (tag === 'th') {
       const colspan = node.getAttribute('colspan') ? ` colspan="${node.getAttribute('colspan')}"` : '';
       const rowspan = node.getAttribute('rowspan') ? ` rowspan="${node.getAttribute('rowspan')}"` : '';
-      return `<th style="border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:break-word; overflow-wrap:anywhere;"${colspan}${rowspan}>${inner || '<br>'}</th>`;
+      return `<th style="border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:normal; overflow-wrap:break-word;"${colspan}${rowspan}>${inner || '<br>'}</th>`;
     }
     if (tag === 'td') {
       const colspan = node.getAttribute('colspan') ? ` colspan="${node.getAttribute('colspan')}"` : '';
       const rowspan = node.getAttribute('rowspan') ? ` rowspan="${node.getAttribute('rowspan')}"` : '';
-      return `<td style="border:1px solid var(--navy-b); padding:6px 10px; word-break:break-word; overflow-wrap:anywhere;"${colspan}${rowspan}>${inner || '<br>'}</td>`;
+      return `<td style="border:1px solid var(--navy-b); padding:6px 10px; word-break:normal; overflow-wrap:break-word;"${colspan}${rowspan}>${inner || '<br>'}</td>`;
     }
     if (['p', 'div'].includes(tag)) {
       if (!inner || /^(?:<br\s*\/?>\s*)+$/i.test(inner)) return '<br>';

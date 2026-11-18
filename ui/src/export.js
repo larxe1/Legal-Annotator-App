@@ -21,6 +21,14 @@ export function cleanAndSanitizeHtml(html) {
   clean = clean
     .replace(/color:\s*(#[d-fD-F0-9]{3,6}|rgb\(\s*2[0-5][0-9]\s*,\s*2[0-5][0-9]\s*,\s*2[0-5][0-9]\s*\)|white|#fff|#f1f5f9|#e8e4db|#e0dbd2)/gi, 'color: #0f172a')
     .replace(/background:\s*(var\(--navy[^)]*\)|#0c1322|#141c2d|#1e293b|#101827)/gi, 'background: transparent');
+  // Strip completely empty table rows (e.g., Gemini empty header rows) and any resulting empty table sections
+  clean = clean
+    .replace(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi, (match, inner) => {
+      if (/<(?:img|svg|input|hr|table)\b/i.test(inner)) return match;
+      const textOnly = inner.replace(/<[^>]*>/g, '').replace(/&nbsp;|&#160;|\u00a0/gi, '').trim();
+      return textOnly ? match : '';
+    })
+    .replace(/<(thead|tbody|tfoot)\b[^>]*>\s*<\/\1>/gi, '');
   return clean;
 }
 
