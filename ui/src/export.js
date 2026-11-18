@@ -28,7 +28,19 @@ export function cleanAndSanitizeHtml(html) {
       const textOnly = inner.replace(/<[^>]*>/g, '').replace(/&nbsp;|&#160;|\u00a0/gi, '').trim();
       return textOnly ? match : '';
     })
-    .replace(/<(thead|tbody|tfoot)\b[^>]*>\s*<\/\1>/gi, '');
+    .replace(/<(thead|tbody|tfoot)\b[^>]*>\s*<\/\1>/gi, '')
+    // Normalize leading/trailing <br>/&nbsp; and collapse excessive <br>s inside table cells
+    .replace(/<(td|th)\b([^>]*)>((?:(?!<\/?(?:td|th)\b)[\s\S])*)<\/\1>/gi, (_, tag, attrs, inner) => {
+      const edgeBreakRe = '(?:\\s|&nbsp;|&#160;|\\u00a0|<br\\s*\\/?>)+';
+      let s = inner
+        .replace(new RegExp(`^${edgeBreakRe}`, 'i'), '')
+        .replace(new RegExp(`${edgeBreakRe}$`, 'i'), '')
+        .replace(/<br\s*\/?>(?:(?:\s|&nbsp;|&#160;|\u00a0)*<br\s*\/?>)+/gi, '<br><br>')
+        .replace(new RegExp(`${edgeBreakRe}(?=(?:<\\/(?:b|strong|i|em|u|s|strike|span|a)>)+$)`, 'gi'), '');
+      s = s.replace(/<(b|strong|i|em|u|s|strike|span)(?:\s+[^>]*)?>\s*<\/\1>/gi, '');
+      s = s.replace(new RegExp(`^${edgeBreakRe}`, 'i'), '').replace(new RegExp(`${edgeBreakRe}$`, 'i'), '');
+      return `<${tag}${attrs}>${s || '<br>'}</${tag}>`;
+    });
   return clean;
 }
 

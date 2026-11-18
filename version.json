@@ -1,7 +1,7 @@
 {
-    "updatedAt":  "2026-11-18T13:18:29Z",
-    "build":  89,
-    "version":  "1.25.15",
+    "updatedAt":  "2026-11-18T13:39:00Z",
+    "build":  90,
+    "version":  "1.25.16",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Stripped empty Gemini table header rows on Paste Digest and in Legal Print Studio, preserved normal data rows without turning row 1 into a bold header, and fixed table column word-wrapping so narrow label columns no longer break short words across lines."
+    "notes":  "Cleaned up pasted table cell whitespace from Gemini and Markdown so empty spacer paragraphs collapse to a single blank line and trailing blank lines at the bottom of cells are stripped in both Notepad and Legal Print Studio."
 }

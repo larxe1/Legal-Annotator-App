@@ -171,7 +171,9 @@ function parseTextToTable(text) {
           ? 'border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:normal; overflow-wrap:break-word;'
           : 'border:1px solid var(--navy-b); padding:6px 10px; word-break:normal; overflow-wrap:break-word;';
         const rendered = cellText
-          ? (isMarkdownTable ? renderInlineMarkdown(cellText).replace(/\n/g, '<br>') : cellText.replace(/\n/g, '<br>'))
+          ? (isMarkdownTable
+              ? renderMarkdownTableCell(cellText)
+              : (cleanTableCellInner(cellText.replace(/\n/g, '<br>')) || '<br>'))
           : '<br>';
         html += `<${tag} style="${style}">${rendered}</${tag}>`;
       }
@@ -231,6 +233,14 @@ function renderInlineMarkdown(str) {
   s = s.replace(/__([^_]+)__/g, '<b>$1</b>');
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<i>$2</i>');
   return s;
+}
+
+function renderMarkdownTableCell(cellText) {
+  if (!cellText) return '<br>';
+  const rendered = renderInlineMarkdown(cellText)
+    .replace(/<code>[\s\S]*?<\/code>|&lt;br\s*\/?&gt;/gi, m => (m.startsWith('<code') ? m : '<br>'))
+    .replace(/\n/g, '<br>');
+  return cleanTableCellInner(rendered) || '<br>';
 }
 
 function parseMixedMarkdownToHtml(text) {
@@ -312,7 +322,7 @@ function parseMixedMarkdownToHtml(text) {
             const style = isHeaderCell
               ? 'border:1px solid var(--navy-b); padding:6px 10px; background:rgba(255,255,255,0.06); font-weight:bold; word-break:normal; overflow-wrap:break-word;'
               : 'border:1px solid var(--navy-b); padding:6px 10px; word-break:normal; overflow-wrap:break-word;';
-            const content = tableRows[r][c] ? renderInlineMarkdown(tableRows[r][c]) : '<br>';
+            const content = renderMarkdownTableCell(tableRows[r][c]);
             tbl += `<${cellTag} style="${style}">${content}</${cellTag}>`;
           }
           tbl += '</tr>';
@@ -412,6 +422,27 @@ function cleanListItemInner(html) {
   return s;
 }
 
+function cleanTableCellInner(html) {
+  if (!html) return '';
+  const edgeBreakRe = '(?:\\s|&nbsp;|&#160;|\\u00a0|<br\\s*\\/?>)+';
+  const leadingRe = new RegExp(`^${edgeBreakRe}`, 'i');
+  const trailingRe = new RegExp(`${edgeBreakRe}$`, 'i');
+  const leadingInInlineRe = new RegExp(`^((?:<(?:b|strong|i|em|u|s|strike|span|a)\\b[^>]*>)+)${edgeBreakRe}`, 'gi');
+  const trailingInInlineRe = new RegExp(`${edgeBreakRe}(?=(?:<\\/(?:b|strong|i|em|u|s|strike|span|a)>)+$)`, 'gi');
+
+  let s = String(html)
+    .replace(leadingRe, '')
+    .replace(trailingRe, '')
+    // Collapse 2+ <br>s (including <br>&nbsp;<br> or 3+ <br>s) to exactly one blank line (<br><br>)
+    .replace(/<br\s*\/?>(?:(?:\s|&nbsp;|&#160;|\u00a0)*<br\s*\/?>)+/gi, '<br><br>')
+    .replace(leadingInInlineRe, '$1')
+    .replace(trailingInInlineRe, '');
+  // Drop empty inline wrappers left behind after stripping <br>/whitespace (e.g. <b></b>)
+  s = s.replace(/<(b|strong|i|em|u|s|strike|span)(?:\s+[^>]*)?>\s*<\/\1>/gi, '');
+  s = s.replace(leadingRe, '').replace(trailingRe, '');
+  return s;
+}
+
 function cleanClipboardHtmlDoc(doc, stripSelector) {
   doc.querySelectorAll(stripSelector).forEach(el => el.remove());
 
@@ -450,6 +481,8 @@ function cleanClipboardHtmlDoc(doc, stripSelector) {
 
     if (tag === 'li') {
       inner = cleanListItemInner(inner);
+    } else if (tag === 'td' || tag === 'th') {
+      inner = cleanTableCellInner(inner);
     }
 
     if (!inner && !['br', 'hr', 'td', 'th', 'li'].includes(tag)) return '';
@@ -521,7 +554,9 @@ function cleanClipboardHtmlDoc(doc, stripSelector) {
       return `<td style="border:1px solid var(--navy-b); padding:6px 10px; word-break:normal; overflow-wrap:break-word;"${colspan}${rowspan}>${inner || '<br>'}</td>`;
     }
     if (['p', 'div'].includes(tag)) {
-      if (!inner || /^(?:<br\s*\/?>\s*)+$/i.test(inner)) return '<br>';
+      const hasNonTextMedia = /<(?:img|svg|input|hr|table|ul|ol|blockquote|h[1-6])\b/i.test(inner);
+      const plainText = inner.replace(/<[^>]*>/g, '').replace(/&nbsp;|&#160;|\u00a0/gi, '').trim();
+      if (!inner || (!hasNonTextMedia && !plainText)) return '<br>';
       if (/(?:<br\s*\/?>|<\/(?:ul|ol|table|h[1-6]|blockquote)>)\s*$/i.test(inner)) return inner;
       return `${inner}<br>`;
     }
@@ -530,6 +565,8 @@ function cleanClipboardHtmlDoc(doc, stripSelector) {
   }
 
   let cleanHtml = cleanNode(doc.body);
+  // Collapse runs of 2+ <br>s (including <br>&nbsp;<br> or 3+ <br>s) down to a single blank line (<br><br>)
+  cleanHtml = cleanHtml.replace(/<br\s*\/?>(?:(?:\s|&nbsp;|&#160;|\u00a0)*<br\s*\/?>)+/gi, '<br><br>');
   // Remove stray <br>s immediately between adjacent lists (</ul><br><ul>)
   cleanHtml = cleanHtml.replace(/(<\/(?:ul|ol)>)\s*(?:<br\s*\/?>\s*)+(?=<(?:ul|ol)\b)/gi, '$1');
   // Remove a single stray <br> immediately before <ul>/<ol> (e.g. from <p>Intro:</p><ul>...</ul>)
