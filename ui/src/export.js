@@ -893,6 +893,13 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         return false;
       }
 
+      function getColHeight(colEl) {
+        if (!colEl) return 0;
+        var rectH = colEl.getBoundingClientRect().height;
+        var scrollH = colEl.scrollHeight;
+        return rectH > scrollH ? rectH : scrollH;
+      }
+
       function splitTextNodeWords(textNode, targetParent, colEl, maxH) {
         var text = textNode.nodeValue || '';
         if (!text.trim()) {
@@ -905,7 +912,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         targetParent.appendChild(tn);
 
         tn.nodeValue = text;
-        if (colEl.scrollHeight <= maxH) {
+        if (getColHeight(colEl) <= maxH) {
           return { topNode: tn, restText: '' };
         }
 
@@ -915,7 +922,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         while (lo <= hi) {
           var mid = (lo + hi) >> 1;
           tn.nodeValue = tokens.slice(0, mid).join('').replace(/\\s+$/, '');
-          if (colEl.scrollHeight <= maxH) {
+          if (getColHeight(colEl) <= maxH) {
             best = mid;
             lo = mid + 1;
           } else {
@@ -948,7 +955,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           }
           var cClone = child.cloneNode(true);
           topParent.appendChild(cClone);
-          if (colEl.scrollHeight <= maxH) {
+          if (getColHeight(colEl) <= maxH) {
             continue;
           }
           topParent.removeChild(cClone);
@@ -991,7 +998,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       }
 
       function splitInlineBlock(el, parentTarget, colEl, maxH, colWasEmpty) {
-        var remPx = maxH - colEl.scrollHeight;
+        var remPx = maxH - getColHeight(colEl);
         if (!colWasEmpty && remPx < 32) {
           return { top: null, rest: el };
         }
@@ -1029,7 +1036,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           }
           var cClone = child.cloneNode(true);
           topCell.appendChild(cClone);
-          if (colEl.scrollHeight <= maxH) {
+          if (getColHeight(colEl) <= maxH) {
             continue;
           }
           topCell.removeChild(cClone);
@@ -1108,7 +1115,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           for (var k = 0; k < origCell.childNodes.length; k++) {
             topCell.appendChild(origCell.childNodes[k].cloneNode(true));
           }
-          if (colEl.scrollHeight <= maxH) {
+          if (getColHeight(colEl) <= maxH) {
             continue;
           }
 
@@ -1181,7 +1188,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         restTable.appendChild(restTbody);
         parentTarget.appendChild(topTable);
 
-        if (!colWasEmpty && colEl.scrollHeight > maxH) {
+        if (!colWasEmpty && getColHeight(colEl) > maxH) {
           parentTarget.removeChild(topTable);
           return { top: null, rest: table };
         }
@@ -1191,13 +1198,13 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           var tr = rows[r];
           var trClone = tr.cloneNode(true);
           topTbody.appendChild(trClone);
-          if (colEl.scrollHeight <= maxH) {
+          if (getColHeight(colEl) <= maxH) {
             rowsPlaced++;
             continue;
           }
           topTbody.removeChild(trClone);
 
-          var remPx = maxH - colEl.scrollHeight;
+          var remPx = maxH - getColHeight(colEl);
           if (remPx >= 38 || (colWasEmpty && rowsPlaced === 0)) {
             var rowRes = splitTableRow(tr, topTbody, colEl, maxH, colWasEmpty && rowsPlaced === 0);
             if (rowRes.trTop) {
@@ -1234,7 +1241,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           if (tfoot) {
             var tf = tfoot.cloneNode(true);
             topTable.appendChild(tf);
-            if (!colWasEmpty && colEl.scrollHeight > maxH) {
+            if (!colWasEmpty && getColHeight(colEl) > maxH) {
               topTable.removeChild(tf);
               restTable.appendChild(tfoot.cloneNode(true));
               return { top: topTable, rest: restTable };
@@ -1264,7 +1271,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           var item = items[i];
           var clone = item.cloneNode(true);
           topList.appendChild(clone);
-          if (colEl.scrollHeight <= maxH) {
+          if (getColHeight(colEl) <= maxH) {
             placedItems++;
             continue;
           }
@@ -1319,7 +1326,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         }
         parentTarget.appendChild(topC);
 
-        if (!colWasEmpty && colEl.scrollHeight > maxH) {
+        if (!colWasEmpty && getColHeight(colEl) > maxH) {
           parentTarget.removeChild(topC);
           return { top: null, rest: containerEl };
         }
@@ -1333,7 +1340,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           }
           var cClone = child.cloneNode(true);
           topC.appendChild(cClone);
-          if (colEl.scrollHeight <= maxH) {
+          if (getColHeight(colEl) <= maxH) {
             continue;
           }
           topC.removeChild(cClone);
@@ -1350,8 +1357,13 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           }
 
           if (child.nodeType === 1) {
-            var topStillEmpty = !hasMeaningfulDom(topC);
-            var subRes = trySplitElement(child, topC, colEl, maxH, colWasEmpty && topStillEmpty);
+            var topHasNonHeading = Array.from(topC.childNodes).some(function(cn) {
+              if (cn.nodeType === 3) return (cn.nodeValue || '').trim().length > 0;
+              if (cn.nodeType === 1) return !isHeadingEl(cn) && hasMeaningfulDom(cn);
+              return false;
+            });
+            var topEffectivelyEmpty = !topHasNonHeading;
+            var subRes = trySplitElement(child, topC, colEl, maxH, colWasEmpty && topEffectivelyEmpty);
             if (subRes.top) {
               if (subRes.rest) restC.appendChild(subRes.rest);
               for (var k = i + 1; k < nodes.length; k++) {
@@ -1359,7 +1371,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
               }
               break;
             }
-            if (colWasEmpty && topStillEmpty) {
+            if (colWasEmpty && topEffectivelyEmpty) {
               topC.appendChild(child.cloneNode(true));
               for (var m = i + 1; m < nodes.length; m++) {
                 restC.appendChild(nodes[m].cloneNode(true));
@@ -1438,6 +1450,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         bodyEl.style.zoom = '1';
 
         try {
+          pagesRoot.classList.add('ps-paginating');
           var isTwoCol = bodyEl.classList.contains('two-column-layout');
           pagesRoot.innerHTML = '';
           flowSource.style.display = 'none';
@@ -1455,8 +1468,10 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
               hdr.className = 'ps-page-hdr';
               hdrLeft = document.createElement('span');
               hdrLeft.className = 'ps-page-hdr-left';
+              hdrLeft.textContent = fallbackPath || '\\u00a0';
               hdrRight = document.createElement('span');
               hdrRight.className = 'ps-page-hdr-right';
+              hdrRight.textContent = docTitle || '\\u00a0';
               hdr.appendChild(hdrLeft);
               hdr.appendChild(hdrRight);
               sheet.appendChild(hdr);
@@ -1480,6 +1495,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             if (runningHeaders) {
               ftr = document.createElement('div');
               ftr.className = 'ps-page-ftr';
+              ftr.textContent = 'Page ' + pageNum + ' of ' + pageNum;
               sheet.appendChild(ftr);
             }
 
@@ -1515,7 +1531,9 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             sheet.appendChild(tools);
 
             pagesRoot.appendChild(sheet);
-            var maxColHeight = cols[0].clientHeight - 2;
+            var bodyRectH = body.getBoundingClientRect().height;
+            var availBodyHeight = bodyRectH > 0 ? bodyRectH : body.clientHeight;
+            var maxColHeight = availBodyHeight > 2 ? (availBodyHeight - 2) : availBodyHeight;
             var pageObj = {
               pageNum: pageNum,
               sheet: sheet,
@@ -1581,7 +1599,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             return n.cloneNode(true);
           });
 
-          if (curPage.cols[0].clientHeight <= 20) {
+          if (curPage.maxColHeight <= 20) {
             for (var fIdx = 0; fIdx < rawChildren.length; fIdx++) {
               curPage.cols[0].appendChild(rawChildren[fIdx]);
             }
@@ -1603,9 +1621,9 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
               var clone = node.cloneNode(true);
               cur.colEl.appendChild(clone);
 
-              if (cur.colEl.scrollHeight <= cur.maxColHeight) {
+              if (getColHeight(cur.colEl) <= cur.maxColHeight) {
                 if (!colWasEmpty && queue.length > 0 && isHeadingEl(clone)) {
-                  var remAfter = cur.maxColHeight - cur.colEl.scrollHeight;
+                  var remAfter = cur.maxColHeight - getColHeight(cur.colEl);
                   if (remAfter < 44) {
                     cur.colEl.removeChild(clone);
                     cur = advanceColumn(queue);
@@ -1689,6 +1707,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
 
           renumberPagesAndToc();
         } finally {
+          pagesRoot.classList.remove('ps-paginating');
           bodyEl.style.zoom = prevZoom;
         }
       };
@@ -1906,7 +1925,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
     }
     .ps-page-body.is-two-col {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       grid-template-rows: minmax(0, 1fr);
       column-gap: 12pt;
       align-items: stretch;
@@ -1916,6 +1935,16 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       min-width: 0;
       min-height: 0;
       overflow: hidden;
+    }
+    .ps-pages-root.ps-paginating .ps-page-body:not(.is-two-col) > .ps-page-col {
+      flex: 0 0 auto;
+      height: auto;
+    }
+    .ps-pages-root.ps-paginating .ps-page-body.is-two-col {
+      align-items: start;
+    }
+    .ps-pages-root.ps-paginating .ps-page-body.is-two-col > .ps-page-col {
+      height: auto;
     }
     .ps-page-col[contenteditable="true"] {
       outline: none;

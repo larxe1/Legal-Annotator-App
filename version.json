@@ -1,7 +1,7 @@
 {
-    "version":  "1.25.7",
-    "build":  81,
-    "updatedAt":  "2026-11-17T07:55:37Z",
-    "notes":  "Restored the Settings toggle for Gemini automated model-clicking and auto-submit (default Off).",
+    "version":  "1.25.8",
+    "build":  82,
+    "updatedAt":  "2026-11-18T06:57:37Z",
+    "notes":  "Fixed PDF export and Print Studio pagination so pages pack naturally instead of splitting into 1 row or bullet per page with blank whitespace.",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe"
 }
