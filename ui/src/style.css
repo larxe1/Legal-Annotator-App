@@ -747,7 +747,7 @@ body.sidebar-collapsed #app:not(.sidebar-autohide):not([data-rail-autohide="true
 
 /* Folder */
 .li-fold { margin: 1px 0; border-radius: var(--radius-s); }
-.li-fold.drag-over > .li-fold-hd { background: var(--accent-soft); border: 1px dashed var(--accent); }
+.li-fold.drag-over > .li-fold-hd { background: var(--accent-soft); }
 .li-fold-hd {
   position: relative;
   display: flex;
@@ -795,11 +795,13 @@ body.sidebar-collapsed #app:not(.sidebar-autohide):not([data-rail-autohide="true
 .li-pdf:hover .li-acts,
 .li-pdf:focus-within .li-acts { opacity: 1; pointer-events: auto; }
 .li-subj.drag-over > .li-subj-hd, .li-fold.drag-over > .li-fold-hd, .li-pdf.drag-over { background: var(--accent-soft); }
-.drop-above { border-top: 2px solid var(--accent) !important; }
-.drop-below { border-bottom: 2px solid var(--accent) !important; }
-.drop-inside { background: var(--accent-soft) !important; outline: 1.5px dashed var(--accent) !important; border-radius: var(--radius-s); }
+#lib-tree .drop-above { box-shadow: inset 0 2px 0 0 var(--accent) !important; }
+#lib-tree .drop-below { box-shadow: inset 0 -2px 0 0 var(--accent) !important; }
+#lib-tree .drop-inside { background: var(--accent-soft) !important; outline: 1.5px dashed var(--accent) !important; outline-offset: -1.5px; border-radius: var(--radius-s); }
 #lib-drop-hint {
   position: fixed;
+  left: 0;
+  top: 0;
   pointer-events: none;
   z-index: 9999;
   padding: 4px 10px;
@@ -812,6 +814,45 @@ body.sidebar-collapsed #app:not(.sidebar-autohide):not([data-rail-autohide="true
   box-shadow: var(--shadow-lift);
   display: none;
   white-space: nowrap;
+  will-change: transform;
+  contain: layout style;
+}
+.lib-drag-ghost {
+  position: fixed;
+  left: -9999px;
+  top: -9999px;
+  max-width: 240px;
+  padding: 5px 10px;
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--accent);
+  border-left: 3px solid var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: var(--shadow-lift);
+  pointer-events: none;
+  z-index: -1;
+}
+body.lib-dragging #lib-tree .li-fold-hd,
+body.lib-dragging #lib-tree .li-pdf,
+body.lib-dragging #lib-tree .li-subj-hd {
+  transition: none !important;
+}
+body.lib-dragging #lib-tree .li-fold-hd > *,
+body.lib-dragging #lib-tree .li-pdf > *,
+body.lib-dragging #lib-tree .li-subj-hd > * {
+  pointer-events: none;
+}
+body.lib-dragging #lib-tree .li-acts {
+  display: none !important;
+}
+.li-fold.lib-dragging-source > .li-fold-hd,
+.li-pdf.lib-dragging-source {
+  opacity: 0.45;
 }
 .li-pdf.active {
   background: var(--accent-soft);

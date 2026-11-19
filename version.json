@@ -1,7 +1,7 @@
 {
-    "updatedAt":  "2026-11-18T13:39:00Z",
-    "build":  90,
-    "version":  "1.25.16",
+    "updatedAt":  "2026-11-19T10:01:54Z",
+    "build":  91,
+    "version":  "1.25.17",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Cleaned up pasted table cell whitespace from Gemini and Markdown so empty spacer paragraphs collapse to a single blank line and trailing blank lines at the bottom of cells are stripped in both Notepad and Legal Print Studio."
+    "notes":  "Made folder and PDF drag-and-drop in the library sidebar smooth by using a compact drag ghost, zero-reflow drop indicators, GPU-composited drop hints, cached row bounds, cycle-safe checks, and selective sort-order updates."
 }

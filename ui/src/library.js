@@ -986,30 +986,210 @@ export function updateSelectionUI() {
 }
 
 // ── Drag & Drop Hint & Visual Helper ──
+const _dragState = {
+  active: false,
+  isDraggingOnlyPdfs: false,
+  invalidFolderTargetSet: new Set(),
+  treeEl: null,
+  winW: 0,
+  winH: 0,
+  cachedRectEl: null,
+  cachedRect: null,
+  cachedScrollTop: -1,
+  activeEl: null,
+  activeWrap: null,
+  activeZone: '',
+  sourceEls: [],
+  ghostEl: null,
+  ghostRaf: 0,
+  startRaf: 0,
+  hintRaf: 0,
+  hintText: '',
+  hintVisible: false,
+  pendingHintX: 0,
+  pendingHintY: 0,
+  pendingHintText: ''
+};
+
 function getOrCreateDropHint() {
   let hint = document.getElementById('lib-drop-hint');
   if (!hint) {
     hint = document.createElement('div');
     hint.id = 'lib-drop-hint';
-    hint.style.cssText = 'position: fixed; pointer-events: none; z-index: 9999; padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; background: #0f172a; color: #f59e0b; border: 1px solid #f59e0b; box-shadow: 0 4px 12px rgba(0,0,0,0.35); display: none;';
     document.body.appendChild(hint);
   }
   return hint;
 }
 
 function showDropHint(text, clientX, clientY) {
-  const hint = getOrCreateDropHint();
-  hint.textContent = text;
-  hint.style.display = 'block';
-  const x = Math.min(clientX + 14, window.innerWidth - 220);
-  const y = Math.min(clientY + 14, window.innerHeight - 40);
-  hint.style.left = `${Math.max(10, x)}px`;
-  hint.style.top = `${Math.max(10, y)}px`;
+  _dragState.pendingHintText = text;
+  _dragState.pendingHintX = clientX;
+  _dragState.pendingHintY = clientY;
+  if (_dragState.hintRaf) return;
+  _dragState.hintRaf = requestAnimationFrame(() => {
+    _dragState.hintRaf = 0;
+    const hint = getOrCreateDropHint();
+    if (_dragState.hintText !== _dragState.pendingHintText) {
+      hint.textContent = _dragState.pendingHintText;
+      _dragState.hintText = _dragState.pendingHintText;
+    }
+    if (!_dragState.hintVisible) {
+      hint.style.display = 'block';
+      _dragState.hintVisible = true;
+    }
+    const winW = _dragState.winW || window.innerWidth;
+    const winH = _dragState.winH || window.innerHeight;
+    const x = Math.max(10, Math.min(_dragState.pendingHintX + 14, winW - 220));
+    const y = Math.max(10, Math.min(_dragState.pendingHintY + 14, winH - 40));
+    hint.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  });
 }
 
 function hideDropHint() {
+  if (_dragState.hintRaf) {
+    cancelAnimationFrame(_dragState.hintRaf);
+    _dragState.hintRaf = 0;
+  }
   const hint = document.getElementById('lib-drop-hint');
-  if (hint) hint.style.display = 'none';
+  if (_dragState.hintVisible) {
+    if (hint) hint.style.display = 'none';
+    _dragState.hintVisible = false;
+  } else if (hint && hint.style.display && hint.style.display !== 'none') {
+    hint.style.display = 'none';
+  }
+}
+
+function getCachedRowRect(el) {
+  const scrollTop = _dragState.treeEl ? _dragState.treeEl.scrollTop : -1;
+  if (
+    _dragState.cachedRectEl === el &&
+    _dragState.cachedRect &&
+    _dragState.cachedScrollTop === scrollTop
+  ) {
+    return _dragState.cachedRect;
+  }
+  const rect = el.getBoundingClientRect();
+  _dragState.cachedRectEl = el;
+  _dragState.cachedRect = rect;
+  _dragState.cachedScrollTop = scrollTop;
+  return rect;
+}
+
+function clearActiveDropVisual() {
+  const { activeEl, activeWrap, activeZone } = _dragState;
+  if (activeEl && activeZone) {
+    activeEl.classList.remove(activeZone);
+  }
+  if (activeWrap) {
+    activeWrap.classList.remove('drag-over');
+  }
+  _dragState.activeEl = null;
+  _dragState.activeWrap = null;
+  _dragState.activeZone = '';
+}
+
+function setActiveDropVisual(el, zone, wrap = null) {
+  if (
+    _dragState.activeEl === el &&
+    _dragState.activeZone === zone &&
+    _dragState.activeWrap === wrap
+  ) {
+    return;
+  }
+  clearActiveDropVisual();
+  if (el && zone) {
+    el.classList.add(zone);
+  }
+  if (wrap && zone === 'drop-inside') {
+    wrap.classList.add('drag-over');
+  }
+  _dragState.activeEl = el;
+  _dragState.activeWrap = wrap;
+  _dragState.activeZone = zone;
+}
+
+function beginLibraryDrag(e, label) {
+  clearAllDragVisuals();
+
+  const isPdfId = id => {
+    const cleanId = id.startsWith('pdf:') ? id.slice(4) : id;
+    return S.pdfs.some(p => p.id === cleanId) || cleanId.startsWith('pdf_');
+  };
+
+  const selectedIds = Array.from(S.selectedIds);
+  _dragState.active = true;
+  _dragState.isDraggingOnlyPdfs = selectedIds.length > 0 && selectedIds.every(isPdfId);
+
+  const invalidSet = new Set();
+  const draggedFolderIds = selectedIds
+    .map(id => id.startsWith('pdf:') ? id.slice(4) : id)
+    .filter(id => !isPdfId(id));
+
+  if (draggedFolderIds.length > 0) {
+    const childrenByParent = new Map();
+    for (const f of S.folders) {
+      if (f.parent_folder_id) {
+        let list = childrenByParent.get(f.parent_folder_id);
+        if (!list) {
+          list = [];
+          childrenByParent.set(f.parent_folder_id, list);
+        }
+        list.push(f.id);
+      }
+    }
+    const queue = [];
+    for (const fid of draggedFolderIds) {
+      if (!invalidSet.has(fid)) {
+        invalidSet.add(fid);
+        queue.push(fid);
+      }
+    }
+    while (queue.length > 0) {
+      const curr = queue.pop();
+      const kids = childrenByParent.get(curr);
+      if (!kids) continue;
+      for (const kidId of kids) {
+        if (!invalidSet.has(kidId)) {
+          invalidSet.add(kidId);
+          queue.push(kidId);
+        }
+      }
+    }
+  }
+  _dragState.invalidFolderTargetSet = invalidSet;
+
+  const treeEl = document.getElementById('lib-tree');
+  _dragState.treeEl = treeEl;
+  _dragState.winW = window.innerWidth;
+  _dragState.winH = window.innerHeight;
+
+  const ghost = document.createElement('div');
+  ghost.className = 'lib-drag-ghost';
+  ghost.textContent = label || 'Moving item';
+  document.body.appendChild(ghost);
+  _dragState.ghostEl = ghost;
+  e.dataTransfer?.setDragImage?.(ghost, 14, 14);
+  _dragState.ghostRaf = requestAnimationFrame(() => {
+    _dragState.ghostRaf = 0;
+    if (_dragState.ghostEl === ghost) {
+      ghost.remove();
+      _dragState.ghostEl = null;
+    }
+  });
+
+  const sourceEls = [];
+  (treeEl || document).querySelectorAll('.li-selected').forEach(el => {
+    el.classList.add('lib-dragging-source');
+    sourceEls.push(el);
+  });
+  _dragState.sourceEls = sourceEls;
+
+  _dragState.startRaf = requestAnimationFrame(() => {
+    _dragState.startRaf = 0;
+    if (_dragState.active) {
+      document.body.classList.add('lib-dragging');
+    }
+  });
 }
 
 let _autoOpenTimer = null;
@@ -1023,11 +1203,44 @@ function clearAutoOpenTimer() {
 }
 
 export function clearAllDragVisuals() {
+  if (_dragState.startRaf) {
+    cancelAnimationFrame(_dragState.startRaf);
+    _dragState.startRaf = 0;
+  }
+  if (_dragState.ghostRaf) {
+    cancelAnimationFrame(_dragState.ghostRaf);
+    _dragState.ghostRaf = 0;
+  }
+  if (_dragState.ghostEl) {
+    _dragState.ghostEl.remove();
+    _dragState.ghostEl = null;
+  }
   hideDropHint();
   clearAutoOpenTimer();
-  document.querySelectorAll('.li-fold, .li-fold-hd, .li-pdf, .li-subj-hd').forEach(el => {
-    el.classList.remove('drag-over', 'drop-above', 'drop-inside', 'drop-below');
-  });
+  clearActiveDropVisual();
+  if (_dragState.sourceEls.length > 0) {
+    for (const el of _dragState.sourceEls) {
+      el.classList.remove('lib-dragging-source');
+    }
+    _dragState.sourceEls = [];
+  }
+  document.body.classList.remove('lib-dragging');
+  document
+    .querySelectorAll('#lib-tree .drag-over, #lib-tree .drop-above, #lib-tree .drop-inside, #lib-tree .drop-below, #lib-tree .lib-dragging-source')
+    .forEach(el => {
+      el.classList.remove('drag-over', 'drop-above', 'drop-inside', 'drop-below', 'lib-dragging-source');
+    });
+
+  _dragState.active = false;
+  _dragState.isDraggingOnlyPdfs = false;
+  _dragState.invalidFolderTargetSet.clear();
+  _dragState.treeEl = null;
+  _dragState.winW = 0;
+  _dragState.winH = 0;
+  _dragState.cachedRectEl = null;
+  _dragState.cachedRect = null;
+  _dragState.cachedScrollTop = -1;
+  _dragState.hintText = '';
 }
 
 if (typeof window !== 'undefined') {
@@ -1094,6 +1307,7 @@ async function handleReorder(targetId, targetType, draggedIds, insertAfter = fal
   siblings.splice(dropIdx, 0, ...draggedObjects);
 
   siblings.forEach((s, i) => {
+    const prevOrder = s.obj.sort_order;
     s.obj.sort_order = i;
     if (s.type === 'folder') {
       // Prevent circular cycles
@@ -1110,13 +1324,17 @@ async function handleReorder(targetId, targetType, draggedIds, insertAfter = fal
         s.obj.parent_folder_id = parentId;
         s.obj.subject_id = subjectId;
       }
-      dbReorderFolder(s.id, i).catch(()=>{});
+      if (!isCircular && prevOrder !== i) {
+        dbReorderFolder(s.id, i).catch(()=>{});
+      }
     } else {
       if (parentId && s.obj.folder_id !== parentId) {
         dbMovePDF(s.id, parentId).catch(()=>{});
         s.obj.folder_id = parentId;
       }
-      dbReorderPDF(s.id, i).catch(()=>{});
+      if (prevOrder !== i) {
+        dbReorderPDF(s.id, i).catch(()=>{});
+      }
     }
   });
   renderLibrary();
@@ -1361,13 +1579,12 @@ function buildSubjectEl(subj, idx = 0) {
   hd.addEventListener('dragover', e => {
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    hd.classList.remove('drop-above', 'drop-below');
-    hd.classList.add('drop-inside');
+    setActiveDropVisual(hd, 'drop-inside');
     showDropHint(`Move to root of "${subj.name}"`, e.clientX, e.clientY);
   });
   hd.addEventListener('dragleave', e => {
-    if (!hd.contains(e.relatedTarget)) {
-      hd.classList.remove('drop-inside', 'drag-over');
+    if (!hd.contains(e.relatedTarget) && _dragState.activeEl === hd) {
+      clearActiveDropVisual();
       hideDropHint();
     }
   });
@@ -1411,7 +1628,6 @@ function buildFolderEl(fold) {
   const w  = document.createElement('div');
   w.className  = 'li-fold';
   w.dataset.id = fold.id;
-  w.draggable  = true;
   const exp  = !!S.expandedFold[fold.id];
   const foldIcons = { codal: 'i-book', cases: 'i-scale', laws: 'i-list', others: 'i-folder', custom: 'i-folder' };
   const foldIconId = foldIcons[fold.folder_type] || 'i-folder';
@@ -1444,6 +1660,7 @@ function buildFolderEl(fold) {
   const hd   = w.querySelector('.li-fold-hd');
   const ch   = w.querySelector('.li-fold-ch');
   const chev = w.querySelector('.li-chev');
+  hd.draggable = true;
 
   // Handle selection on pointerdown
   hd.addEventListener('pointerdown', e => {
@@ -1544,9 +1761,12 @@ function buildFolderEl(fold) {
   }
 
   // ── Drag-to-reorder/move ──
-  w.addEventListener('dragstart', e => {
+  hd.addEventListener('dragstart', e => {
+    if (e.target.closest('.li-acts, input, textarea, button')) {
+      e.preventDefault();
+      return;
+    }
     e.stopPropagation();
-    if (e.target.closest('.li-pdf')) return;
     if (!S.selectedIds.has(fold.id)) {
       S.selectedIds.clear();
       S.selectedIds.add(fold.id);
@@ -1564,46 +1784,39 @@ function buildFolderEl(fold) {
       e.dataTransfer.setData('text/plain', dragPayload);
       e.dataTransfer.effectAllowed = 'move';
     }
-    document.querySelectorAll('.li-selected').forEach(el => el.style.opacity = '0.5');
+    beginLibraryDrag(e, S.selectedIds.size > 1 ? `${S.selectedIds.size} items` : fold.name);
   });
-  w.addEventListener('dragend', () => { 
-    document.querySelectorAll('.li-selected').forEach(el => el.style.opacity = '');
-    clearAllDragVisuals();
-  });
+  hd.addEventListener('dragend', clearAllDragVisuals);
 
   hd.addEventListener('dragover', e => {
-    if (S.selectedIds.has(fold.id)) return;
+    if (S.selectedIds.has(fold.id) || _dragState.invalidFolderTargetSet.has(fold.id)) return;
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
 
     // Distinguish 3 clear zones by cursor Y within hd.getBoundingClientRect()
-    const rect = hd.getBoundingClientRect();
+    const rect = getCachedRowRect(hd);
     const y = e.clientY - rect.top;
 
-    const isDraggingOnlyPdfs = S.selectedIds.size > 0 && Array.from(S.selectedIds).every(id => {
-      const cleanId = id.startsWith('pdf:') ? id.slice(4) : id;
-      return S.pdfs.some(p => p.id === cleanId) || cleanId.startsWith('pdf_');
-    });
+    const isDraggingOnlyPdfs = _dragState.active
+      ? _dragState.isDraggingOnlyPdfs
+      : (S.selectedIds.size > 0 && Array.from(S.selectedIds).every(id => {
+          const cleanId = id.startsWith('pdf:') ? id.slice(4) : id;
+          return S.pdfs.some(p => p.id === cleanId) || cleanId.startsWith('pdf_');
+        }));
 
     const allowReorder = !isDraggingOnlyPdfs || Boolean(fold.parent_folder_id);
 
     if (allowReorder && y < rect.height * 0.22) {
-      hd.classList.remove('drop-inside', 'drop-below');
-      w.classList.remove('drag-over');
-      hd.classList.add('drop-above');
+      setActiveDropVisual(hd, 'drop-above');
       clearAutoOpenTimer();
       showDropHint(`↑ Place above "${fold.name}"`, e.clientX, e.clientY);
     } else if (allowReorder && y > rect.height * 0.78) {
-      hd.classList.remove('drop-inside', 'drop-above');
-      w.classList.remove('drag-over');
-      hd.classList.add('drop-below');
+      setActiveDropVisual(hd, 'drop-below');
       clearAutoOpenTimer();
       showDropHint(`↓ Place below "${fold.name}"`, e.clientX, e.clientY);
     } else {
-      hd.classList.remove('drop-above', 'drop-below');
-      hd.classList.add('drop-inside');
-      w.classList.add('drag-over');
+      setActiveDropVisual(hd, 'drop-inside', w);
       showDropHint(`Move inside "${fold.name}"`, e.clientX, e.clientY);
 
       // Auto-open if hovering in drop-inside on a collapsed folder for 650ms
@@ -1615,8 +1828,10 @@ function buildFolderEl(fold) {
             if (_autoOpenFolderId === fold.id) {
               S.expandedFold[fold.id] = true;
               chev.classList.remove('closed');
+              chev.classList.add('open');
               ch.style.display = 'flex';
               w.classList.add('open');
+              _dragState.cachedRectEl = null;
             }
           }, 650);
         }
@@ -1627,9 +1842,8 @@ function buildFolderEl(fold) {
   });
 
   hd.addEventListener('dragleave', e => {
-    if (!hd.contains(e.relatedTarget)) {
-      hd.classList.remove('drop-above', 'drop-below', 'drop-inside');
-      w.classList.remove('drag-over');
+    if (!hd.contains(e.relatedTarget) && _dragState.activeEl === hd) {
+      clearActiveDropVisual();
       clearAutoOpenTimer();
       hideDropHint();
     }
@@ -1669,9 +1883,10 @@ function buildFolderEl(fold) {
   });
 
   ch.addEventListener('dragover', e => {
-    if (e.target === ch && !S.selectedIds.has(fold.id)) {
+    if (e.target === ch && !S.selectedIds.has(fold.id) && !_dragState.invalidFolderTargetSet.has(fold.id)) {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      clearActiveDropVisual();
       showDropHint(`Move inside "${fold.name}"`, e.clientX, e.clientY);
     }
   });
@@ -1741,14 +1956,18 @@ function buildPdfEl(pdf) {
   }
 
   el.addEventListener('dragstart', e => {
+    if (e.target.closest('.li-acts, input, textarea, button')) {
+      e.preventDefault();
+      return;
+    }
     e.stopPropagation();
-    
+
     if (!S.selectedIds.has(pdf.id)) {
       S.selectedIds.clear();
       S.selectedIds.add(pdf.id);
       updateSelectionUI();
     }
-    
+
     const dragPayload = JSON.stringify({
       type: 'multi',
       ids: Array.from(S.selectedIds).map(id => {
@@ -1761,34 +1980,30 @@ function buildPdfEl(pdf) {
       e.dataTransfer.setData('text/plain', dragPayload);
       e.dataTransfer.effectAllowed = 'move';
     }
-    
-    document.querySelectorAll('.li-selected').forEach(el => el.style.opacity = '0.5');
+
+    beginLibraryDrag(e, S.selectedIds.size > 1 ? `${S.selectedIds.size} items` : pdf.name);
   });
-  el.addEventListener('dragend', () => { 
-    document.querySelectorAll('.li-selected').forEach(el => el.style.opacity = '');
-    clearAllDragVisuals();
-  });
+  el.addEventListener('dragend', clearAllDragVisuals);
 
   el.addEventListener('dragover', e => {
+    if (S.selectedIds.has(pdf.id)) return;
     e.preventDefault();
     e.stopPropagation(); // prevent folder from also highlighting
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
 
-    const rect = el.getBoundingClientRect();
+    const rect = getCachedRowRect(el);
     const y = e.clientY - rect.top;
     if (y < rect.height / 2) {
-      el.classList.remove('drop-below', 'drag-over');
-      el.classList.add('drop-above');
+      setActiveDropVisual(el, 'drop-above');
       showDropHint(`↑ Place above "${pdf.name}"`, e.clientX, e.clientY);
     } else {
-      el.classList.remove('drop-above', 'drag-over');
-      el.classList.add('drop-below');
+      setActiveDropVisual(el, 'drop-below');
       showDropHint(`↓ Place below "${pdf.name}"`, e.clientX, e.clientY);
     }
   });
   el.addEventListener('dragleave', e => {
-    if (!el.contains(e.relatedTarget)) {
-      el.classList.remove('drop-above', 'drop-below', 'drag-over');
+    if (!el.contains(e.relatedTarget) && _dragState.activeEl === el) {
+      clearActiveDropVisual();
       hideDropHint();
     }
   });

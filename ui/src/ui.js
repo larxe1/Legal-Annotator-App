@@ -257,6 +257,7 @@ function _isCtxMenuOpen(el) {
 
 function _isSidebarBusy() {
   if (_sidebarResizing) return true;
+  if (document.body.classList.contains('lib-dragging')) return true;
   if (document.getElementById('lib-resize-handle')?.classList.contains('resizing')) return true;
   return ['lib-ctx-menu', 'folder-ctx-menu', 'multi-folder-ctx-menu'].some(
     id => _isCtxMenuOpen(document.getElementById(id))
