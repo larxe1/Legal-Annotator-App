@@ -1,7 +1,7 @@
 {
-    "updatedAt":  "2026-11-19T10:01:54Z",
-    "build":  91,
-    "version":  "1.25.17",
+    "version":  "1.25.18",
+    "build":  92,
+    "updatedAt":  "2026-11-22T02:17:07Z",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Made folder and PDF drag-and-drop in the library sidebar smooth by using a compact drag ghost, zero-reflow drop indicators, GPU-composited drop hints, cached row bounds, cycle-safe checks, and selective sort-order updates."
+    "notes":  "Preserved top-level bullet points and nested list structure when copying lists from notes and digests into Google Docs, Word, and other editors."
 }

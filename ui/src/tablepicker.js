@@ -416,7 +416,7 @@ function cleanListItemInner(html) {
     // Collapse consecutive <br>s inside <li> caused by <p> wrappers
     .replace(/(?:<br\s*\/?>\s*){2,}/gi, '<br>');
   // Strip trailing <br> trapped inside closing inline tags (e.g. <b><p>Text</p></b> -> <b>Text<br></b>)
-  s = s.replace(/(?:\s|<br\s*\/?>)+(?=(?:<\/(?:b|strong|i|em|u|s|strike|span|a)>)+$)/gi, '');
+  s = s.replace(/(?:\s|<br\s*\/?>)+(?=(?:<\/(?:b|strong|i|em|u|s|strike|span|a)>)+(?:$|<ul\b|<ol\b))/gi, '');
   // Drop empty inline wrappers if nothing remains inside
   s = s.replace(/^<(b|strong|i|em|u|s|strike|span)>\s*<\/\1>$/i, '').trim();
   return s;
@@ -692,16 +692,232 @@ function _isIntentionalHighlightBg(rawBg) {
   return true;
 }
 
-export function buildCleanCopyPayload(sourceRoot, fallbackPlainText = '') {
+function _getListItemOwnText(root) {
+  if (!root) return '';
+  let out = '';
+  const walk = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.textContent || '';
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'ul' || tag === 'ol' || tag === 'script' || tag === 'style' || tag === 'button' || tag === 'svg') return;
+    node.childNodes.forEach(walk);
+  };
+  root.childNodes.forEach(walk);
+  return out.replace(/\u200B/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function _getSelectionListContext(range, boundaryEl) {
+  if (!range || !range.commonAncestorContainer) return null;
+  let cur = range.commonAncestorContainer;
+  if (cur.nodeType !== Node.ELEMENT_NODE) cur = cur.parentElement;
+
+  let enclosingLi = null;
+  let enclosingList = null;
+
+  while (cur && cur !== boundaryEl && cur !== document.body && cur !== document.documentElement) {
+    const tag = cur.tagName ? cur.tagName.toLowerCase() : '';
+    if (tag === 'td' || tag === 'th' || tag === 'table') break;
+    if (tag === 'li' && !enclosingLi && !enclosingList) {
+      enclosingLi = cur;
+    } else if (tag === 'ul' || tag === 'ol') {
+      enclosingList = cur;
+      break;
+    }
+    cur = cur.parentElement;
+  }
+
+  if (!enclosingList) return null;
+  const listTag = enclosingList.tagName.toLowerCase();
+  const listType = enclosingList.getAttribute('type') || '';
+  const listStart = listTag === 'ol' ? (enclosingList.getAttribute('start') || '') : '';
+  return {
+    listTag,
+    listType,
+    listStart,
+    enclosingLi,
+    enclosingLiOwnText: enclosingLi ? _getListItemOwnText(enclosingLi) : ''
+  };
+}
+
+function _isEmptyRangeShellLi(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE || el.tagName.toLowerCase() !== 'li') return false;
+  if ((el.textContent || '').replace(/\u200B/g, '').trim()) return false;
+  return !el.querySelector('br, img, table, hr, ul, ol');
+}
+
+function _createCopyListElement(doc, listTag, listType = '', listStart = '') {
+  const safeTag = listTag === 'ol' ? 'ol' : 'ul';
+  const el = doc.createElement(safeTag);
+  if (listType && /^(?:[1aAiI]|disc|circle|square)$/.test(listType)) {
+    el.setAttribute('type', listType);
+  }
+  if (safeTag === 'ol' && listStart && /^\d+$/.test(listStart) && listStart !== '1') {
+    el.setAttribute('start', listStart);
+  }
+  return el;
+}
+
+function _normalizeCopyLists(root) {
+  if (!root || !root.querySelectorAll) return;
+  const doc = root.ownerDocument || document;
+
+  // Normalize all <ul>/<ol> trees bottom-up (deepest first) so sibling-nested lists
+  // produced by contenteditable execCommand('indent') (e.g. <ul><li>A</li><ul><li>B</li></ul></ul>)
+  // become valid HTML5 (<ul><li>A<ul><li>B</li></ul></li></ul>) that Google Docs/Word preserve.
+  // Also prune empty range-boundary shell <li> nodes (e.g. <li></li> or <li><b></b></li>
+  // cloned when a selection starts/ends at offset 0 of an adjacent bullet), cascading up
+  // if pruning an inner empty list leaves its wrapper <li> empty.
+  const lists = Array.from(root.querySelectorAll('ul, ol')).reverse();
+  if (root.nodeType === Node.ELEMENT_NODE && /^(?:ul|ol)$/i.test(root.tagName)) {
+    lists.push(root);
+  }
+  const rootHasNonEmptyContent = Boolean(
+    (root.textContent || '').replace(/\u200B/g, '').trim() ||
+    root.querySelector('img, table, hr')
+  );
+  for (const listEl of lists) {
+    if (listEl !== root && !listEl.isConnected && !listEl.parentNode) continue;
+
+    // First prune empty range-boundary shell <li> children whenever other content or <li>s exist
+    Array.from(listEl.children).forEach(child => {
+      if (
+        child.tagName.toLowerCase() === 'li' &&
+        _isEmptyRangeShellLi(child) &&
+        (rootHasNonEmptyContent || root.querySelectorAll('li').length > 1)
+      ) {
+        child.remove();
+      }
+    });
+
+    const children = Array.from(listEl.childNodes);
+    const hasDirectLi = children.some(c => c.nodeType === Node.ELEMENT_NODE && c.tagName.toLowerCase() === 'li');
+
+    let lastLi = null;
+    for (const child of children) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        if (!/\S/.test(child.textContent || '')) {
+          child.remove();
+        } else {
+          const li = doc.createElement('li');
+          listEl.insertBefore(li, child);
+          li.appendChild(child);
+          lastLi = li;
+        }
+        continue;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+      const tag = child.tagName.toLowerCase();
+      if (tag === 'li') {
+        lastLi = child;
+      } else if (tag === 'ul' || tag === 'ol') {
+        if (lastLi) {
+          lastLi.appendChild(child);
+        } else if (hasDirectLi) {
+          const li = doc.createElement('li');
+          listEl.insertBefore(li, child);
+          li.appendChild(child);
+          lastLi = li;
+        }
+      } else if (tag === 'br') {
+        child.remove();
+      } else {
+        const li = doc.createElement('li');
+        listEl.insertBefore(li, child);
+        li.appendChild(child);
+        lastLi = li;
+      }
+    }
+
+    // Remove empty lists left behind after pruning range-boundary shells
+    if (!listEl.childNodes.length && listEl !== root) {
+      listEl.remove();
+      continue;
+    }
+
+    // Unwrap redundant nested wrapper like <ul><ul><li>...</li></ul><ol>...</ol></ul> when there are no sibling <li>s
+    const remainingEls = Array.from(listEl.children);
+    if (
+      remainingEls.length >= 1 &&
+      remainingEls.every(el => /^(?:ul|ol)$/i.test(el.tagName)) &&
+      listEl.parentNode
+    ) {
+      listEl.replaceWith(...remainingEls);
+    }
+  }
+}
+
+export function buildCleanCopyPayload(sourceRoot, fallbackPlainText = '', options = {}) {
   if (!sourceRoot) {
     const plain = String(fallbackPlainText || '');
     return { html: _escCopyHtml(plain).replace(/\n/g, '<br>'), plain };
   }
 
   const clone = sourceRoot.cloneNode(true);
+  const doc = clone.ownerDocument || document;
   if (clone.querySelectorAll) {
     clone.querySelectorAll('.np-drag-handle, .np-hi-bar, .np-hi-filter-bar, .ann-ov, .hi-grp, .hr, .draw-canvas, canvas, .srch-ov, #sel-menu, #drag-ghost, .pg-placeholder, button, svg').forEach(el => el.remove());
   }
+
+  // Restore ancestor list wrappers stripped by Range.cloneContents() so Google Docs / Word
+  // preserve top-level bullets and nested list structure when copying part or all of a list.
+  const listContext = options?.listContext || null;
+  const cloneTag = clone.nodeType === Node.ELEMENT_NODE ? clone.tagName.toLowerCase() : '';
+  if (listContext?.enclosingLi && clone.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+    const hasNestedList = Boolean(clone.querySelector?.('ul, ol'));
+    const fragOwnText = _getListItemOwnText(clone);
+    const coversFullLi = Boolean(listContext.enclosingLiOwnText && fragOwnText && fragOwnText === listContext.enclosingLiOwnText);
+    const hasParentWithSublist = Boolean(hasNestedList && fragOwnText);
+    if (coversFullLi || hasParentWithSublist) {
+      const listEl = _createCopyListElement(doc, listContext.listTag, listContext.listType, listContext.listStart);
+      const liEl = doc.createElement('li');
+      while (clone.firstChild) liEl.appendChild(clone.firstChild);
+      listEl.appendChild(liEl);
+      clone.appendChild(listEl);
+    }
+  } else {
+    const directTopEls = Array.from(clone.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);
+    const hasOrphanListItems = directTopEls.some(el => el.tagName.toLowerCase() === 'li');
+    if (hasOrphanListItems) {
+      const wrapTag = (listContext?.listTag === 'ol' || listContext?.listTag === 'ul')
+        ? listContext.listTag
+        : (cloneTag === 'ol' ? 'ol' : 'ul');
+      const wrapType = listContext?.listType || (clone.getAttribute?.('type') || '');
+      const wrapStart = listContext?.listStart || (wrapTag === 'ol' ? (clone.getAttribute?.('start') || '') : '');
+
+      if (clone.nodeType === Node.DOCUMENT_FRAGMENT_NODE && listContext && !listContext.enclosingLi) {
+        // Range.commonAncestorContainer was the enclosing <ul>/<ol> itself — wrap all direct children
+        const listEl = _createCopyListElement(doc, wrapTag, wrapType, wrapStart);
+        while (clone.firstChild) listEl.appendChild(clone.firstChild);
+        clone.appendChild(listEl);
+      } else if (clone.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+        // Group contiguous top-level <li> (and sibling nested <ul>/<ol>) runs into a list wrapper
+        const nodes = Array.from(clone.childNodes);
+        let activeList = null;
+        for (const n of nodes) {
+          const isEl = n.nodeType === Node.ELEMENT_NODE;
+          const nTag = isEl ? n.tagName.toLowerCase() : '';
+          const isWsText = n.nodeType === Node.TEXT_NODE && !/\S/.test(n.textContent || '');
+          if (nTag === 'li') {
+            if (!activeList) {
+              activeList = _createCopyListElement(doc, wrapTag, wrapType, wrapStart);
+              clone.insertBefore(activeList, n);
+            }
+            activeList.appendChild(n);
+          } else if (activeList && (nTag === 'ul' || nTag === 'ol' || isWsText)) {
+            activeList.appendChild(n);
+          } else {
+            activeList = null;
+          }
+        }
+      }
+    }
+  }
+
+  _normalizeCopyLists(clone);
 
   function serializeNode(node, inCellOrList = false) {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -715,7 +931,12 @@ export function buildCleanCopyPayload(sourceRoot, fallbackPlainText = '') {
 
     const childInBlock = inCellOrList || ['td', 'th', 'li', 'blockquote'].includes(tag);
     let inner = '';
-    node.childNodes.forEach(c => { inner += serializeNode(c, childInBlock); });
+    node.childNodes.forEach(c => {
+      if (c.nodeType === Node.TEXT_NODE && !/\S/.test(c.textContent || '') && _IGNORE_WS_CONTAINERS.has(tag)) {
+        return;
+      }
+      inner += serializeNode(c, childInBlock);
+    });
 
     if (!inner && !['br', 'hr', 'td', 'th', 'li', 'img'].includes(tag)) return '';
 
@@ -771,10 +992,16 @@ export function buildCleanCopyPayload(sourceRoot, fallbackPlainText = '') {
       return `<${tag}>${inner}</${tag}>`;
     }
     if (tag === 'ul' || tag === 'ol') {
-      return `<${tag}>${inner}</${tag}>`;
+      if (!inner.trim()) return '';
+      const typeAttr = node.getAttribute('type') || '';
+      const safeType = /^(?:[1aAiI]|disc|circle|square)$/.test(typeAttr) ? ` type="${_escCopyHtml(typeAttr)}"` : '';
+      const startAttr = tag === 'ol' ? (node.getAttribute('start') || '') : '';
+      const safeStart = /^\d+$/.test(startAttr) && startAttr !== '1' ? ` start="${startAttr}"` : '';
+      return `<${tag}${safeType}${safeStart}>${inner}</${tag}>`;
     }
     if (tag === 'li') {
-      return `<li>${inner || '<br>'}</li>`;
+      const cleanedLi = cleanListItemInner(inner);
+      return `<li>${cleanedLi || '<br>'}</li>`;
     }
     if (tag === 'blockquote') {
       return `<blockquote style="border-left:3px solid #cbd5e1; margin:6px 0; padding-left:10px;">${inner}</blockquote>`;
@@ -806,6 +1033,7 @@ export function buildCleanCopyPayload(sourceRoot, fallbackPlainText = '') {
   const topEls = Array.from(clone.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);
   const hasOrphanTableRows = topEls.some(el => ['tr', 'thead', 'tbody', 'tfoot'].includes(el.tagName.toLowerCase()));
   const hasOrphanTableCells = topEls.some(el => ['td', 'th'].includes(el.tagName.toLowerCase()));
+  const hasDirectListItems = topEls.some(el => el.tagName.toLowerCase() === 'li');
 
   let bodyHtml = '';
   if (hasOrphanTableCells) {
@@ -816,6 +1044,18 @@ export function buildCleanCopyPayload(sourceRoot, fallbackPlainText = '') {
     let tblInner = '';
     clone.childNodes.forEach(c => { tblInner += serializeNode(c, false); });
     bodyHtml = `<table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse; width:100%; margin:8px 0;">${tblInner}</table>`;
+  } else if (hasDirectListItems) {
+    const listTag = cloneTag === 'ol' ? 'ol' : 'ul';
+    const typeAttr = clone.getAttribute?.('type') || '';
+    const safeType = /^(?:[1aAiI]|disc|circle|square)$/.test(typeAttr) ? ` type="${_escCopyHtml(typeAttr)}"` : '';
+    const startAttr = listTag === 'ol' ? (clone.getAttribute?.('start') || '') : '';
+    const safeStart = /^\d+$/.test(startAttr) && startAttr !== '1' ? ` start="${startAttr}"` : '';
+    let listInner = '';
+    clone.childNodes.forEach(c => {
+      if (c.nodeType === Node.TEXT_NODE && !/\S/.test(c.textContent || '')) return;
+      listInner += serializeNode(c, false);
+    });
+    bodyHtml = listInner.trim() ? `<${listTag}${safeType}${safeStart}>${listInner}</${listTag}>` : '';
   } else {
     clone.childNodes.forEach(c => { bodyHtml += serializeNode(c, false); });
   }
@@ -828,6 +1068,7 @@ export function buildCleanCopyPayload(sourceRoot, fallbackPlainText = '') {
 }
 
 export function handleCopy(e) {
+  if (e.defaultPrevented) return;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) return;
 
@@ -836,10 +1077,11 @@ export function handleCopy(e) {
   if (targetEl && !targetEl.contains(range.commonAncestorContainer)) return;
 
   const plainText = sel.toString();
-  if (!plainText && !range.cloneContents().querySelector('img, table')) return;
-
   const fragment = range.cloneContents();
-  const { html, plain } = buildCleanCopyPayload(fragment, plainText);
+  if (!plainText && !fragment.querySelector('img, table')) return;
+
+  const listContext = _getSelectionListContext(range, targetEl);
+  const { html, plain } = buildCleanCopyPayload(fragment, plainText, { listContext });
   if (e.clipboardData) {
     e.clipboardData.setData('text/html', html);
     e.clipboardData.setData('text/plain', plain || plainText);
