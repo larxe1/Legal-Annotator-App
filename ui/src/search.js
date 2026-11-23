@@ -2,7 +2,7 @@
 // SEARCH — PDF text search + annotation search
 // ═══════════════════════════════════════════════
 import { S } from './state.js';
-import { closeOtherPanels } from './ui.js';
+import { closeOtherPanels, isUserScrolling, onScrollIdle } from './ui.js';
 import { normalizeHexColor, getColorCategoryForHex } from './colors.js';
 
 let searchMode = 'pdf'; // 'pdf' | 'ann'
@@ -256,9 +256,18 @@ export async function extractPageText(doc, pageNum) {
 export async function indexAllPagesText(doc) {
   if (!doc || !S.totalPages) return;
   const total = S.totalPages;
-  const BATCH_SIZE = 4;
+  const BATCH_SIZE = total > 80 ? 2 : 4;
   for (let i = 1; i <= total; i += BATCH_SIZE) {
     if (doc !== S.pdfDoc) return; // switched PDF
+    if (isUserScrolling()) {
+      await new Promise(resolve => {
+        const unsub = onScrollIdle(() => {
+          unsub();
+          resolve();
+        });
+      });
+      if (doc !== S.pdfDoc) return;
+    }
     const batch = [];
     for (let p = i; p < i + BATCH_SIZE && p <= total; p++) {
       if (!S.pages[p]?.textItems?.length) {
@@ -271,9 +280,9 @@ export async function indexAllPagesText(doc) {
     // Polite idle yield so scrolling and PDFium canvas rendering always get priority
     await new Promise(r => {
       if (typeof window.requestIdleCallback === 'function') {
-        window.requestIdleCallback(() => r(), { timeout: 180 });
+        window.requestIdleCallback(() => r(), { timeout: 400 });
       } else {
-        setTimeout(r, 45);
+        setTimeout(r, 80);
       }
     });
   }

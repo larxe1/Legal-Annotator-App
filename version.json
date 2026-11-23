@@ -1,7 +1,7 @@
 {
-    "version":  "1.25.18",
-    "build":  92,
-    "updatedAt":  "2026-11-22T02:17:07Z",
+    "version":  "1.26.0",
+    "build":  93,
+    "updatedAt":  "2026-11-23T21:18:20Z",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Preserved top-level bullet points and nested list structure when copying lists from notes and digests into Google Docs, Word, and other editors."
+    "notes":  "Reduced scrolling and annotation lag on large PDFs, added distinct edges for adjacent same-color highlights, added mass-tagging from text selection, added previous/next highlight navigation in the annotation panel, and added interactive print preview with section toggles for tag notes."
 }

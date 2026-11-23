@@ -68,6 +68,12 @@ let _activeTab = 'notes';
 let _highlightsView = safeStorageGet('la_np_hi_view_v2', 'all') === 'category' ? 'category' : 'all';
 let _showHighlightNotes = safeStorageGet('la_np_hi_notes', 'false') === 'true';
 let _hiDragState = null;
+let _highlightsDirty = false;
+let _hiRenderGen = 0;
+
+function _isHighlightsTabVisible() {
+  return Boolean($panel()?.classList.contains('open') && _activeTab === 'highlights');
+}
 
 function $panel()          { return document.getElementById('notepad-panel'); }
 function $highlightsPane() { return document.getElementById('np-highlights-pane'); }
@@ -655,7 +661,7 @@ export async function openNotepad(pdfId) {
   if (digestEd) digestEd.innerHTML = initialDigest;
   _domBoundPdfId = pdfId;
   _applyNotepadTabLayout(_activeTab);
-  renderNotepadHighlights();
+  renderNotepadHighlights(_activeTab === 'highlights');
 
   if (_activeTab !== 'highlights') {
     const activeEd = $currentEditor();
@@ -1132,9 +1138,15 @@ function _buildHighlightCard(ann, catInfo, groupKey, orderedAnns, pdfId, pane) {
   return card;
 }
 
-export function renderNotepadHighlights() {
+export function renderNotepadHighlights(force = false) {
+  if (!force && !_isHighlightsTabVisible()) {
+    _highlightsDirty = true;
+    return;
+  }
   const pane = $highlightsPane();
   if (!pane) return;
+  _highlightsDirty = false;
+  const myGen = ++_hiRenderGen;
 
   const pdfId = _getHighlightPdfId();
   pane.innerHTML = '';
@@ -1250,9 +1262,42 @@ export function renderNotepadHighlights() {
   }
 
   if (_highlightsView === 'all') {
-    for (const ann of visibleAnns) {
-      const catInfo = getColorCategoryForHex(ann.hex_color);
-      scroll.appendChild(_buildHighlightCard(ann, catInfo, '__all__', orderedAnns, pdfId, pane));
+    const CHUNK_SIZE = 60;
+    if (visibleAnns.length > 100) {
+      const firstFrag = document.createDocumentFragment();
+      const firstEnd = Math.min(CHUNK_SIZE, visibleAnns.length);
+      for (let i = 0; i < firstEnd; i++) {
+        const ann = visibleAnns[i];
+        const catInfo = getColorCategoryForHex(ann.hex_color);
+        firstFrag.appendChild(_buildHighlightCard(ann, catInfo, '__all__', orderedAnns, pdfId, pane));
+      }
+      scroll.appendChild(firstFrag);
+
+      let offset = firstEnd;
+      const appendNextChunk = () => {
+        if (myGen !== _hiRenderGen || !scroll.isConnected) return;
+        const frag = document.createDocumentFragment();
+        const end = Math.min(offset + CHUNK_SIZE, visibleAnns.length);
+        for (; offset < end; offset++) {
+          const ann = visibleAnns[offset];
+          const catInfo = getColorCategoryForHex(ann.hex_color);
+          frag.appendChild(_buildHighlightCard(ann, catInfo, '__all__', orderedAnns, pdfId, pane));
+        }
+        scroll.appendChild(frag);
+        if (offset < visibleAnns.length) {
+          requestAnimationFrame(appendNextChunk);
+        }
+      };
+      if (offset < visibleAnns.length) {
+        requestAnimationFrame(appendNextChunk);
+      }
+    } else {
+      const frag = document.createDocumentFragment();
+      for (const ann of visibleAnns) {
+        const catInfo = getColorCategoryForHex(ann.hex_color);
+        frag.appendChild(_buildHighlightCard(ann, catInfo, '__all__', orderedAnns, pdfId, pane));
+      }
+      scroll.appendChild(frag);
     }
     return;
   }
@@ -1301,6 +1346,7 @@ export function renderNotepadHighlights() {
     });
   }
 
+  const groupsFrag = document.createDocumentFragment();
   for (const grp of groups) {
     const grpEl = document.createElement('div');
     grpEl.className = 'np-hi-group';
@@ -1378,14 +1424,17 @@ export function renderNotepadHighlights() {
 
     const listEl = document.createElement('div');
     listEl.className = 'np-hi-group-list';
+    const listFrag = document.createDocumentFragment();
     for (const { ann, catInfo } of grp.items) {
-      listEl.appendChild(_buildHighlightCard(ann, catInfo, grp.key, orderedAnns, pdfId, pane));
+      listFrag.appendChild(_buildHighlightCard(ann, catInfo, grp.key, orderedAnns, pdfId, pane));
     }
+    listEl.appendChild(listFrag);
 
     grpEl.appendChild(hd);
     grpEl.appendChild(listEl);
-    scroll.appendChild(grpEl);
+    groupsFrag.appendChild(grpEl);
   }
+  scroll.appendChild(groupsFrag);
 }
 
 function _applyNotepadTabLayout(tab) {
@@ -1448,7 +1497,7 @@ export function switchNotepadTab(tab) {
   _applyNotepadTabLayout(tab);
 
   if (_activeTab === 'highlights') {
-    renderNotepadHighlights();
+    renderNotepadHighlights(true);
   } else if (_activeTab === 'digest') {
     $digestEditor()?.focus();
   } else {
@@ -3200,8 +3249,8 @@ export function initNotepad() {
         if ($notesEditor()) $notesEditor().innerHTML = '';
         if ($digestEditor()) $digestEditor().innerHTML = '';
         _applyNotepadTabLayout(_activeTab);
-        renderNotepadHighlights();
         panel.classList.add('open');
+        renderNotepadHighlights(_activeTab === 'highlights');
       }
     }
   });
@@ -3375,6 +3424,10 @@ export function initNotepad() {
 
       S.pendingEditorSel = { editor: ed, range: range.cloneRange(), text };
       S.pendingSel = null;
+
+      const confirmBtn = document.getElementById('sel-confirm');
+      if (confirmBtn) confirmBtn.style.display = '';
+      import('./tags.js').then(m => m.updateSelMenuMassTagButton?.([])).catch(() => {});
 
       const m = document.getElementById('sel-menu');
       if (m) {

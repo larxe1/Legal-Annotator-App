@@ -3,6 +3,8 @@ import { dbLoadNotepad } from './db.js';
 import { toast } from './ui.js';
 import { safeStorageGet } from './storage.js';
 import { getCachedNotepad } from './notepad.js';
+import { getNoteType, getNoteBody, compareAnnotationsReadingOrder } from './annotate.js';
+import { getColorCategoryForHex } from './colors.js';
 
 // Strip emojis using Unicode property escapes and common icon sets
 export const stripEmojis = (str) => {
@@ -695,6 +697,9 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
   const autoPrint = opts.autoPrint !== undefined ? Boolean(opts.autoPrint) : !embeddedPreview;
   const rawZoom = Number(opts.previewZoom);
   const previewZoom = Number.isFinite(rawZoom) && rawZoom >= 0.5 && rawZoom <= 2 ? rawZoom : 1;
+  const extraTopBarControlsHtml = opts.extraTopBarControlsHtml ? String(opts.extraTopBarControlsHtml) : '';
+  const extraStyles = opts.extraStyles ? String(opts.extraStyles) : '';
+  const extraScript = opts.extraScript ? String(opts.extraScript) : '';
 
   const tocHtml = includeToc
     ? buildTocBlockHtml({
@@ -727,6 +732,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         <button id="btn-col-1" class="btn-toggle${isTwoCol ? '' : ' active'}" onclick="setColumns(1)" title="Single column width">📄 1 Col</button>
         <button id="btn-col-2" class="btn-toggle${isTwoCol ? ' active' : ''}" onclick="setColumns(2)" title="2-column newspaper style for text-heavy summaries">📰 2 Col</button>
       </div>
+      ${extraTopBarControlsHtml}
       <button class="btn-print" onclick="window.print()">
         <span>Print / Save as PDF</span>
       </button>
@@ -1630,8 +1636,39 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             return advanceColumn(queue, true);
           }
 
-          var rawChildren = Array.from(flowSource.childNodes).map(function(n) {
-            return n.cloneNode(true);
+          var hideTopicNotes = bodyEl.classList.contains('hide-tag-topic-notes');
+          var hideQuotes = bodyEl.classList.contains('hide-tag-quotes');
+          var hideNotes = bodyEl.classList.contains('hide-tag-notes');
+          var hideCases = bodyEl.classList.contains('hide-tag-cases');
+          var onlyWithNotes = bodyEl.classList.contains('only-tag-with-notes');
+
+          function pruneHiddenToggleNodes(node) {
+            if (!node || node.nodeType !== 1) return node;
+            var cls = node.classList;
+            if (hideTopicNotes && cls.contains('tag-print-topic-notes')) return null;
+            if (hideQuotes && cls.contains('tag-print-quote')) return null;
+            if (hideNotes && cls.contains('tag-print-notes')) return null;
+            if (hideCases && cls.contains('tag-print-cases')) return null;
+            if (onlyWithNotes && cls.contains('tag-print-item') && node.getAttribute('data-has-notes') === '0') return null;
+            if (node.children && node.children.length > 0) {
+              var kids = Array.from(node.children);
+              for (var ki = 0; ki < kids.length; ki++) {
+                if (!pruneHiddenToggleNodes(kids[ki])) {
+                  node.removeChild(kids[ki]);
+                }
+              }
+              if (cls.contains('tag-print-item') && !node.querySelector('.tag-print-quote, .tag-print-notes, .tag-print-cases')) {
+                return null;
+              }
+            }
+            return node;
+          }
+
+          var rawChildren = [];
+          Array.from(flowSource.childNodes).forEach(function(n) {
+            var cloned = n.cloneNode(true);
+            var kept = pruneHiddenToggleNodes(cloned);
+            if (kept) rawChildren.push(kept);
           });
 
           if (curPage.maxColHeight <= 20) {
@@ -1766,6 +1803,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       }
 
       ${standaloneControlsScript}
+      ${extraScript}
       window.paginateDocumentIntoPages();
       ${(!embeddedPreview && autoPrint) ? `
       var runPrint = function() {
@@ -2302,6 +2340,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         break-after: auto !important;
       }
     }
+    ${extraStyles}
   </style>
 </head>
 <body>
@@ -2315,7 +2354,18 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
 </html>`;
 }
 
-function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pageTitle, subtitleHtml, fallbackPath }) {
+function renderExportPrintDocument({
+  htmlContent,
+  caseRegistry,
+  orientation,
+  pageTitle,
+  subtitleHtml,
+  fallbackPath,
+  autoPrint = true,
+  extraTopBarControlsHtml = '',
+  extraStyles = '',
+  extraScript = '',
+}) {
   const fullDocumentHtml = buildPrintDocumentHTML(htmlContent, caseRegistry, {
     title: pageTitle,
     subtitleHtml,
@@ -2328,7 +2378,10 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
     marginPreset: 'narrow',
     runningHeaders: true,
     embeddedPreview: false,
-    autoPrint: true,
+    autoPrint,
+    extraTopBarControlsHtml,
+    extraStyles,
+    extraScript,
   });
 
   // 1. In Tauri Desktop (or when popups are blocked), open interactive full-screen Export Preview Studio modal
@@ -2367,4 +2420,287 @@ function renderExportPrintDocument({ htmlContent, caseRegistry, orientation, pag
     };
     toast('📄 PDF Export Preview opened — choose Compact/Standard or 1/2 Columns, then Save as PDF.');
   }
+}
+
+/**
+ * Export a topic/tag's notes and tagged highlights to the interactive Print Studio.
+ */
+export function exportTagNotesToPDF({ tagName, tagColor, topicNotesHtml, pdfTitle, annotations } = {}) {
+  const anns = Array.isArray(annotations) ? [...annotations] : [];
+  const hasTopicNotes = hasMeaningfulContent(topicNotesHtml);
+
+  if (anns.length === 0 && !hasTopicNotes) {
+    toast(`Nothing to print for "${tagName || 'Topic'}" yet.`);
+    return;
+  }
+
+  anns.sort(compareAnnotationsReadingOrder);
+
+  const safeTagName = escapeHtml(tagName || 'Topic');
+  const cleanDocTitle = stripEmojis(pdfTitle || 'Document') || 'Document';
+  const safeDocTitle = escapeHtml(cleanDocTitle);
+  const resolvedTagColor = /^#[0-9a-fA-F]{3,8}$/.test(String(tagColor || '').trim())
+    ? String(tagColor).trim()
+    : '#c9a84c';
+
+  let sectionsHtml = `
+    <div class="tag-print-header" data-case-name="${safeTagName}" data-folder-path="${safeDocTitle}" style="border-left: 4pt solid ${resolvedTagColor};">
+      <div class="tag-print-header-top">
+        <span class="tag-print-title-dot" style="background: ${resolvedTagColor};"></span>
+        <h1 class="tag-print-title">${safeTagName}</h1>
+      </div>
+      <div class="tag-print-sub">
+        <span>${safeDocTitle}</span>
+        <span>&bull;</span>
+        <span>${anns.length} Highlight${anns.length === 1 ? '' : 's'}</span>
+        ${hasTopicNotes ? '<span>&bull;</span><span>Includes Topic Notes</span>' : ''}
+      </div>
+    </div>
+  `;
+
+  if (hasTopicNotes) {
+    sectionsHtml += `
+      <div class="tag-print-topic-notes">
+        <div class="section-badge tag-print-sec-lbl">Topic Notes &amp; Outside Laws</div>
+        <div class="note-content">${cleanAndSanitizeHtml(topicNotesHtml)}</div>
+      </div>
+    `;
+  }
+
+  for (const ann of anns) {
+    if (!ann) continue;
+    const notes = Array.isArray(ann.notes) ? ann.notes : [];
+    const generalNotes = [];
+    const caseNotes = [];
+
+    for (const note of notes) {
+      const body = getNoteBody(note);
+      if (!hasMeaningfulContent(body)) continue;
+      if (getNoteType(note) === 'case') {
+        caseNotes.push(body);
+      } else {
+        generalNotes.push(body);
+      }
+    }
+
+    const hasNotes = generalNotes.length > 0 || caseNotes.length > 0;
+    const catInfo = getColorCategoryForHex(ann.hex_color);
+    const annColor = catInfo.hex_color || (/^#[0-9a-fA-F]{3,8}$/.test(String(ann.hex_color || '').trim()) ? String(ann.hex_color).trim() : '#c9a84c');
+    const catName = escapeHtml(stripEmojis(catInfo.name || 'Highlight') || catInfo.name || 'Highlight');
+    const quoteText = escapeHtml(ann.highlighted_text || '(Box Highlight)');
+
+    let itemInnerHtml = `
+      <div class="tag-print-quote" style="border-left: 3pt solid ${escapeHtml(annColor)};">
+        <div class="tag-print-meta">
+          <span class="tag-print-page-badge">Page ${escapeHtml(String(ann.page ?? ''))}</span>
+          <span class="tag-print-cat-badge">
+            <span class="tag-print-cat-dot" style="background: ${escapeHtml(annColor)};"></span>
+            <span>${catName}</span>
+          </span>
+        </div>
+        <div class="tag-print-quote-text">&ldquo;${quoteText}&rdquo;</div>
+      </div>
+    `;
+
+    if (generalNotes.length > 0) {
+      itemInnerHtml += `
+        <div class="tag-print-notes">
+          <div class="section-badge tag-print-sec-lbl">Notes</div>
+          <div class="note-content">${generalNotes.map(b => cleanAndSanitizeHtml(b)).join('')}</div>
+        </div>
+      `;
+    }
+
+    if (caseNotes.length > 0) {
+      itemInnerHtml += `
+        <div class="tag-print-cases">
+          <div class="section-badge tag-print-sec-lbl">Case Summaries</div>
+          <div class="note-content">${caseNotes.map(b => cleanAndSanitizeHtml(b)).join('')}</div>
+        </div>
+      `;
+    }
+
+    sectionsHtml += `
+      <div class="tag-print-item" data-has-notes="${hasNotes ? '1' : '0'}">
+        ${itemInnerHtml}
+      </div>
+    `;
+  }
+
+  const extraTopBarControlsHtml = `
+    <div class="btn-group" id="tag-print-toggles">
+      ${hasTopicNotes ? '<button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-topic-notes" data-invert="1" title="Show or hide Topic Notes & Outside Laws">Topic Notes</button>' : ''}
+      <button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-quotes" data-invert="1" title="Show or hide Highlighted Quotes">Quotes</button>
+      <button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-notes" data-invert="1" title="Show or hide General Notes">Notes</button>
+      <button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-cases" data-invert="1" title="Show or hide Case Summaries">Cases</button>
+      <button type="button" class="btn-toggle" data-tag-toggle="only-tag-with-notes" title="Show only highlights that have notes or case summaries">Only w/ Notes</button>
+    </div>
+  `;
+
+  const extraStyles = `
+    .tag-print-header {
+      margin: 0 0 8pt 0;
+      padding: 6pt 10pt;
+      background: #f8fafc;
+      border: 0.75pt solid #cbd5e1;
+      border-radius: 4pt;
+    }
+    .tag-print-header-top {
+      display: flex;
+      align-items: center;
+      gap: 6pt;
+    }
+    .tag-print-title-dot {
+      width: 9pt;
+      height: 9pt;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .tag-print-title {
+      margin: 0;
+      font-size: 13pt;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.2;
+    }
+    .tag-print-sub {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5pt;
+      margin-top: 3pt;
+      font-size: 8pt;
+      color: #475569;
+      font-weight: 500;
+    }
+    .tag-print-topic-notes {
+      margin: 0 0 8pt 0;
+      padding: 6pt 8pt;
+      border: 0.75pt solid #cbd5e1;
+      border-radius: 4pt;
+      background: #ffffff;
+    }
+    .tag-print-sec-lbl {
+      font-size: 7pt;
+      font-weight: 700;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 3pt;
+    }
+    .tag-print-item {
+      margin: 0 0 6pt 0;
+      padding: 5pt 8pt;
+      border: 0.75pt solid #cbd5e1;
+      border-radius: 4pt;
+      background: #ffffff;
+    }
+    .tag-print-quote {
+      padding-left: 7pt;
+      margin-bottom: 4pt;
+    }
+    .tag-print-quote:last-child {
+      margin-bottom: 0;
+    }
+    .tag-print-meta {
+      display: flex;
+      align-items: center;
+      gap: 6pt;
+      margin-bottom: 2.5pt;
+      font-size: 7.5pt;
+    }
+    .tag-print-page-badge {
+      font-weight: 700;
+      color: #0f172a;
+      background: #e2e8f0;
+      padding: 0.5pt 4pt;
+      border-radius: 2.5pt;
+    }
+    .tag-print-cat-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3.5pt;
+      color: #334155;
+      font-weight: 600;
+    }
+    .tag-print-cat-dot {
+      width: 6pt;
+      height: 6pt;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .tag-print-quote-text {
+      font-family: 'Literata', Georgia, serif;
+      font-style: italic;
+      font-size: 8.5pt;
+      line-height: 1.35;
+      color: #1e293b;
+    }
+    .tag-print-notes {
+      margin-top: 4pt;
+      padding-top: 4pt;
+      padding-left: 7pt;
+      border-top: 0.5pt dashed #cbd5e1;
+      border-left: 2pt solid #64748b;
+    }
+    .tag-print-cases {
+      margin-top: 4pt;
+      padding-top: 4pt;
+      padding-left: 7pt;
+      border-top: 0.5pt dashed #cbd5e1;
+      border-left: 2pt solid #0284c7;
+    }
+    .tight-mode .tag-print-header {
+      margin-bottom: 4pt;
+      padding: 4pt 7pt;
+    }
+    .tight-mode .tag-print-topic-notes,
+    .tight-mode .tag-print-item {
+      margin-bottom: 3.5pt;
+      padding: 4pt 6pt;
+    }
+    .standard-mode .tag-print-quote-text {
+      font-size: 9.5pt;
+      line-height: 1.45;
+    }
+    .hide-tag-topic-notes .tag-print-topic-notes { display: none !important; }
+    .hide-tag-quotes .tag-print-quote { display: none !important; }
+    .hide-tag-notes .tag-print-notes { display: none !important; }
+    .hide-tag-cases .tag-print-cases { display: none !important; }
+    .only-tag-with-notes .tag-print-item[data-has-notes="0"] { display: none !important; }
+  `;
+
+  const extraScript = `
+    (function() {
+      var bodyEl = document.getElementById('document-body');
+      var btns = document.querySelectorAll('#tag-print-toggles [data-tag-toggle]');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function() {
+          if (!bodyEl) return;
+          var cls = this.getAttribute('data-tag-toggle');
+          if (!cls) return;
+          var isInvert = this.getAttribute('data-invert') === '1';
+          bodyEl.classList.toggle(cls);
+          var hasCls = bodyEl.classList.contains(cls);
+          this.classList.toggle('active', isInvert ? !hasCls : hasCls);
+          if (typeof window.paginateDocumentIntoPages === 'function') {
+            window.paginateDocumentIntoPages();
+          }
+        });
+      }
+    })();
+  `;
+
+  const cleanTagTitle = stripEmojis(tagName || 'Tag Notes') || tagName || 'Tag Notes';
+  renderExportPrintDocument({
+    htmlContent: sectionsHtml,
+    caseRegistry: [],
+    orientation: 'portrait',
+    pageTitle: `${cleanTagTitle} — ${cleanDocTitle}`,
+    subtitleHtml: `${safeTagName} &bull; ${anns.length} Highlight${anns.length === 1 ? '' : 's'}`,
+    fallbackPath: cleanDocTitle,
+    autoPrint: false,
+    extraTopBarControlsHtml,
+    extraStyles,
+    extraScript,
+  });
 }

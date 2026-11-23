@@ -2,7 +2,7 @@
 // ANNOTATE — highlights, annotation panel, notes
 // ═══════════════════════════════════════════════
 import { S } from './state.js';
-import { toast, autosave, openModal, closeModal, closeOtherPanels } from './ui.js';
+import { toast, autosave, openModal, closeModal, closeOtherPanels, jumpToPage } from './ui.js';
 import { normalizeHexColor, getColorCategoryForHex } from './colors.js';
 import {
   dbCreateAnnotation, dbUpdateAnnColor, dbDelAnnotation,
@@ -10,12 +10,13 @@ import {
 } from './db.js';
 import { handlePaste, handleCopy, showTablePicker, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, applyEditorHighlight, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
-import { safeStorageSet, safeStorageGet } from './storage.js';
+import { safeStorageSet, safeStorageGet, scheduleDebouncedStorageSet } from './storage.js';
 import {
   loadTagsForPdf, getAnnTags, addTagToAnn, removeTagFromAnn,
   getAllTopicsForCurrentPdf, renderAnnPanelTagsSection,
   initTagsPanel, toggleTagsPanel, redrawTagBadgeForAnn,
-  getActiveQuickTag, setActiveQuickTag, onAnnDeleted
+  getActiveQuickTag, setActiveQuickTag, onAnnDeleted,
+  updateSelMenuMassTagButton
 } from './tags.js';
 
 export {
@@ -54,6 +55,7 @@ export async function createAnnotation(pageNum, rects, text, mode_) {
     autosave('saving');
     await dbCreateAnnotation(ann);
     S.annotations.push(ann);
+    invalidateAnnotationPageIndex();
     if (activeTag) {
       addTagToAnn(ann, activeTag, { skipSaveAnn: true });
     }
@@ -61,6 +63,9 @@ export async function createAnnotation(pageNum, rects, text, mode_) {
     S.annCounts[trueId] = (S.annCounts[trueId] || 0) + 1;
     updateAnnBadge(trueId);
     drawAnnotation(ann);
+    if (S.selAnn && document.getElementById('ann-panel')?.classList.contains('open')) {
+      updateAnnPanelNav(S.selAnn);
+    }
     _notifyAnnotationsChanged();
     autosave('saved');
     toast(activeTag ? `Highlight saved (${activeTag})` : 'Highlight saved');
@@ -113,6 +118,21 @@ export function wrapNoteHtml(html, type) {
 
 const LEGACY_BASE_SCALE = 1.5;
 
+function _escAttrVal(val) {
+  const s = String(val ?? '');
+  return (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+    ? CSS.escape(s)
+    : s.replace(/["\\]/g, '\\$&');
+}
+
+function hexToRgba(hex, alpha) {
+  const norm = normalizeHexColor(hex) || '#c9a84c';
+  const r = parseInt(norm.slice(1, 3), 16);
+  const g = parseInt(norm.slice(3, 5), 16);
+  const b = parseInt(norm.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 /**
  * Convert a stored highlight rect (normalized [0..1] when r.n === 1, or legacy px at 1.5 scale)
  * into CSS pixel coordinates { x, y, w, h } for the page's current rendered size.
@@ -128,16 +148,16 @@ export function rectToPx(r, pageOrWrap) {
     let pw = 0, ph = 0;
     if (typeof pageOrWrap === 'number') {
       const pg = S.pages?.[pageOrWrap];
-      pw = pg?.wrap?.clientWidth || pg?.viewport?.width || 0;
-      ph = pg?.wrap?.clientHeight || pg?.viewport?.height || 0;
+      pw = pg?.viewport?.width || pg?.wrap?.clientWidth || 0;
+      ph = pg?.viewport?.height || pg?.wrap?.clientHeight || 0;
     } else if (pageOrWrap && typeof pageOrWrap === 'object') {
-      pw = pageOrWrap.clientWidth || pageOrWrap.offsetWidth || pageOrWrap.width || 0;
-      ph = pageOrWrap.clientHeight || pageOrWrap.offsetHeight || pageOrWrap.height || 0;
+      pw = pageOrWrap.width || pageOrWrap.clientWidth || pageOrWrap.offsetWidth || 0;
+      ph = pageOrWrap.height || pageOrWrap.clientHeight || pageOrWrap.offsetHeight || 0;
     }
     if (!(pw > 0 && ph > 0)) {
-      const fallbackPg = Object.values(S.pages || {}).find(p => p?.wrap?.clientWidth > 0 || p?.viewport?.width > 0);
-      pw = fallbackPg?.wrap?.clientWidth || fallbackPg?.viewport?.width || (612 * (S.scale || LEGACY_BASE_SCALE));
-      ph = fallbackPg?.wrap?.clientHeight || fallbackPg?.viewport?.height || (792 * (S.scale || LEGACY_BASE_SCALE));
+      const fallbackPg = Object.values(S.pages || {}).find(p => p?.viewport?.width > 0 || p?.wrap?.clientWidth > 0);
+      pw = fallbackPg?.viewport?.width || fallbackPg?.wrap?.clientWidth || (612 * (S.scale || LEGACY_BASE_SCALE));
+      ph = fallbackPg?.viewport?.height || fallbackPg?.wrap?.clientHeight || (792 * (S.scale || LEGACY_BASE_SCALE));
     }
     return { x: rx * pw, y: ry * ph, w: rw * pw, h: rh * ph };
   }
@@ -146,85 +166,355 @@ export function rectToPx(r, pageOrWrap) {
   return { x: rx * ratio, y: ry * ratio, w: rw * ratio, h: rh * ratio };
 }
 
-// ── Draw annotation overlay ──
-export function drawAnnotation(ann) {
-  const pg = S.pages[ann.page]; if (!pg || !pg.rendered || !pg.annOv) return;
-  pg.annOv.querySelectorAll(`[data-id="${ann.id}"]`).forEach(el => el.remove());
+/**
+ * Normalize a stored rect (normalized or legacy px) into [0..1] page coordinates.
+ */
+export function rectToNorm(r, page) {
+  if (!r) return { x: 0, y: 0, w: 0, h: 0 };
+  if (r.n === 1) {
+    return {
+      x: Number(r.x) || 0,
+      y: Number(r.y) || 0,
+      w: Number(r.w) || 0,
+      h: Number(r.h) || 0,
+    };
+  }
+  const pg = typeof page === 'number' ? S.pages?.[page] : null;
+  const pw = pg?.viewport?.width || pg?.wrap?.clientWidth || (612 * (S.scale || LEGACY_BASE_SCALE));
+  const ph = pg?.viewport?.height || pg?.wrap?.clientHeight || (792 * (S.scale || LEGACY_BASE_SCALE));
+  const px = rectToPx(r, pg?.viewport || page);
+  return {
+    x: pw > 0 ? px.x / pw : 0,
+    y: ph > 0 ? px.y / ph : 0,
+    w: pw > 0 ? px.w / pw : 0,
+    h: ph > 0 ? px.h / ph : 0,
+  };
+}
 
-  const grp = document.createElement('div');
-  grp.className  = 'hi-grp';
-  grp.dataset.id = ann.id;
-  grp.style.opacity = '0.4';
-  grp.style.mixBlendMode = 'multiply';
+/**
+ * Compare two annotations in natural PDF reading order:
+ * page ascending -> top-to-bottom -> same-line left-to-right -> id tie-break.
+ */
+export function compareAnnotationsReadingOrder(a, b) {
+  const pageDiff = (Number(a?.page) || 0) - (Number(b?.page) || 0);
+  if (pageDiff !== 0) return pageDiff;
 
-  for (const r of (ann.rects || [])) {
-    const d = document.createElement('div');
-    d.className = 'hr';
-    if (r && r.n === 1) {
-      d.style.cssText = `left:${(r.x * 100).toFixed(5)}%;top:${(r.y * 100).toFixed(5)}%;width:${(r.w * 100).toFixed(5)}%;height:${(r.h * 100).toFixed(5)}%;background:${ann.hex_color};`;
+  const rA = rectToNorm(a?.rects?.[0], a?.page);
+  const rB = rectToNorm(b?.rects?.[0], b?.page);
+  const xA = rA.x, yA = rA.y, hA = rA.h;
+  const xB = rB.x, yB = rB.y, hB = rB.h;
+
+  const minH = Math.min(hA, hB);
+  const overlapY = Math.min(yA + hA, yB + hB) - Math.max(yA, yB);
+  const sameLine = (minH > 0 && overlapY > minH * 0.45) || (Math.abs(yA - yB) < Math.max(0.008, minH * 0.5));
+
+  if (sameLine) {
+    if (xA !== xB) return xA - xB;
+  } else {
+    if (yA !== yB) return yA - yB;
+  }
+  if (yA !== yB) return yA - yB;
+  if (xA !== xB) return xA - xB;
+  return String(a?.id ?? '').localeCompare(String(b?.id ?? ''));
+}
+
+/**
+ * Return a shallow copy of annotations sorted in natural PDF reading order.
+ */
+export function getReadingOrderAnnotations(anns = S.annotations) {
+  if (!Array.isArray(anns)) return [];
+  return [...anns].sort(compareAnnotationsReadingOrder);
+}
+
+// ── Fast Page & ID Annotation Index ──
+let _annsByPage = new Map();
+let _annById = new Map();
+let _indexedAnnsRef = null;
+let _indexedAnnsLen = -1;
+
+export function invalidateAnnotationPageIndex() {
+  _indexedAnnsRef = null;
+  _indexedAnnsLen = -1;
+  _annsByPage.clear();
+  _annById.clear();
+}
+
+function _ensureAnnotationIndex() {
+  const anns = Array.isArray(S.annotations) ? S.annotations : [];
+  if (anns !== _indexedAnnsRef || anns.length !== _indexedAnnsLen) {
+    _annsByPage = new Map();
+    _annById = new Map();
+    for (const ann of anns) {
+      if (!ann) continue;
+      const p = Number(ann.page) || 0;
+      let list = _annsByPage.get(p);
+      if (!list) {
+        list = [];
+        _annsByPage.set(p, list);
+      }
+      list.push(ann);
+      if (ann.id != null) _annById.set(String(ann.id), ann);
+    }
+    _indexedAnnsRef = anns;
+    _indexedAnnsLen = anns.length;
+  }
+}
+
+function _getAnnotationsForPage(pageNum) {
+  _ensureAnnotationIndex();
+  return _annsByPage.get(Number(pageNum) || 0) || [];
+}
+
+function _findAnnotationById(id) {
+  if (id == null) return null;
+  _ensureAnnotationIndex();
+  const key = String(id);
+  let found = _annById.get(key);
+  if (!found && Array.isArray(S.annotations)) {
+    found = S.annotations.find(a => String(a?.id) === key) || null;
+    if (found) _annById.set(key, found);
+  }
+  return found || null;
+}
+
+function _sortRectsReadingOrder(rects, pageNum) {
+  if (!Array.isArray(rects)) return [];
+  const valid = rects.filter(Boolean);
+  if (valid.length <= 1) return valid;
+  const items = valid.map((r, idx) => ({ r, norm: rectToNorm(r, pageNum), idx }));
+  items.sort((a, b) => {
+    const rA = a.norm;
+    const rB = b.norm;
+    const minH = Math.min(rA.h, rB.h);
+    const overlapY = Math.min(rA.y + rA.h, rB.y + rB.h) - Math.max(rA.y, rB.y);
+    const sameLine = (minH > 0 && overlapY > minH * 0.45) || (Math.abs(rA.y - rB.y) < Math.max(0.008, minH * 0.5));
+    if (sameLine) {
+      if (rA.x !== rB.x) return rA.x - rB.x;
     } else {
-      const px = rectToPx(r, ann.page);
-      d.style.cssText = `left:${px.x}px;top:${px.y}px;width:${px.w}px;height:${px.h}px;background:${ann.hex_color};`;
+      if (rA.y !== rB.y) return rA.y - rB.y;
+    }
+    if (rA.y !== rB.y) return rA.y - rB.y;
+    if (rA.x !== rB.x) return rA.x - rB.x;
+    return a.idx - b.idx;
+  });
+  return items.map(it => it.r);
+}
+
+function _buildAnnTooltipHtml(ann) {
+  const notes = Array.isArray(ann?.notes) ? ann.notes : [];
+  const genNotes = notes.filter(n => getNoteType(n) === 'general');
+  const caseCount = notes.filter(n => getNoteType(n) === 'case').length;
+  if (!genNotes.length && !caseCount) return '';
+
+  let html = '';
+  const catInfo = getColorCategoryForHex(ann.hex_color);
+  const dotColor = catInfo.hex_color || ann.hex_color || '#c9a84c';
+  html += `<div style="display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; color:var(--ink-muted, var(--muted, #b0aaa0)); margin-bottom:6px;"><span style="width:9px; height:9px; border-radius:50%; background:${_escHtml(dotColor)}; display:inline-block; flex-shrink:0;"></span><span>${_escHtml(catInfo.name)}</span></div>`;
+  if (caseCount > 0) {
+    const caseLabel = caseCount === 1 ? 'case' : 'cases';
+    html += `<div style="display:flex; align-items:center; gap:6px; font-size:0.9em; font-weight:600; color:var(--accent, #c9a84c); background:var(--accent-soft, rgba(201,168,76,0.12)); border:1px solid var(--border-strong, rgba(201,168,76,0.35)); border-radius:6px; padding:4px 10px; margin-bottom:${genNotes.length ? '8px' : '0'};"><svg class="icon" style="width:14px;height:14px;flex-shrink:0" aria-hidden="true"><use href="#i-scale"/></svg> (${caseCount}) ${caseLabel}</div>`;
+  }
+
+  const toShow = Math.min(genNotes.length, 3);
+  for (let i = 0; i < toShow; i++) {
+    if (i > 0) html += '<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px;"></div>';
+    html += getNoteBody(genNotes[i]);
+  }
+
+  if (genNotes.length > 3) {
+    html += `<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px; font-size: 0.9em; color: var(--ink-muted, var(--muted, #b0aaa0)); text-align: center; font-style: italic;">...and ${genNotes.length - 3} more notes (click to view)</div>`;
+  } else if (genNotes.length > 1) {
+    html += `<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px; font-size: 0.9em; color: var(--ink-muted, var(--muted, #b0aaa0)); text-align: center; font-style: italic;">(click to manage notes)</div>`;
+  }
+  return html;
+}
+
+function _ensureAnnHiLayer(annOv) {
+  if (!annOv) return null;
+  let layer = annOv.querySelector('.ann-hi-layer');
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.className = 'ann-hi-layer';
+    annOv.insertBefore(layer, annOv.firstChild || null);
+  } else if (annOv.firstChild !== layer) {
+    annOv.insertBefore(layer, annOv.firstChild);
+  }
+  return layer;
+}
+
+function _ensureAnnOverlayDelegation(annOv) {
+  if (!annOv || annOv.dataset.annDelegated === '1') return;
+  annOv.dataset.annDelegated = '1';
+
+  annOv.addEventListener('click', (e) => {
+    const sel = typeof window !== 'undefined' ? window.getSelection?.() : null;
+    if (sel && !sel.isCollapsed && sel.toString().trim()) return;
+    const hr = e.target?.closest?.('.hr');
+    if (!hr) return;
+    const grp = hr.closest('.hi-grp');
+    if (!grp || !annOv.contains(grp)) return;
+    const ann = _findAnnotationById(grp.dataset.id);
+    if (!ann) return;
+    e.stopPropagation();
+    openAnnPanel(ann);
+  });
+
+  annOv.addEventListener('contextmenu', (e) => {
+    if (e.target?.closest?.('#canvas-scroll-b') || annOv.closest?.('#canvas-scroll-b')) return;
+    const hr = e.target?.closest?.('.hr');
+    if (!hr) return;
+    const grp = hr.closest('.hi-grp');
+    if (!grp || !annOv.contains(grp)) return;
+    const ann = _findAnnotationById(grp.dataset.id);
+    if (!ann) return;
+    openAnnContextMenu(e, ann);
+  });
+
+  annOv.addEventListener('pointerover', (e) => {
+    const hr = e.target?.closest?.('.hr');
+    if (!hr) return;
+    const grp = hr.closest('.hi-grp');
+    if (!grp || !annOv.contains(grp)) return;
+    if (e.relatedTarget?.closest?.('.hi-grp') === grp) return;
+    grp.classList.add('is-hovered');
+    const ann = _findAnnotationById(grp.dataset.id);
+    if (!ann) return;
+    const html = _buildAnnTooltipHtml(ann);
+    if (html) showTip(e, html);
+    else hideTip();
+  });
+
+  annOv.addEventListener('pointerout', (e) => {
+    const hr = e.target?.closest?.('.hr');
+    if (!hr) return;
+    const grp = hr.closest('.hi-grp');
+    if (!grp || !annOv.contains(grp)) return;
+    if (e.relatedTarget?.closest?.('.hi-grp') === grp) return;
+    grp.classList.remove('is-hovered');
+    hideTip();
+  });
+
+  annOv.addEventListener('pointermove', (e) => {
+    if (!tip || tip.style.display === 'none') return;
+    const hr = e.target?.closest?.('.hr');
+    if (!hr || !hr.closest('.hi-grp')) return;
+    moveTip(e);
+  });
+}
+
+function _buildHiGroupEl(ann, pageDims) {
+  const grp = document.createElement('div');
+  const isSelected = Boolean(S.selAnn && String(S.selAnn.id) === String(ann.id));
+  grp.className = 'hi-grp' + (isSelected ? ' selected' : '');
+  grp.dataset.id = ann.id;
+
+  const baseColor = normalizeHexColor(ann.hex_color) || ann.hex_color || '#c9a84c';
+  grp.style.setProperty('--hi-bg', hexToRgba(baseColor, 0.4));
+  grp.style.setProperty('--hi-bg-hover', hexToRgba(baseColor, 0.56));
+  grp.style.setProperty('--hi-cap', hexToRgba(baseColor, 0.92));
+  grp.style.setProperty('--hi-outline', hexToRgba(baseColor, 0.85));
+
+  const sortedRects = _sortRectsReadingOrder(ann.rects, ann.page);
+  const pageWidthPx = pageDims?.width || pageDims?.clientWidth || 0;
+
+  for (let i = 0; i < sortedRects.length; i++) {
+    const r = sortedRects[i];
+    const isStart = i === 0;
+    const isEnd = i === sortedRects.length - 1;
+    const d = document.createElement('div');
+    d.className = 'hr' + (isStart ? ' hr-start' : '') + (isEnd ? ' hr-end' : '');
+
+    if (r && r.n === 1) {
+      const rw = Number(r.w) || 0;
+      const xPct = ((Number(r.x) || 0) * 100).toFixed(5);
+      const yPct = ((Number(r.y) || 0) * 100).toFixed(5);
+      const wPct = (rw * 100).toFixed(5);
+      const hPct = ((Number(r.h) || 0) * 100).toFixed(5);
+
+      // Apply 1px micro-inset on start/end edges so adjacent same-color highlights stay distinct.
+      const approxPxW = pageWidthPx > 0 ? rw * pageWidthPx : Infinity;
+      const insetLeft = (isStart && approxPxW > 4) ? 1 : 0;
+      const insetRight = (isEnd && approxPxW > 4) ? 1 : 0;
+      const totalInset = insetLeft + insetRight;
+      const leftCss = insetLeft ? `calc(${xPct}% + ${insetLeft}px)` : `${xPct}%`;
+      const widthCss = totalInset ? `max(2px, calc(${wPct}% - ${totalInset}px))` : `${wPct}%`;
+      d.style.cssText = `left:${leftCss};top:${yPct}%;width:${widthCss};height:${hPct}%;`;
+    } else {
+      const px = rectToPx(r, pageDims || ann.page);
+      const insetLeft = (isStart && px.w > 4) ? 1 : 0;
+      const insetRight = (isEnd && px.w > 4) ? 1 : 0;
+      const totalInset = insetLeft + insetRight;
+      const leftPx = px.x + insetLeft;
+      const widthPx = totalInset ? Math.max(2, px.w - totalInset) : px.w;
+      d.style.cssText = `left:${leftPx}px;top:${px.y}px;width:${widthPx}px;height:${px.h}px;`;
     }
     grp.appendChild(d);
   }
-  grp.addEventListener('click', e => { e.stopPropagation(); openAnnPanel(ann); });
-  grp.addEventListener('contextmenu', e => {
-    if (e.currentTarget?.closest('#canvas-scroll-b')) return;
-    openAnnContextMenu(e, ann);
-  });
-  grp.addEventListener('mouseenter', e => {
-    const notes = Array.isArray(ann.notes) ? ann.notes : [];
-    const genNotes = notes.filter(n => getNoteType(n) === 'general');
-    const caseCount = notes.filter(n => getNoteType(n) === 'case').length;
-    if (!genNotes.length && !caseCount) return;
-    
-    let html = '';
-    const catInfo = getColorCategoryForHex(ann.hex_color);
-    const dotColor = catInfo.hex_color || ann.hex_color || '#c9a84c';
-    html += `<div style="display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; color:var(--ink-muted, var(--muted, #b0aaa0)); margin-bottom:6px;"><span style="width:9px; height:9px; border-radius:50%; background:${_escHtml(dotColor)}; display:inline-block; flex-shrink:0;"></span><span>${_escHtml(catInfo.name)}</span></div>`;
-    if (caseCount > 0) {
-      const caseLabel = caseCount === 1 ? 'case' : 'cases';
-      html += `<div style="display:flex; align-items:center; gap:6px; font-size:0.9em; font-weight:600; color:var(--accent, #c9a84c); background:var(--accent-soft, rgba(201,168,76,0.12)); border:1px solid var(--border-strong, rgba(201,168,76,0.35)); border-radius:6px; padding:4px 10px; margin-bottom:${genNotes.length ? '8px' : '0'};"><svg class="icon" style="width:14px;height:14px;flex-shrink:0" aria-hidden="true"><use href="#i-scale"/></svg> (${caseCount}) ${caseLabel}</div>`;
-    }
+  return grp;
+}
 
-    const toShow = Math.min(genNotes.length, 3);
-    for (let i = 0; i < toShow; i++) {
-      if (i > 0) html += '<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px;"></div>';
-      html += getNoteBody(genNotes[i]);
-    }
-    
-    if (genNotes.length > 3) {
-      html += `<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px; font-size: 0.9em; color: var(--ink-muted, var(--muted, #b0aaa0)); text-align: center; font-style: italic;">...and ${genNotes.length - 3} more notes (click to view)</div>`;
-    } else if (genNotes.length > 1) {
-      html += `<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px; font-size: 0.9em; color: var(--ink-muted, var(--muted, #b0aaa0)); text-align: center; font-style: italic;">(click to manage notes)</div>`;
-    }
-    
-    showTip(e, html);
-  });
-  grp.addEventListener('mouseleave', hideTip);
-  grp.addEventListener('mousemove', moveTip);
-  pg.annOv.appendChild(grp);
+// ── Draw all annotations for a single rendered page (O(pageAnns)) ──
+export function drawPageAnnotations(pageNum) {
+  const pg = S.pages?.[pageNum];
+  if (!pg || !pg.rendered || !pg.annOv) return;
+  const annOv = pg.annOv;
+  _ensureAnnOverlayDelegation(annOv);
+  const layer = _ensureAnnHiLayer(annOv);
+  layer.textContent = '';
+  annOv.querySelectorAll('.ann-tag-pill-badge').forEach(el => el.remove());
 
-  // If ann has tags, render floating tag pill badge on top-right of first highlight rect
+  const pageAnns = _getAnnotationsForPage(pageNum);
+  if (!pageAnns.length) return;
+
+  const pageDims = pg.viewport || pg.wrap;
+  const frag = document.createDocumentFragment();
+  const taggedAnns = [];
+  for (const ann of pageAnns) {
+    frag.appendChild(_buildHiGroupEl(ann, pageDims));
+    const tags = getAnnTags(ann);
+    if (tags && tags.length > 0) taggedAnns.push(ann);
+  }
+  layer.appendChild(frag);
+
+  for (const ann of taggedAnns) {
+    redrawTagBadgeForAnn(ann, pg.viewport);
+  }
+}
+
+// ── Draw annotation overlay ──
+export function drawAnnotation(ann) {
+  if (!ann) return;
+  const pg = S.pages?.[ann.page];
+  if (!pg || !pg.rendered || !pg.annOv) return;
+  const annOv = pg.annOv;
+  _ensureAnnOverlayDelegation(annOv);
+  const layer = _ensureAnnHiLayer(annOv);
+
+  const safeId = _escAttrVal(ann.id);
+  layer.querySelectorAll(`[data-id="${safeId}"]`).forEach(el => el.remove());
+  layer.appendChild(_buildHiGroupEl(ann, pg.viewport || pg.wrap));
+
   const tags = getAnnTags(ann);
   if (tags && tags.length > 0) {
-    redrawTagBadgeForAnn(ann);
+    redrawTagBadgeForAnn(ann, pg.viewport);
+  } else {
+    annOv.querySelectorAll(`.ann-tag-pill-badge[data-id="${safeId}"]`).forEach(el => el.remove());
   }
 }
 
 export function redrawAllAnnotations() {
-  document.querySelectorAll('.ann-ov .hi-grp, .ann-ov .ann-tag-pill-badge').forEach(el => el.remove());
-  if (S.curPDF) {
-    const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
-    if (trueId) loadTagsForPdf(trueId);
+  invalidateAnnotationPageIndex();
+  for (const [pKey, pg] of Object.entries(S.pages || {})) {
+    if (pg?.rendered) {
+      drawPageAnnotations(Number(pKey));
+    }
   }
-  for (const a of S.annotations) drawAnnotation(a);
   _notifyAnnotationsChanged();
 }
 
 export function clearAnnMark(id) {
-  document.querySelectorAll(`[data-id="${id}"]`).forEach(el => el.remove());
+  const safeId = _escAttrVal(id);
+  document.querySelectorAll(`[data-id="${safeId}"]`).forEach(el => el.remove());
 }
 
 // ── Annotation badge helper ──
@@ -276,6 +566,55 @@ function moveTip(e) {
 }
 function hideTip() { if (tip) tip.style.display = 'none'; }
 
+export function updateAnnPanelNav(ann = S.selAnn) {
+  const prevBtn = document.getElementById('ap-prev-hi');
+  const nextBtn = document.getElementById('ap-next-hi');
+  const posEl = document.getElementById('ap-nav-pos');
+  if (!prevBtn && !nextBtn && !posEl) return;
+
+  const ordered = getReadingOrderAnnotations(S.annotations);
+  const total = ordered.length;
+  const idx = ann ? ordered.findIndex(a => String(a.id) === String(ann.id)) : -1;
+
+  if (posEl) {
+    if (total === 0) posEl.textContent = '0 / 0';
+    else if (idx === -1) posEl.textContent = `— / ${total}`;
+    else posEl.textContent = `${idx + 1} / ${total}`;
+  }
+  if (prevBtn) prevBtn.disabled = idx <= 0;
+  if (nextBtn) nextBtn.disabled = idx === -1 || idx >= total - 1;
+}
+
+export async function navigateAnnPanel(delta) {
+  const ordered = getReadingOrderAnnotations(S.annotations);
+  if (!ordered.length) return null;
+  const curIdx = S.selAnn ? ordered.findIndex(a => String(a.id) === String(S.selAnn.id)) : -1;
+  const nextIdx = curIdx === -1 ? (delta >= 0 ? 0 : ordered.length - 1) : curIdx + (delta >= 0 ? 1 : -1);
+  if (nextIdx < 0 || nextIdx >= ordered.length) return null;
+
+  const target = ordered[nextIdx];
+  openAnnPanel(target);
+
+  if (S.curPage !== target.page) {
+    await jumpToPage(target.page, false);
+  }
+  if (!S.pages?.[target.page]?.rendered) {
+    const { ensurePageRendered } = await import('./viewer.js');
+    await ensurePageRendered(target.page);
+  }
+  if (String(S.selAnn?.id) !== String(target.id)) return target;
+
+  const grp = document.querySelector(`.hi-grp[data-id="${_escAttrVal(target.id)}"]`);
+  if (grp) {
+    document.querySelectorAll('.hi-grp.selected').forEach(g => {
+      if (g !== grp) g.classList.remove('selected');
+    });
+    grp.classList.add('selected');
+    (grp.querySelector('.hr') || grp).scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+  }
+  return target;
+}
+
 // ── Annotation Panel ──
 export function openAnnPanel(ann) {
   S.selAnn = ann;
@@ -287,19 +626,24 @@ export function openAnnPanel(ann) {
     b.classList.toggle('active', b.dataset.aptab === activeNoteTab);
   });
   document.querySelectorAll('.hi-grp').forEach(g => g.classList.remove('selected'));
-  document.querySelector(`[data-id="${ann.id}"]`)?.classList.add('selected');
-  document.getElementById('ap-ex').textContent =
-    ann.highlighted_text.length > 90 ? ann.highlighted_text.slice(0, 90) + '…' : ann.highlighted_text;
+  document.querySelector(`.hi-grp[data-id="${_escAttrVal(ann.id)}"]`)?.classList.add('selected');
+  const exEl = document.getElementById('ap-ex');
+  if (exEl) {
+    const txt = ann.highlighted_text || '';
+    exEl.textContent = txt.length > 90 ? txt.slice(0, 90) + '…' : txt;
+  }
+  updateAnnPanelNav(ann);
   renderAnnColors();
   renderAnnPanelTagsSection(ann);
   renderNotes(ann);
-  document.getElementById('note-editor').innerHTML = '';
+  const ed = document.getElementById('note-editor');
+  if (ed) ed.innerHTML = '';
   closeOtherPanels('ann-panel');
-  document.getElementById('ann-panel').classList.add('open');
+  document.getElementById('ann-panel')?.classList.add('open');
 }
 
 export function closeAnnPanel() {
-  document.getElementById('ann-panel').classList.remove('open');
+  document.getElementById('ann-panel')?.classList.remove('open');
   document.querySelectorAll('.hi-grp').forEach(g => g.classList.remove('selected'));
   S.selAnn = null;
 }
@@ -317,20 +661,20 @@ export async function updateAnnotationColor(ann, nextHex) {
     ann.hex_color = norm;
     const inList = Array.isArray(S.annotations) ? S.annotations.find(a => a.id === ann.id) : null;
     if (inList && inList !== ann) inList.hex_color = norm;
+    invalidateAnnotationPageIndex();
 
     const trueId = ann.pdf_file_id || S.curPDF?.linked_pdf_id || S.curPDF?.id;
     if (trueId) {
       const cacheKey = 'local_anns_' + trueId;
       if (safeStorageGet(cacheKey, null) !== null) {
-        safeStorageSet(cacheKey, JSON.stringify(S.annotations));
+        scheduleDebouncedStorageSet(cacheKey, () => JSON.stringify(S.annotations), 350);
       }
     }
 
-    clearAnnMark(ann.id);
     drawAnnotation(ann);
     if (S.selAnn?.id === ann.id) {
       S.selAnn.hex_color = norm;
-      document.querySelector(`.hi-grp[data-id="${ann.id}"]`)?.classList.add('selected');
+      document.querySelector(`.hi-grp[data-id="${_escAttrVal(ann.id)}"]`)?.classList.add('selected');
       renderAnnColors();
     }
     _notifyAnnotationsChanged();
@@ -348,20 +692,25 @@ export async function updateAnnotationColor(ann, nextHex) {
  */
 export async function deleteAnnotation(targetAnn) {
   if (!targetAnn) return;
+  hideTip();
   autosave('saving');
   try {
     S.annotations = S.annotations.filter(x => x.id !== targetAnn.id);
+    invalidateAnnotationPageIndex();
     const trueId = targetAnn.pdf_file_id || S.curPDF?.linked_pdf_id || S.curPDF?.id;
     if (trueId) {
       S.annCounts[trueId] = Math.max(0, (S.annCounts[trueId] || 1) - 1);
       updateAnnBadge(trueId);
       const cacheKey = 'local_anns_' + trueId;
       if (safeStorageGet(cacheKey, null) !== null) {
-        safeStorageSet(cacheKey, JSON.stringify(S.annotations));
+        scheduleDebouncedStorageSet(cacheKey, () => JSON.stringify(S.annotations), 350);
       }
     }
     clearAnnMark(targetAnn.id);
     if (S.selAnn?.id === targetAnn.id) closeAnnPanel();
+    else if (S.selAnn && document.getElementById('ann-panel')?.classList.contains('open')) {
+      updateAnnPanelNav(S.selAnn);
+    }
     onAnnDeleted(targetAnn.id);
     _notifyAnnotationsChanged();
     await dbDelAnnotation(targetAnn.id);
@@ -658,8 +1007,11 @@ function renderNotes(ann) {
       autosave('saving');
       try {
         ann.notes = ann.notes.filter(n => n.id !== note.id);
+        invalidateAnnotationPageIndex();
         const trueId = ann.pdf_file_id;
-        if (trueId) safeStorageSet('local_anns_' + trueId, JSON.stringify(S.annotations));
+        if (trueId) {
+          scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+        }
         renderNotes(ann);
         _notifyAnnotationsChanged();
         await dbDelNote(note.id);
@@ -675,10 +1027,31 @@ function renderNotes(ann) {
   });
 }
 
+let _annNavKeysBound = false;
+
 // ── Wire annotation panel buttons ──
 export function initAnnPanel() {
   initTagsPanel();
   document.getElementById('ap-close').addEventListener('click', closeAnnPanel);
+  document.getElementById('ap-prev-hi')?.addEventListener('click', () => navigateAnnPanel(-1));
+  document.getElementById('ap-next-hi')?.addEventListener('click', () => navigateAnnPanel(1));
+
+  if (!_annNavKeysBound) {
+    _annNavKeysBound = true;
+    document.addEventListener('keydown', (e) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const panel = document.getElementById('ann-panel');
+      if (!panel || !panel.classList.contains('open')) return;
+      const active = document.activeElement;
+      const tag = active?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || active?.isContentEditable || active?.contentEditable === 'true') {
+        return;
+      }
+      e.preventDefault();
+      navigateAnnPanel(e.key === 'ArrowLeft' ? -1 : 1);
+    });
+  }
 
   // Tab switching
   document.querySelectorAll('.ap-tab').forEach(btn => {
@@ -711,9 +1084,10 @@ export function initAnnPanel() {
     try {
       const note = await dbCreateNote(targetAnn.id, htmlToSave, targetAnn.notes.length);
       targetAnn.notes.push(note);
+      invalidateAnnotationPageIndex();
       const trueId = targetAnn.pdf_file_id;
       if (trueId) {
-        safeStorageSet('local_anns_' + trueId, JSON.stringify(S.annotations));
+        scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
       }
       ed.innerHTML = '';
       if (S.selAnn?.id === targetAnn.id) renderNotes(targetAnn);
@@ -744,9 +1118,10 @@ export function initAnnPanel() {
     try {
       if (note) {
         note.note_html = htmlToSave;
+        invalidateAnnotationPageIndex();
         const trueId = targetAnn?.pdf_file_id;
         if (trueId) {
-          safeStorageSet('local_anns_' + trueId, JSON.stringify(S.annotations));
+          scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
         }
         if (S.selAnn?.id === targetAnn?.id) renderNotes(targetAnn);
         _notifyAnnotationsChanged();
@@ -856,29 +1231,39 @@ export function initAnnPanel() {
       applyEditorHighlight(editor, range, normalizeHexColor(S.activeColor) || S.activeColor || '#c9a84c');
       S.pendingEditorSel = null;
       window.getSelection()?.removeAllRanges();
+      updateSelMenuMassTagButton([]);
       return;
     }
     if (!S.pendingSel) return;
     window.getSelection()?.removeAllRanges();
     document.getElementById('sel-menu').classList.remove('open');
+    if (S.pendingSel.multiPage || !S.pendingSel.rects?.length) {
+      S.pendingSel = null;
+      updateSelMenuMassTagButton([]);
+      return;
+    }
     createAnnotation(S.pendingSel.pageNum, S.pendingSel.rects, S.pendingSel.text, 'text');
     S.pendingSel = null;
+    updateSelMenuMassTagButton([]);
   });
   document.getElementById('sel-cancel').addEventListener('click', () => {
     window.getSelection()?.removeAllRanges();
     document.getElementById('sel-menu').classList.remove('open');
     S.pendingSel = null;
     S.pendingEditorSel = null;
+    updateSelMenuMassTagButton([]);
   });
 
   // Auto-close selection menu when clicking outside
   document.addEventListener('mousedown', e => {
     const selMenu = document.getElementById('sel-menu');
     if ((S.pendingSel || S.pendingEditorSel) && selMenu.classList.contains('open')) {
+      if (e.target?.closest?.('#mass-tag-popover')) return;
       if (!selMenu.contains(e.target)) {
         selMenu.classList.remove('open');
         S.pendingSel = null;
         S.pendingEditorSel = null;
+        updateSelMenuMassTagButton([]);
       }
     }
   });

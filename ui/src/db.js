@@ -11,7 +11,7 @@ import {
 } from './drive.js';
 import { broadcastSync } from './sync.js';
 import { safeDbWrite, enqueueAction } from './outbox.js';
-import { safeStorageSet, safeStorageGet, safeStorageRemove, isNetworkError } from './storage.js';
+import { safeStorageSet, safeStorageGet, safeStorageRemove, scheduleDebouncedStorageSet, isNetworkError } from './storage.js';
 import { logNotepadDiagnostic } from './diag.js';
 
 // Inline sync helpers (avoids circular dep with ui.js)
@@ -578,8 +578,9 @@ export async function dbCreateAnnotation(ann) {
     highlight_mode: ann.highlight_mode,
   };
   await safeDbWrite(db, 'annotations', 'upsert', annRec);
-  safeStorageSet('local_anns_' + ann.pdf_file_id, JSON.stringify(S.annotations));
-  broadcastSync({ type: 'ANNOTATIONS_CHANGED', pdfId: ann.pdf_file_id });
+  const pdfId = ann.pdf_file_id;
+  scheduleDebouncedStorageSet('local_anns_' + pdfId, () => JSON.stringify(S.annotations), 350);
+  broadcastSync({ type: 'ANNOTATIONS_CHANGED', pdfId });
 }
 
 export async function dbUpdateAnnColor(id, hex_color) {
@@ -592,7 +593,8 @@ export async function dbDelAnnotation(id) {
   await safeDbWrite(db, 'annotations', 'delete', null, { id });
   S.annotations = S.annotations.filter(a => a.id !== id);
   if (S.currentPdfId) {
-    safeStorageSet('local_anns_' + S.currentPdfId, JSON.stringify(S.annotations));
+    const pdfId = S.currentPdfId;
+    scheduleDebouncedStorageSet('local_anns_' + pdfId, () => JSON.stringify(S.annotations), 350);
   }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED' });
 }

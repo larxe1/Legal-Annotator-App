@@ -2,10 +2,11 @@
 // TAGS & TOPIC COVERAGE WORKSPACE — Tags, Quick Step Scroll, & Outside Laws
 // ═══════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
-import { rectToPx } from './annotate.js';
+import { rectToPx, compareAnnotationsReadingOrder } from './annotate.js';
 import { toast, autosave, closeOtherPanels } from './ui.js';
 import { dbGetSetting, dbSetSetting } from './db.js';
-import { safeStorageSet, safeStorageGet } from './storage.js';
+import { safeStorageSet, safeStorageGet, scheduleDebouncedStorageSet } from './storage.js';
+import { exportTagNotesToPDF } from './export.js';
 import {
   handlePaste, handleCopy, showTablePicker, insertBannerHeader,
   outdentLine, indentLine, copyFirstSummaryTable
@@ -234,7 +235,7 @@ export async function addTagToAnn(ann, tagName, options = {}) {
 
   safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
   if (!options.skipSaveAnn && trueId) {
-    safeStorageSet('local_anns_' + trueId, JSON.stringify(S.annotations));
+    scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
   }
 
   scheduleCloudSave(trueId);
@@ -274,7 +275,7 @@ export async function removeTagFromAnn(ann, tagName, options = {}) {
   }
 
   if (!options.skipSaveAnn && trueId) {
-    safeStorageSet('local_anns_' + trueId, JSON.stringify(S.annotations));
+    scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
   }
 
   scheduleCloudSave(trueId);
@@ -288,6 +289,143 @@ export async function removeTagFromAnn(ann, tagName, options = {}) {
   if (isTagsPanelOpen()) {
     renderTagsPanel();
   }
+}
+
+export async function addTagToAnnsBatch(anns, tagName) {
+  if (!Array.isArray(anns) || anns.length === 0 || !tagName) return 0;
+  const tag = String(tagName).trim();
+  if (!tag) return 0;
+
+  const validAnns = anns.filter(a => a && a.id);
+  if (validAnns.length === 0) return 0;
+
+  const trueId = validAnns[0].pdf_file_id || getCurTrueId();
+  if (!trueId) return 0;
+
+  if (!currentTagData || currentPdfTrueId !== trueId) {
+    await loadTagsForPdf(trueId);
+  }
+
+  if (!currentTagData.annTags) currentTagData.annTags = {};
+  if (!currentTagData.topics) currentTagData.topics = {};
+
+  const now = Date.now();
+  if (!currentTagData.topics[tag]) {
+    currentTagData.topics[tag] = {
+      name: tag,
+      color: pickTopicColor(tag),
+      notesHtml: '',
+      createdAt: now,
+      updatedAt: now,
+    };
+  } else {
+    currentTagData.topics[tag].updatedAt = now;
+  }
+
+  const modifiedAnns = [];
+  for (const ann of validAnns) {
+    let changed = false;
+    if (!Array.isArray(ann.tags)) ann.tags = [];
+    if (!ann.tags.includes(tag)) {
+      ann.tags.push(tag);
+      changed = true;
+    }
+    if (!Array.isArray(currentTagData.annTags[ann.id])) {
+      currentTagData.annTags[ann.id] = [...ann.tags];
+    }
+    if (!currentTagData.annTags[ann.id].includes(tag)) {
+      currentTagData.annTags[ann.id].push(tag);
+      changed = true;
+    }
+    if (changed) {
+      modifiedAnns.push(ann);
+    }
+  }
+
+  currentTagData.updatedAt = now;
+  safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
+  scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+  scheduleCloudSave(trueId);
+
+  for (const ann of modifiedAnns) {
+    const pg = S.pages?.[ann.page];
+    if (pg && pg.rendered && pg.annOv) {
+      redrawTagBadgeForAnn(ann, pg.viewport || pg.wrap);
+    }
+  }
+
+  const annPanelOpen = document.getElementById('ann-panel')?.classList.contains('open');
+  if (annPanelOpen && S.selAnn && validAnns.some(a => a.id === S.selAnn.id)) {
+    renderAnnPanelTagsSection(S.selAnn);
+  }
+
+  if (isTagsPanelOpen()) {
+    renderTagsPanel();
+  }
+
+  return modifiedAnns.length;
+}
+
+export async function removeTagFromAnnsBatch(anns, tagName) {
+  if (!Array.isArray(anns) || anns.length === 0 || !tagName) return 0;
+  const tag = String(tagName).trim();
+  if (!tag) return 0;
+
+  const validAnns = anns.filter(a => a && a.id);
+  if (validAnns.length === 0) return 0;
+
+  const trueId = validAnns[0].pdf_file_id || getCurTrueId();
+  if (!trueId) return 0;
+
+  if (!currentTagData || currentPdfTrueId !== trueId) {
+    await loadTagsForPdf(trueId);
+  }
+
+  const modifiedAnns = [];
+  for (const ann of validAnns) {
+    let changed = false;
+    if (Array.isArray(ann.tags) && ann.tags.includes(tag)) {
+      ann.tags = ann.tags.filter(t => t !== tag);
+      changed = true;
+    }
+    if (currentTagData?.annTags?.[ann.id] && currentTagData.annTags[ann.id].includes(tag)) {
+      currentTagData.annTags[ann.id] = currentTagData.annTags[ann.id].filter(t => t !== tag);
+      if (currentTagData.annTags[ann.id].length === 0) {
+        delete currentTagData.annTags[ann.id];
+      }
+      changed = true;
+    }
+    if (changed) {
+      modifiedAnns.push(ann);
+    }
+  }
+
+  if (modifiedAnns.length === 0) return 0;
+
+  if (currentTagData) {
+    currentTagData.updatedAt = Date.now();
+    safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
+  }
+  scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+  scheduleCloudSave(trueId);
+
+  for (const ann of modifiedAnns) {
+    const pg = S.pages?.[ann.page];
+    if (pg && pg.rendered && pg.annOv) {
+      redrawTagBadgeForAnn(ann, pg.viewport || pg.wrap);
+    }
+  }
+
+  const annPanelOpen = document.getElementById('ann-panel')?.classList.contains('open');
+  if (annPanelOpen && S.selAnn && modifiedAnns.some(a => a.id === S.selAnn.id)) {
+    renderAnnPanelTagsSection(S.selAnn);
+  }
+
+  if (isTagsPanelOpen()) {
+    renderTagsPanel();
+  }
+
+  return modifiedAnns.length;
 }
 
 export function getAllTopicsForCurrentPdf() {
@@ -480,19 +618,19 @@ export function renderAnnPanelTagsSection(ann) {
 }
 
 // ── 4. Floating Tag Pill Badge on PDF Highlights ──
-export function redrawTagBadgeForAnn(ann) {
+export function redrawTagBadgeForAnn(ann, pageDims = null) {
   if (!ann) return;
-  document.querySelectorAll(`.ann-tag-pill-badge[data-id="${ann.id}"]`).forEach(el => el.remove());
+  const pg = S.pages?.[ann.page];
+  if (!pg || !pg.rendered || !pg.annOv) return;
+
+  pg.annOv.querySelectorAll(`.ann-tag-pill-badge[data-id="${ann.id}"]`).forEach(el => el.remove());
 
   const tags = getAnnTags(ann);
   if (!tags || tags.length === 0) return;
 
-  const pg = S.pages[ann.page];
-  if (!pg || !pg.rendered || !pg.annOv) return;
-
   const firstRect = ann.rects && ann.rects[0];
   if (!firstRect) return;
-  const pxRect = rectToPx(firstRect, pg.wrap);
+  const pxRect = rectToPx(firstRect, pageDims || pg.viewport || pg.wrap);
 
   const badge = document.createElement('div');
   badge.className = 'ann-tag-pill-badge';
@@ -518,10 +656,19 @@ export function redrawTagBadgeForAnn(ann) {
 }
 
 export function redrawAllTagBadges() {
-  document.querySelectorAll('.ann-tag-pill-badge').forEach(el => el.remove());
-  if (!S.annotations || !Array.isArray(S.annotations)) return;
+  if (!S.pages) return;
+  const renderedPageDims = new Map();
+  for (const [pageKey, pg] of Object.entries(S.pages)) {
+    if (!pg || !pg.rendered || !pg.annOv) continue;
+    pg.annOv.querySelectorAll('.ann-tag-pill-badge').forEach(el => el.remove());
+    renderedPageDims.set(Number(pageKey), pg.viewport || pg.wrap);
+  }
+  if (renderedPageDims.size === 0 || !Array.isArray(S.annotations)) return;
   for (const ann of S.annotations) {
-    redrawTagBadgeForAnn(ann);
+    const dims = renderedPageDims.get(Number(ann.page));
+    if (dims) {
+      redrawTagBadgeForAnn(ann, dims);
+    }
   }
 }
 
@@ -549,7 +696,7 @@ export async function jumpThroughTag(tagName, direction = 1) {
     toast(`No highlights tagged with "${tagName}"`);
     return;
   }
-  matching.sort((a, b) => (a.page - b.page) || (rectToPx(a.rects?.[0], a.page).y - rectToPx(b.rects?.[0], b.page).y));
+  matching.sort(compareAnnotationsReadingOrder);
 
   let curIdx = _tagJumpIndices[tagName] ?? -1;
   curIdx = (curIdx + direction + matching.length) % matching.length;
@@ -702,7 +849,7 @@ function renderSingleTopicView(container, tagName) {
   };
   const color = topic.color || pickTopicColor(tagName);
   const matching = (S.annotations || []).filter(a => getAnnTags(a).includes(tagName));
-  matching.sort((a, b) => (a.page - b.page) || (rectToPx(a.rects?.[0], a.page).y - rectToPx(b.rects?.[0], b.page).y));
+  matching.sort(compareAnnotationsReadingOrder);
 
   const curIdx = (_tagJumpIndices[tagName] ?? -1) + 1;
   const posLabel = matching.length > 0 ? (curIdx > 0 ? `${curIdx} of ${matching.length}` : `1 of ${matching.length}`) : '0 of 0';
@@ -754,6 +901,9 @@ function renderSingleTopicView(container, tagName) {
         <button class="tp-btn-open-notes" id="tp-btn-open-workspace" style="border-color:${color};">
           📖 Open Topic Notes / Outside Laws
         </button>
+        <button class="tp-btn-print-tag" id="tp-btn-print-tag" title="Print or Save Tag Notes & Highlights as PDF">
+          🖨️ Print Tag
+        </button>
       </div>
 
       ${matching.length > 0 ? `
@@ -773,6 +923,9 @@ function renderSingleTopicView(container, tagName) {
   // Wire buttons
   container.querySelector('#tp-btn-open-workspace')?.addEventListener('click', () => {
     openTopicNotesModal(tagName);
+  });
+  container.querySelector('#tp-btn-print-tag')?.addEventListener('click', () => {
+    printTagNotes(tagName);
   });
 
   container.querySelector('#tp-step-prev')?.addEventListener('click', () => jumpThroughTag(tagName, -1));
@@ -822,6 +975,7 @@ function renderAllTopicsView(container, allTopics) {
         </div>
         <div class="tp-oc-actions">
           <button class="tp-btn-sm" data-btn-notes="${escapeHtml(t.name)}">📖 Notes</button>
+          <button class="tp-btn-sm" data-btn-print="${escapeHtml(t.name)}" title="Print or Save Tag Notes & Highlights as PDF">🖨️ Print</button>
           <button class="tp-btn-sm" data-btn-view="${escapeHtml(t.name)}">View Highlights (${t.count}) →</button>
         </div>
       </div>
@@ -837,6 +991,13 @@ function renderAllTopicsView(container, allTopics) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       openTopicNotesModal(btn.dataset.btnNotes);
+    });
+  });
+
+  container.querySelectorAll('[data-btn-print]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      printTagNotes(btn.dataset.btnPrint);
     });
   });
 
@@ -869,7 +1030,7 @@ export function openTopicNotesModal(tagName) {
 
   const color = topic.color || pickTopicColor(tagName);
   const matching = (S.annotations || []).filter(a => getAnnTags(a).includes(tagName));
-  matching.sort((a, b) => (a.page - b.page) || (rectToPx(a.rects?.[0], a.page).y - rectToPx(b.rects?.[0], b.page).y));
+  matching.sort(compareAnnotationsReadingOrder);
 
   // Title and badge
   const titleEl = document.getElementById('tnm-topic-name');
@@ -1000,6 +1161,23 @@ function saveTopicEditorContent() {
   }, 450);
 }
 
+export function printTagNotes(tagName) {
+  if (!tagName) return;
+  const topic = currentTagData?.topics?.[tagName] || {
+    name: tagName,
+    color: pickTopicColor(tagName),
+    notesHtml: '',
+  };
+  const matching = (S.annotations || []).filter(a => getAnnTags(a).includes(tagName));
+  exportTagNotesToPDF({
+    tagName,
+    tagColor: topic?.color || pickTopicColor(tagName),
+    topicNotesHtml: topic?.notesHtml || '',
+    pdfTitle: S.curPDF?.name || 'Document',
+    annotations: matching,
+  });
+}
+
 // ── 8. Injection & Initialization ──
 export function initTagsPanel() {
   injectTagsCSS();
@@ -1007,6 +1185,7 @@ export function initTagsPanel() {
   injectTagsPanelDOM();
   injectTopicNotesModalDOM();
   injectSelMenuTagPicker();
+  injectMassTagPopoverDOM();
 }
 
 function injectTagsCSS() {
@@ -1391,13 +1570,18 @@ function injectTagsCSS() {
       font-size: 11px;
       color: var(--muted);
     }
+    .tp-tc-actions {
+      display: flex;
+      gap: 6px;
+      align-items: stretch;
+    }
     .tp-btn-open-notes {
-      width: 100%;
+      flex: 1;
       background: rgba(201,168,76,0.12);
       border: 1px solid var(--gold);
       color: var(--gold);
       border-radius: 6px;
-      padding: 7px 12px;
+      padding: 7px 10px;
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
@@ -1410,6 +1594,26 @@ function injectTagsCSS() {
     .tp-btn-open-notes:hover {
       background: var(--gold);
       color: var(--navy);
+    }
+    .tp-btn-print-tag {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--navy-b);
+      color: #e8e4db;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .tp-btn-print-tag:hover {
+      border-color: var(--gold);
+      color: var(--gold);
+      background: rgba(201,168,76,0.12);
     }
     .tp-stepper-row {
       display: flex;
@@ -1819,6 +2023,185 @@ function injectTagsCSS() {
     .tnm-done-btn:hover {
       opacity: 0.9;
     }
+    .tnm-print-btn {
+      background: rgba(201,168,76,0.14);
+      border: 1px solid var(--gold);
+      color: var(--gold);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .tnm-print-btn:hover {
+      background: var(--gold);
+      color: var(--navy);
+    }
+
+    /* Selection Menu Mass-Tag Button & Popover */
+    .sel-btn.sel-mass-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(201,168,76,0.16);
+      color: var(--gold, #c9a84c);
+      border: 1px solid rgba(201,168,76,0.45);
+    }
+    .sel-btn.sel-mass-tag:hover {
+      background: rgba(201,168,76,0.28);
+    }
+    #mass-tag-popover {
+      position: fixed;
+      z-index: 950;
+      width: 290px;
+      max-width: calc(100vw - 16px);
+      max-height: 360px;
+      background: var(--navy-l, #141c2d);
+      border: 1px solid var(--navy-b, #2a3752);
+      border-radius: 8px;
+      box-shadow: 0 14px 36px rgba(0,0,0,0.55);
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      color: #e8e4db;
+      font-family: var(--font-ui, 'Public Sans', 'Segoe UI', sans-serif);
+    }
+    #mass-tag-popover.open {
+      display: flex;
+    }
+    .mtp-hd {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--navy-b, #2a3752);
+      background: rgba(0,0,0,0.18);
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--gold, #c9a84c);
+    }
+    .mtp-close-btn {
+      background: none;
+      border: none;
+      color: var(--muted, #94a3b8);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .mtp-close-btn:hover {
+      color: #e8e4db;
+    }
+    .mtp-input-row {
+      display: flex;
+      gap: 6px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--navy-b, #2a3752);
+    }
+    .mtp-input {
+      flex: 1;
+      min-width: 0;
+      background: var(--navy, #0c1322);
+      border: 1px solid var(--navy-b, #2a3752);
+      border-radius: 5px;
+      padding: 5px 8px;
+      font-size: 12px;
+      color: #e8e4db;
+      outline: none;
+    }
+    .mtp-input:focus {
+      border-color: var(--gold, #c9a84c);
+    }
+    .mtp-apply-btn {
+      background: var(--gold, #c9a84c);
+      color: var(--navy, #0c1322);
+      border: none;
+      border-radius: 5px;
+      padding: 5px 10px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .mtp-apply-btn:hover {
+      opacity: 0.92;
+    }
+    .mtp-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .mtp-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: 5px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .mtp-row:hover {
+      background: rgba(255,255,255,0.08);
+      border-color: var(--navy-b, #2a3752);
+    }
+    .mtp-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .mtp-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .mtp-cnt {
+      font-size: 10.5px;
+      color: var(--muted, #94a3b8);
+      background: rgba(255,255,255,0.06);
+      padding: 1px 6px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+    .mtp-cnt.all {
+      color: #10B981;
+      background: rgba(16,185,129,0.14);
+    }
+    .mtp-remove-btn {
+      background: rgba(239,68,68,0.14);
+      border: 1px solid rgba(239,68,68,0.4);
+      color: #fca5a5;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 10.5px;
+      font-weight: 600;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .mtp-remove-btn:hover {
+      background: #ef4444;
+      color: #fff;
+    }
+    .mtp-empty {
+      font-size: 11.5px;
+      color: var(--muted, #94a3b8);
+      text-align: center;
+      padding: 14px 8px;
+      font-style: italic;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -1881,6 +2264,7 @@ function injectTopicNotesModalDOM() {
           <div class="tnm-hd-sub">Outside Laws, Special Statutes (R.A. / P.D.), Jurisprudence, & Syllabus Coverage</div>
         </div>
         <div class="tnm-hd-right">
+          <button class="tnm-print-btn" id="tnm-print-btn" title="Print or Save Tag Notes & Highlights as PDF">🖨️ Print Tag</button>
           <span class="tnm-status-pill" id="tnm-save-status">✓ Saved to Cloud</span>
           <button class="tnm-close-btn" id="tnm-close-btn" title="Close Workspace">✕</button>
         </div>
@@ -1931,6 +2315,12 @@ function injectTopicNotesModalDOM() {
   // Wire close buttons
   modal.querySelector('#tnm-close-btn')?.addEventListener('click', closeTopicNotesModal);
   modal.querySelector('#tnm-done-btn')?.addEventListener('click', closeTopicNotesModal);
+  modal.querySelector('#tnm-print-btn')?.addEventListener('click', () => {
+    if (activeNotesTopic) {
+      saveTopicEditorContent();
+      printTagNotes(activeNotesTopic);
+    }
+  });
 
   // Wire editor input
   const ed = modal.querySelector('#topic-notes-editor');
@@ -1974,44 +2364,326 @@ function injectTopicNotesModalDOM() {
   });
 }
 
-function injectSelMenuTagPicker() {
-  const selMenu = document.getElementById('sel-menu');
-  if (!selMenu || document.getElementById('sel-tag-btn')) return;
+let _massTagAnnIds = [];
+let _massTagListenersBound = false;
 
-  const btn = document.createElement('button');
-  btn.className = 'sel-btn sel-tag';
-  btn.id = 'sel-tag-btn';
-  btn.title = 'Active Quick-Tag (Click to cycle or select)';
-  btn.innerHTML = `<span id="sel-tag-text">🏷️ Tag</span>`;
+function _getMassTagTargetAnns() {
+  if (!_massTagAnnIds.length || !Array.isArray(S.annotations)) return [];
+  const idSet = new Set(_massTagAnnIds);
+  return S.annotations.filter(a => a && idSet.has(a.id));
+}
 
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const allTopics = getAllTopicsForCurrentPdf();
-    if (allTopics.length === 0) {
-      toggleTagsPanel();
-      return;
-    }
-    const current = getActiveQuickTag();
-    const names = allTopics.map(t => t.name);
-    let next = null;
-    if (!current) {
-      next = names[0];
-    } else {
-      const idx = names.indexOf(current);
-      if (idx >= 0 && idx < names.length - 1) {
-        next = names[idx + 1];
-      } else {
-        next = null; // wraps back to None
+function closeMassTagPopover() {
+  const popover = document.getElementById('mass-tag-popover');
+  if (popover) popover.classList.remove('open');
+}
+
+function injectMassTagPopoverDOM() {
+  let popover = document.getElementById('mass-tag-popover');
+  if (!popover) {
+    popover = document.createElement('div');
+    popover.id = 'mass-tag-popover';
+    popover.innerHTML = `
+      <div class="mtp-hd">
+        <span id="mtp-title">Tag Highlights</span>
+        <button type="button" class="mtp-close-btn" id="mtp-close-btn" title="Close">✕</button>
+      </div>
+      <div class="mtp-input-row">
+        <input type="text" id="mtp-input" class="mtp-input" placeholder="Filter or type new tag..." />
+        <button type="button" id="mtp-apply-btn" class="mtp-apply-btn">Tag All</button>
+      </div>
+      <div class="mtp-list" id="mtp-list"></div>
+    `;
+    document.body.appendChild(popover);
+
+    popover.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+    });
+
+    popover.querySelector('#mtp-close-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeMassTagPopover();
+    });
+
+    const input = popover.querySelector('#mtp-input');
+    const applyBtn = popover.querySelector('#mtp-apply-btn');
+
+    const submitInputTag = async () => {
+      const val = input?.value.trim();
+      if (!val) {
+        input?.focus();
+        return;
+      }
+      await applyMassTagSelection(val);
+    };
+
+    input?.addEventListener('input', () => {
+      renderMassTagPopoverList(input.value);
+    });
+    input?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitInputTag();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMassTagPopover();
+      }
+    });
+    applyBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      submitInputTag();
+    });
+  }
+
+  if (!_massTagListenersBound) {
+    _massTagListenersBound = true;
+    document.addEventListener('mousedown', (e) => {
+      const pop = document.getElementById('mass-tag-popover');
+      if (!pop || !pop.classList.contains('open')) return;
+      const massBtn = document.getElementById('sel-mass-tag-btn');
+      if (pop.contains(e.target) || massBtn?.contains(e.target)) return;
+      closeMassTagPopover();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeMassTagPopover();
+      }
+    });
+  }
+
+  return popover;
+}
+
+async function applyMassTagSelection(tagName) {
+  const tag = String(tagName || '').trim();
+  if (!tag) return;
+  const targets = _getMassTagTargetAnns();
+  if (targets.length === 0) {
+    closeMassTagPopover();
+    updateSelMenuMassTagButton([]);
+    return;
+  }
+
+  await addTagToAnnsBatch(targets, tag);
+  closeMassTagPopover();
+  document.getElementById('sel-menu')?.classList.remove('open');
+  S.pendingSel = null;
+  S.pendingEditorSel = null;
+  window.getSelection()?.removeAllRanges();
+  updateSelMenuMassTagButton([]);
+  toast(`Tagged ${targets.length} highlight${targets.length === 1 ? '' : 's'} with "${tag}"`);
+}
+
+function renderMassTagPopoverList(filterText = '') {
+  const listEl = document.getElementById('mtp-list');
+  const titleEl = document.getElementById('mtp-title');
+  if (!listEl) return;
+
+  const targets = _getMassTagTargetAnns();
+  const total = targets.length;
+  if (titleEl) {
+    titleEl.textContent = `🏷️ Tag ${total} ${total === 1 ? 'Highlight' : 'Highlights'}`;
+  }
+
+  const query = String(filterText || '').trim().toLowerCase();
+  const allTopics = getAllTopicsForCurrentPdf();
+  const seenNames = new Set(allTopics.map(t => t.name));
+
+  // Include any tag present on selected highlights even if missing from topic map
+  for (const ann of targets) {
+    for (const tag of getAnnTags(ann)) {
+      if (!seenNames.has(tag)) {
+        seenNames.add(tag);
+        allTopics.push({ name: tag, color: pickTopicColor(tag), count: 0 });
       }
     }
-    setActiveQuickTag(next);
-    toast(next ? `Quick-Tag: ${next}` : 'Quick-Tag cleared');
+  }
+
+  const filtered = query
+    ? allTopics.filter(t => t.name.toLowerCase().includes(query))
+    : allTopics;
+
+  if (filtered.length === 0) {
+    listEl.innerHTML = query
+      ? `<div class="mtp-empty">No matching tags. Press Enter or click <strong>Tag All</strong> to create "${escapeHtml(filterText.trim())}".</div>`
+      : `<div class="mtp-empty">No tags yet. Type a tag name above and click <strong>Tag All</strong>.</div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.map(t => {
+    const color = t.color || pickTopicColor(t.name);
+    const taggedCount = targets.filter(a => getAnnTags(a).includes(t.name)).length;
+    const isAll = total > 0 && taggedCount === total;
+    const badgeText = isAll ? `(all ${total})` : `(${taggedCount}/${total})`;
+    return `
+      <div class="mtp-row" data-mtp-tag="${escapeHtml(t.name)}">
+        <span class="mtp-dot" style="background:${color}"></span>
+        <span class="mtp-name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>
+        <span class="mtp-cnt ${isAll ? 'all' : ''}">${badgeText}</span>
+        ${taggedCount >= 1 ? `<button type="button" class="mtp-remove-btn" data-mtp-remove="${escapeHtml(t.name)}" title="Remove this tag from selected highlights">Remove</button>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  listEl.querySelectorAll('.mtp-row').forEach(row => {
+    row.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-mtp-remove]')) return;
+      e.stopPropagation();
+      const tag = row.dataset.mtpTag;
+      if (tag) await applyMassTagSelection(tag);
+    });
   });
 
-  const cancelBtn = document.getElementById('sel-cancel');
-  if (cancelBtn) {
-    selMenu.insertBefore(btn, cancelBtn);
+  listEl.querySelectorAll('[data-mtp-remove]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const tag = btn.dataset.mtpRemove;
+      if (!tag) return;
+      const curTargets = _getMassTagTargetAnns();
+      const removedFrom = await removeTagFromAnnsBatch(curTargets, tag);
+      const inputEl = document.getElementById('mtp-input');
+      renderMassTagPopoverList(inputEl?.value || '');
+      if (removedFrom > 0) {
+        toast(`Removed "${tag}" from ${removedFrom} highlight${removedFrom === 1 ? '' : 's'}`);
+      }
+    });
+  });
+}
+
+function openMassTagPopover() {
+  const targets = _getMassTagTargetAnns();
+  if (targets.length === 0) {
+    closeMassTagPopover();
+    return;
+  }
+
+  const popover = injectMassTagPopoverDOM();
+  const input = popover.querySelector('#mtp-input');
+  if (input) input.value = '';
+  renderMassTagPopoverList('');
+  popover.classList.add('open');
+
+  // Anchor next to #sel-menu, clamped inside viewport
+  const selMenu = document.getElementById('sel-menu');
+  const menuRect = selMenu?.getBoundingClientRect();
+  const popW = popover.offsetWidth || 290;
+  const popH = popover.offsetHeight || 240;
+
+  let left = menuRect ? menuRect.left : 16;
+  let top = menuRect ? menuRect.bottom + 6 : 16;
+
+  if (menuRect && top + popH > window.innerHeight - 8) {
+    top = menuRect.top - popH - 6;
+  }
+  left = Math.max(8, Math.min(left, window.innerWidth - popW - 8));
+  top = Math.max(8, Math.min(top, window.innerHeight - popH - 8));
+
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+
+  setTimeout(() => input?.focus(), 0);
+}
+
+export function updateSelMenuMassTagButton(overlappingAnnIds = []) {
+  const ids = Array.isArray(overlappingAnnIds)
+    ? Array.from(new Set(overlappingAnnIds.filter(Boolean)))
+    : [];
+  _massTagAnnIds = ids;
+
+  if (!document.getElementById('sel-mass-tag-btn') && document.getElementById('sel-menu')) {
+    injectSelMenuTagPicker();
+  }
+
+  const massBtn = document.getElementById('sel-mass-tag-btn');
+  if (ids.length > 0) {
+    if (massBtn) {
+      massBtn.textContent = `🏷️ Tag ${ids.length} ${ids.length === 1 ? 'Highlight' : 'Highlights'}`;
+      massBtn.style.display = 'inline-flex';
+    }
+    const popover = document.getElementById('mass-tag-popover');
+    if (popover?.classList.contains('open')) {
+      const inputEl = document.getElementById('mtp-input');
+      renderMassTagPopoverList(inputEl?.value || '');
+    }
   } else {
-    selMenu.appendChild(btn);
+    if (massBtn) {
+      massBtn.style.display = 'none';
+    }
+    closeMassTagPopover();
+  }
+}
+
+function injectSelMenuTagPicker() {
+  const selMenu = document.getElementById('sel-menu');
+  if (!selMenu) return;
+
+  const cancelBtn = document.getElementById('sel-cancel');
+
+  if (!document.getElementById('sel-tag-btn')) {
+    const btn = document.createElement('button');
+    btn.className = 'sel-btn sel-tag';
+    btn.id = 'sel-tag-btn';
+    btn.title = 'Active Quick-Tag (Click to cycle or select)';
+    btn.innerHTML = `<span id="sel-tag-text">🏷️ Tag</span>`;
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const allTopics = getAllTopicsForCurrentPdf();
+      if (allTopics.length === 0) {
+        toggleTagsPanel();
+        return;
+      }
+      const current = getActiveQuickTag();
+      const names = allTopics.map(t => t.name);
+      let next = null;
+      if (!current) {
+        next = names[0];
+      } else {
+        const idx = names.indexOf(current);
+        if (idx >= 0 && idx < names.length - 1) {
+          next = names[idx + 1];
+        } else {
+          next = null; // wraps back to None
+        }
+      }
+      setActiveQuickTag(next);
+      toast(next ? `Quick-Tag: ${next}` : 'Quick-Tag cleared');
+    });
+
+    if (cancelBtn) {
+      selMenu.insertBefore(btn, cancelBtn);
+    } else {
+      selMenu.appendChild(btn);
+    }
+  }
+
+  if (!document.getElementById('sel-mass-tag-btn')) {
+    const massBtn = document.createElement('button');
+    massBtn.type = 'button';
+    massBtn.className = 'sel-btn sel-mass-tag';
+    massBtn.id = 'sel-mass-tag-btn';
+    massBtn.title = 'Tag or untag all selected highlights at once';
+    massBtn.style.display = 'none';
+    massBtn.textContent = '🏷️ Tag Highlights';
+
+    massBtn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    massBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const popover = document.getElementById('mass-tag-popover');
+      if (popover?.classList.contains('open')) {
+        closeMassTagPopover();
+      } else {
+        openMassTagPopover();
+      }
+    });
+
+    if (cancelBtn) {
+      selMenu.insertBefore(massBtn, cancelBtn);
+    } else {
+      selMenu.appendChild(massBtn);
+    }
   }
 }

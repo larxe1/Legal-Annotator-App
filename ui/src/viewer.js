@@ -8,7 +8,7 @@ import { driveFetchPDF } from './drive.js';
 import { renderColorDots } from './colors.js';
 import { showTablePicker, handlePaste, handleCopy, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
-import { safeStorageGet, safeStorageSet } from './storage.js';
+import { safeStorageGet, safeStorageSet, flushDebouncedStorageWrites } from './storage.js';
 import { notifyTabOpened, notifyTabClosedToHome, renderStudyDesk } from './goodnotes-ui.js';
 
 // Guard set to prevent double listener registration (fixes bug #3)
@@ -186,6 +186,10 @@ export async function openFolderDoc(fold) {
       S.pendingEditorSel = { editor: ed, range: range.cloneRange(), text };
       S.pendingSel = null;
 
+      const confirmBtn = document.getElementById('sel-confirm');
+      if (confirmBtn) confirmBtn.style.display = '';
+      import('./tags.js').then(m => m.updateSelMenuMassTagButton?.([])).catch(() => {});
+
       const m = document.getElementById('sel-menu');
       if (m) {
         const mx = Math.min(Math.max(10, last.right), window.innerWidth - 170);
@@ -282,8 +286,8 @@ export function captureZoomAnchor() {
 }
 
 // ── Memory-Safe Page Canvas Eviction for Large PDFs (500+ pages) ──
-const MAX_RENDERED_CANVAS_PAGES = 30;
-const EVICT_PAGE_DISTANCE = 22;
+const MAX_RENDERED_CANVAS_PAGES = 16;
+const EVICT_PAGE_DISTANCE = 10;
 
 export function unrenderFarPages(centerPage = S.curPage || 1) {
   if (!S.totalPages || S.totalPages <= 50 || _renderedPages.size <= MAX_RENDERED_CANVAS_PAGES) {
@@ -355,9 +359,9 @@ export function startBackgroundDocRenderer(docId) {
     const cur = S.curPage || 1;
     let nextP = null;
     let minDiff = Infinity;
-    // For large PDFs (> 50 pages), only pre-render a ±12 page lookahead window around curPage
+    // For large PDFs (> 50 pages), only pre-render a ±6 page lookahead window around curPage
     // so a 500-page 100MB PDF never allocates 8GB of canvases in RAM!
-    const maxLookahead = S.totalPages > 50 ? 12 : S.totalPages;
+    const maxLookahead = S.totalPages > 50 ? 6 : S.totalPages;
 
     // Search for closest unrendered page to current reading position within lookahead window
     for (let p = Math.max(1, cur - maxLookahead); p <= Math.min(S.totalPages, cur + maxLookahead); p++) {
@@ -533,6 +537,9 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
   // and loads notes from Supabase in the background; the PDF fetch can start immediately
   import('./notepad.js').then(m => m.notepadOnPDFChange(trueId)).catch(() => {});
 
+  // Flush any pending debounced localStorage writes before clearing S.annotations
+  flushDebouncedStorageWrites();
+
   // Instantly clear memory of previous PDF's data so ghost highlights never bleed over
   S.annotations = [];
   S.drawData = {};
@@ -553,6 +560,15 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
   document.getElementById('content-area').style.display = 'flex';
 
   const scroll = document.getElementById('canvas-scroll');
+  if (scroll && scroll.dataset.massTagDelegated !== '1') {
+    scroll.dataset.massTagDelegated = '1';
+    scroll.addEventListener('mouseup', (e) => {
+      if (S.mode === 'text') _handleCanvasScrollTextUp(e);
+    });
+    scroll.addEventListener('touchend', (e) => {
+      if (S.mode === 'text') setTimeout(() => _handleCanvasScrollTextUp(e), 60);
+    });
+  }
   scroll.innerHTML = `<div class="spin-w"><div class="spinner"></div>${retries < 5 ? 'Retrying PDF...' : 'Loading PDF…'}</div>`;
 
   // Start PDF fetch and Supabase database queries in parallel
@@ -1016,6 +1032,7 @@ export async function ensurePageRendered(pageNum, container = null) {
       // The old code used tx[5] - fh (1.0×), which sat ~15-20% of fh too high vs the canvas.
       const tc = await page.getTextContent();
       if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
+      const textFrag = document.createDocumentFragment();
       const textItems = [];
       for (const item of tc.items) {
         if (!item.str || !item.transform) continue;
@@ -1031,7 +1048,7 @@ export async function ensurePageRendered(pageNum, container = null) {
         span.style.cssText = `left:${tx[4]}px;top:${topY}px;height:${fh}px;line-height:1;font-size:${fh}px;font-family:${fontFam}`;
         const tf = buildSpanTransform(angle, scaleX);
         if (tf) span.style.transform = tf;
-        txtLayer.appendChild(span);
+        textFrag.appendChild(span);
         textItems.push({
           str: item.str,
           x: tx[4],
@@ -1040,6 +1057,7 @@ export async function ensurePageRendered(pageNum, container = null) {
           h: item.height ? item.height * S.scale : fh,
         });
       }
+      txtLayer.appendChild(textFrag);
 
       pgState.pdfCanvas = pdfCanvas;
       pgState.drawCanvas = drawCanvas;
@@ -1057,10 +1075,9 @@ export async function ensurePageRendered(pageNum, container = null) {
       applyModeVisuals(pageNum);
 
       // Redraw annotations on this page
-      const { drawAnnotation } = await import('./annotate.js');
-      for (const ann of S.annotations.filter(a => a.page === pageNum)) {
-        drawAnnotation(ann);
-      }
+      const { drawPageAnnotations } = await import('./annotate.js');
+      if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
+      drawPageAnnotations(pageNum);
 
       // Redraw drawings on this page
       if (S.drawData[pageNum]) {
@@ -1168,7 +1185,10 @@ export function setMode(m) {
   document.getElementById('draw-ctrls')?.classList.toggle('visible', m === 'draw');
   if (m !== 'text') {
     document.getElementById('sel-menu')?.classList.remove('open');
+    const confirmBtn = document.getElementById('sel-confirm');
+    if (confirmBtn) confirmBtn.style.display = '';
     S.pendingSel = null;
+    import('./tags.js').then(tm => tm.updateSelMenuMassTagButton?.([])).catch(() => {});
   }
   for (const pn of Object.keys(S.pages)) applyModeVisuals(parseInt(pn));
 }
@@ -1187,8 +1207,8 @@ function setupAllListeners(pageNum) {
   if (!_textDone.has(pageNum)) {
     _textDone.add(pageNum);
     const { txtLayer } = S.pages[pageNum];
-    txtLayer.addEventListener('mouseup', () => { if (S.mode === 'text') onTextUp(pageNum); });
-    txtLayer.addEventListener('touchend', () => { if (S.mode === 'text') setTimeout(() => onTextUp(pageNum), 60); });
+    txtLayer.addEventListener('mouseup', (e) => { if (S.mode === 'text') onTextUp(pageNum, e); });
+    txtLayer.addEventListener('touchend', (e) => { if (S.mode === 'text') setTimeout(() => onTextUp(pageNum, e), 60); });
   }
   if (!_boxDone.has(pageNum)) {
     _boxDone.add(pageNum);
@@ -1264,31 +1284,205 @@ function extractRangeTextWithSpacing(range, txtLayer) {
   return out.trim();
 }
 
-function onTextUp(pageNum) {
+const _handledTextUpEvents = new WeakSet();
+
+function _getPageNumFromNode(node) {
+  const el = node?.nodeType === 1 ? node : node?.parentElement;
+  const wrap = el?.closest?.('.pg-wrap[data-page]');
+  return wrap ? parseInt(wrap.dataset.page, 10) : null;
+}
+
+function _normRectOverlapMatch(a, b) {
+  if (!(a.w > 0 && a.h > 0 && b.w > 0 && b.h > 0)) return false;
+  const interW = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+  const interH = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  const minW = Math.min(a.w, b.w);
+  const minH = Math.min(a.h, b.h);
+  if (interW > minW * 0.2 && interH > minH * 0.2) return true;
+  const acx = a.x + a.w / 2;
+  const acy = a.y + a.h / 2;
+  if (acx >= b.x && acx <= b.x + b.w && acy >= b.y && acy <= b.y + b.h) return true;
+  const bcx = b.x + b.w / 2;
+  const bcy = b.y + b.h / 2;
+  if (bcx >= a.x && bcx <= a.x + a.w && bcy >= a.y && bcy <= a.y + a.h) return true;
+  return false;
+}
+
+export async function findOverlappingAnnotationsForRange(range) {
+  if (!range || range.collapsed || !Array.isArray(S.annotations) || !S.annotations.length || !S.pages) {
+    return [];
+  }
+  const clientRects = Array.from(range.getClientRects()).filter(r => r.width > 1 && r.height > 1);
+  if (!clientRects.length) return [];
+
+  const pageSelections = [];
+  for (const [k, pg] of Object.entries(S.pages)) {
+    const pNum = parseInt(k, 10);
+    if (!pg?.rendered || !pg?.txtLayer || !pg?.wrap) continue;
+    let intersects = false;
+    try {
+      intersects = range.intersectsNode(pg.txtLayer);
+    } catch {
+      intersects = false;
+    }
+    if (!intersects) continue;
+
+    const wr = pg.wrap.getBoundingClientRect();
+    if (!(wr.width > 0 && wr.height > 0)) continue;
+
+    const selNormRects = [];
+    for (const cr of clientRects) {
+      const left = Math.max(cr.left, wr.left);
+      const right = Math.min(cr.right, wr.right);
+      const top = Math.max(cr.top, wr.top);
+      const bottom = Math.min(cr.bottom, wr.bottom);
+      if (right - left <= 1 || bottom - top <= 1) continue;
+      selNormRects.push({
+        x: (left - wr.left) / wr.width,
+        y: (top - wr.top) / wr.height,
+        w: (right - left) / wr.width,
+        h: (bottom - top) / wr.height,
+      });
+    }
+    if (selNormRects.length) {
+      pageSelections.push({ pNum, pg, wr, selNormRects });
+    }
+  }
+
+  if (!pageSelections.length) return [];
+
+  const { rectToPx, compareAnnotationsReadingOrder } = await import('./annotate.js');
+  const seenIds = new Set();
+  const matchedAnns = [];
+
+  for (const { pNum, pg, wr, selNormRects } of pageSelections) {
+    const vpW = pg.viewport?.width || wr.width;
+    const vpH = pg.viewport?.height || wr.height;
+    if (!(vpW > 0 && vpH > 0)) continue;
+
+    for (const ann of S.annotations) {
+      if (ann.page !== pNum || seenIds.has(ann.id)) continue;
+      const annNormRects = [];
+      for (const r of (ann.rects || [])) {
+        if (!r) continue;
+        if (r.n === 1) {
+          const nr = { x: Number(r.x) || 0, y: Number(r.y) || 0, w: Number(r.w) || 0, h: Number(r.h) || 0 };
+          if (nr.w > 0 && nr.h > 0) annNormRects.push(nr);
+        } else {
+          const px = rectToPx(r, pg.viewport || pg.wrap);
+          if (px.w > 0 && px.h > 0) {
+            annNormRects.push({ x: px.x / vpW, y: px.y / vpH, w: px.w / vpW, h: px.h / vpH });
+          }
+        }
+      }
+      if (!annNormRects.length) continue;
+
+      const hit = selNormRects.some(sr => annNormRects.some(ar => _normRectOverlapMatch(sr, ar)));
+      if (hit) {
+        seenIds.add(ann.id);
+        matchedAnns.push(ann);
+      }
+    }
+  }
+
+  matchedAnns.sort(compareAnnotationsReadingOrder);
+  return matchedAnns.map(a => a.id);
+}
+
+function _handleCanvasScrollTextUp(evt) {
   if (S.mode !== 'text') return;
+  if (evt?.target?.closest?.('#sel-menu, #mass-tag-popover')) return;
+  if (evt && _handledTextUpEvents.has(evt)) return;
   const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !sel.toString().trim()) return;
   const range = sel.getRangeAt(0);
-  const pg    = S.pages[pageNum]; if (!pg) return;
-  const text  = extractRangeTextWithSpacing(range, pg.txtLayer) || sel.toString().trim();
-  const wr    = pg.wrap.getBoundingClientRect();
-  let rects = Array.from(range.getClientRects())
-    .filter(r => r.width > 1 && r.height > 1)
+  const scrollEl = document.getElementById('canvas-scroll');
+  if (!scrollEl) return;
+  let inScroll = false;
+  try {
+    inScroll = scrollEl.contains(range.commonAncestorContainer) || range.intersectsNode(scrollEl);
+  } catch {
+    inScroll = false;
+  }
+  if (!inScroll) return;
+  const startPage = _getPageNumFromNode(range.startContainer);
+  onTextUp(startPage, evt);
+}
+
+async function onTextUp(pageNum, evt = null) {
+  if (S.mode !== 'text') return;
+  if (evt?.target?.closest?.('#sel-menu, #mass-tag-popover')) return;
+  if (evt) {
+    if (_handledTextUpEvents.has(evt)) return;
+    _handledTextUpEvents.add(evt);
+  }
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !sel.toString().trim()) return;
+  const range = sel.getRangeAt(0);
+  const rawSelText = sel.toString().trim();
+  const clientRects = Array.from(range.getClientRects()).filter(r => r.width > 1 && r.height > 1);
+  if (!clientRects.length) return;
+
+  const intersectingPages = [];
+  for (const [k, pState] of Object.entries(S.pages || {})) {
+    if (!pState?.rendered || !pState?.txtLayer) continue;
+    try {
+      if (range.intersectsNode(pState.txtLayer)) intersectingPages.push(parseInt(k, 10));
+    } catch {}
+  }
+  intersectingPages.sort((a, b) => a - b);
+
+  const startPage = _getPageNumFromNode(range.startContainer) ?? intersectingPages[0] ?? pageNum ?? null;
+  const endPage = _getPageNumFromNode(range.endContainer) ?? intersectingPages[intersectingPages.length - 1] ?? startPage;
+  const isCrossPage = (startPage != null && endPage != null && startPage !== endPage) || intersectingPages.length > 1;
+
+  if (isCrossPage) {
+    const overlappingAnnIds = await findOverlappingAnnotationsForRange(range);
+    if (S.mode !== 'text' || !overlappingAnnIds.length) return;
+
+    const lastClient = clientRects[clientRects.length - 1];
+    const mx = Math.min(Math.max(10, lastClient.right), window.innerWidth - 170);
+    const my = Math.min(Math.max(10, lastClient.bottom + 6), window.innerHeight - 60);
+
+    const confirmBtn = document.getElementById('sel-confirm');
+    if (confirmBtn) confirmBtn.style.display = 'none';
+
+    S.pendingEditorSel = null;
+    S.pendingSel = { pageNum: startPage, rects: [], text: rawSelText, overlappingAnnIds, multiPage: true };
+
+    const m = document.getElementById('sel-menu');
+    if (m) {
+      m.style.left = mx + 'px';
+      m.style.top  = my + 'px';
+      m.classList.add('open');
+    }
+    const { updateSelMenuMassTagButton } = await import('./tags.js');
+    updateSelMenuMassTagButton?.(overlappingAnnIds);
+    return;
+  }
+
+  const targetPage = startPage ?? pageNum;
+  const pg = S.pages[targetPage];
+  if (!pg || !pg.wrap) return;
+
+  const text = extractRangeTextWithSpacing(range, pg.txtLayer) || rawSelText;
+  const wr   = pg.wrap.getBoundingClientRect();
+  let rects  = clientRects
     .map(r => ({ x: r.left - wr.left, y: r.top - wr.top, w: r.width, h: r.height }));
-  
+
   if (!rects.length) return;
 
   // Merge rects on the same line to create continuous highlights and fix gaps
-  rects.sort((a,b) => {
-    const over = Math.max(0, Math.min(a.y+a.h, b.y+b.h) - Math.max(a.y, b.y));
+  rects.sort((a, b) => {
+    const over = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
     return over > Math.min(a.h, b.h) * 0.5 ? a.x - b.x : a.y - b.y;
   });
   const merged = [rects[0]];
   for (let i = 1; i < rects.length; i++) {
     const curr = rects[i];
     const prev = merged[merged.length - 1];
-    
-    const over = Math.max(0, Math.min(prev.y+prev.h, curr.y+curr.h) - Math.max(prev.y, curr.y));
+
+    const over = Math.max(0, Math.min(prev.y + prev.h, curr.y + curr.h) - Math.max(prev.y, curr.y));
     const maxGap = Math.max(32, Math.min(prev.h, curr.h) * 2.2);
     // Must share >50% vertical height (same line) and be horizontally adjacent
     if (over > Math.min(prev.h, curr.h) * 0.5 && curr.x >= prev.x - 4 && curr.x <= prev.x + prev.w + maxGap) {
@@ -1305,16 +1499,29 @@ function onTextUp(pageNum) {
   rects = merged;
 
   const last = rects[rects.length - 1];
-  const mx = Math.min(wr.left + last.x + last.w, window.innerWidth - 170);
-  const my = Math.min(wr.top  + last.y + last.h + 6, window.innerHeight - 60);
+  const mx = Math.min(Math.max(10, wr.left + last.x + last.w), window.innerWidth - 170);
+  const my = Math.min(Math.max(10, wr.top  + last.y + last.h + 6), window.innerHeight - 60);
   const normRects = (wr.width > 0 && wr.height > 0)
     ? rects.map(r => ({ x: r.x / wr.width, y: r.y / wr.height, w: r.w / wr.width, h: r.h / wr.height, n: 1 }))
     : rects;
-  S.pendingSel = { pageNum, rects: normRects, text };
-  const m  = document.getElementById('sel-menu');
-  m.style.left = mx + 'px';
-  m.style.top  = my + 'px';
-  m.classList.add('open');
+
+  const overlappingAnnIds = await findOverlappingAnnotationsForRange(range);
+  if (S.mode !== 'text') return;
+
+  const confirmBtn = document.getElementById('sel-confirm');
+  if (confirmBtn) confirmBtn.style.display = '';
+
+  S.pendingEditorSel = null;
+  S.pendingSel = { pageNum: targetPage, rects: normRects, text, overlappingAnnIds, multiPage: false };
+
+  const m = document.getElementById('sel-menu');
+  if (m) {
+    m.style.left = mx + 'px';
+    m.style.top  = my + 'px';
+    m.classList.add('open');
+  }
+  const { updateSelMenuMassTagButton } = await import('./tags.js');
+  updateSelMenuMassTagButton?.(overlappingAnnIds);
 }
 
 // ── Box drag ──

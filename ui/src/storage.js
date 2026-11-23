@@ -35,8 +35,66 @@ function _mirror(key, value) {
   try { _storageMirrorHook(key, value); } catch {}
 }
 
+// ── Debounced LocalStorage Writes (coalesced per key, flushed on hide/unload) ──
+const _debouncedWrites = new Map(); // key -> { timer, getValueFn }
+
+function _runDebouncedWrite(key, getValueFn) {
+  try {
+    const val = typeof getValueFn === 'function' ? getValueFn() : getValueFn;
+    if (val !== undefined && val !== null) {
+      safeStorageSet(key, val);
+    }
+  } catch (err) {
+    console.warn(`[Storage] Failed debounced write for '${key}':`, err);
+  }
+}
+
+export function flushDebouncedStorageWrites() {
+  if (_debouncedWrites.size === 0) return;
+  const pending = Array.from(_debouncedWrites.entries());
+  _debouncedWrites.clear();
+  for (const [key, entry] of pending) {
+    clearTimeout(entry.timer);
+    _runDebouncedWrite(key, entry.getValueFn);
+  }
+}
+
+export function scheduleDebouncedStorageSet(key, getValueFn, delayMs = 350) {
+  if (!key) return;
+  const existing = _debouncedWrites.get(key);
+  if (existing) {
+    clearTimeout(existing.timer);
+  }
+  const timer = setTimeout(() => {
+    const current = _debouncedWrites.get(key);
+    if (current && current.timer === timer) {
+      _debouncedWrites.delete(key);
+      _runDebouncedWrite(key, current.getValueFn);
+    }
+  }, delayMs);
+  _debouncedWrites.set(key, { timer, getValueFn });
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flushDebouncedStorageWrites();
+    }
+  });
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    flushDebouncedStorageWrites();
+  });
+}
+
 // ── Safe LocalStorage Set with Quota Auto-Recovery ──
 export function safeStorageSet(key, value) {
+  const pending = _debouncedWrites.get(key);
+  if (pending) {
+    clearTimeout(pending.timer);
+    _debouncedWrites.delete(key);
+  }
   if (typeof localStorage === 'undefined') return false;
   _mirror(key, value);
   try {
@@ -72,6 +130,11 @@ export function safeStorageGet(key, fallback = null) {
 
 // ── Safe LocalStorage Remove ──
 export function safeStorageRemove(key) {
+  const pending = _debouncedWrites.get(key);
+  if (pending) {
+    clearTimeout(pending.timer);
+    _debouncedWrites.delete(key);
+  }
   if (typeof localStorage === 'undefined') return;
   try {
     localStorage.removeItem(key);
