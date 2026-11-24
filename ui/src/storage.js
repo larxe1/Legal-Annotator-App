@@ -30,13 +30,14 @@ let _storageMirrorHook = null;
 export function setStorageMirrorHook(fn) {
   _storageMirrorHook = typeof fn === 'function' ? fn : null;
 }
-function _mirror(key, value) {
+function _mirror(key, value, rawObj = undefined) {
   if (!_storageMirrorHook) return;
-  try { _storageMirrorHook(key, value); } catch {}
+  try { _storageMirrorHook(key, value, rawObj); } catch {}
 }
 
 // ── Debounced LocalStorage Writes (coalesced per key, flushed on hide/unload) ──
-const _debouncedWrites = new Map(); // key -> { timer, getValueFn }
+const _debouncedWrites = new Map(); // key -> { timer, runFn }
+const LOCAL_ANNS_LS_MAX_LEN = 1500000;
 
 function _runDebouncedWrite(key, getValueFn) {
   try {
@@ -49,17 +50,27 @@ function _runDebouncedWrite(key, getValueFn) {
   }
 }
 
-export function flushDebouncedStorageWrites() {
-  if (_debouncedWrites.size === 0) return;
-  const pending = Array.from(_debouncedWrites.entries());
-  _debouncedWrites.clear();
-  for (const [key, entry] of pending) {
-    clearTimeout(entry.timer);
-    _runDebouncedWrite(key, entry.getValueFn);
+function _runDebouncedLocalAnnsWrite(key, getAnnsFn) {
+  try {
+    const anns = typeof getAnnsFn === 'function' ? getAnnsFn() : getAnnsFn;
+    if (!Array.isArray(anns)) return;
+    const jsonStr = JSON.stringify(anns);
+    if (jsonStr.length > LOCAL_ANNS_LS_MAX_LEN) {
+      // Skip localStorage.setItem so huge annotation sets don't blow 5MB quota / trigger pruneLocalStorage(),
+      // remove any smaller stale localStorage copy so offline reads fall through to IndexedDB, and mirror raw array.
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
+      } catch {}
+      _mirror(key, jsonStr, anns);
+    } else {
+      safeStorageSet(key, jsonStr, anns);
+    }
+  } catch (err) {
+    console.warn(`[Storage] Failed debounced local_anns write for '${key}':`, err);
   }
 }
 
-export function scheduleDebouncedStorageSet(key, getValueFn, delayMs = 350) {
+function _scheduleDebouncedEntry(key, runFn, delayMs) {
   if (!key) return;
   const existing = _debouncedWrites.get(key);
   if (existing) {
@@ -69,10 +80,31 @@ export function scheduleDebouncedStorageSet(key, getValueFn, delayMs = 350) {
     const current = _debouncedWrites.get(key);
     if (current && current.timer === timer) {
       _debouncedWrites.delete(key);
-      _runDebouncedWrite(key, current.getValueFn);
+      current.runFn();
     }
   }, delayMs);
-  _debouncedWrites.set(key, { timer, getValueFn });
+  _debouncedWrites.set(key, { timer, runFn });
+}
+
+export function flushDebouncedStorageWrites() {
+  if (_debouncedWrites.size === 0) return;
+  const pending = Array.from(_debouncedWrites.entries());
+  _debouncedWrites.clear();
+  for (const [, entry] of pending) {
+    clearTimeout(entry.timer);
+    entry.runFn();
+  }
+}
+
+export function scheduleDebouncedStorageSet(key, getValueFn, delayMs = 350) {
+  if (!key) return;
+  _scheduleDebouncedEntry(key, () => _runDebouncedWrite(key, getValueFn), delayMs);
+}
+
+export function scheduleDebouncedLocalAnnsSave(pdfId, getAnnsFn, delayMs = 800) {
+  if (!pdfId) return;
+  const key = 'local_anns_' + pdfId;
+  _scheduleDebouncedEntry(key, () => _runDebouncedLocalAnnsWrite(key, getAnnsFn), delayMs);
 }
 
 if (typeof document !== 'undefined') {
@@ -89,14 +121,14 @@ if (typeof window !== 'undefined') {
 }
 
 // ── Safe LocalStorage Set with Quota Auto-Recovery ──
-export function safeStorageSet(key, value) {
+export function safeStorageSet(key, value, rawObj = undefined) {
   const pending = _debouncedWrites.get(key);
   if (pending) {
     clearTimeout(pending.timer);
     _debouncedWrites.delete(key);
   }
   if (typeof localStorage === 'undefined') return false;
-  _mirror(key, value);
+  _mirror(key, value, rawObj);
   try {
     localStorage.setItem(key, value);
     return true;

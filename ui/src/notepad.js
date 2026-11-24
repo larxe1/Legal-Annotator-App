@@ -70,6 +70,9 @@ let _showHighlightNotes = safeStorageGet('la_np_hi_notes', 'false') === 'true';
 let _hiDragState = null;
 let _highlightsDirty = false;
 let _hiRenderGen = 0;
+let _lastDropIndicatorCard = null;
+let _lastDropIndicatorGroup = null;
+let _hiChangedDebounceTimer = null;
 
 function _isHighlightsTabVisible() {
   return Boolean($panel()?.classList.contains('open') && _activeTab === 'highlights');
@@ -845,10 +848,21 @@ function _escHtml(str) {
   }[ch]));
 }
 
+const _SANITIZED_NOTE_CACHE_MAX = 500;
+const _sanitizedNoteCache = new Map();
+
 function _sanitizeNoteHtml(rawHtml) {
   if (!rawHtml) return '';
+  const key = String(rawHtml);
+  const cached = _sanitizedNoteCache.get(key);
+  if (cached !== undefined) {
+    _sanitizedNoteCache.delete(key);
+    _sanitizedNoteCache.set(key, cached);
+    return cached;
+  }
+  let sanitized;
   try {
-    const doc = new DOMParser().parseFromString(String(rawHtml), 'text/html');
+    const doc = new DOMParser().parseFromString(key, 'text/html');
     doc.querySelectorAll('script, iframe, object, embed, style, link, meta').forEach(el => el.remove());
     doc.querySelectorAll('*').forEach(el => {
       for (const attr of Array.from(el.attributes)) {
@@ -862,10 +876,16 @@ function _sanitizeNoteHtml(rawHtml) {
         }
       }
     });
-    return doc.body.innerHTML;
+    sanitized = doc.body.innerHTML;
   } catch {
-    return _escHtml(rawHtml);
+    sanitized = _escHtml(rawHtml);
   }
+  if (_sanitizedNoteCache.size >= _SANITIZED_NOTE_CACHE_MAX) {
+    const oldestKey = _sanitizedNoteCache.keys().next().value;
+    if (oldestKey !== undefined) _sanitizedNoteCache.delete(oldestKey);
+  }
+  _sanitizedNoteCache.set(key, sanitized);
+  return sanitized;
 }
 
 function _getHighlightPdfId() {
@@ -933,6 +953,14 @@ function _sortAnnotationsByOrder(anns, pdfId) {
 }
 
 function _clearHiDragClasses(root) {
+  if (_lastDropIndicatorCard) {
+    _lastDropIndicatorCard.classList.remove('drop-above', 'drop-below');
+    _lastDropIndicatorCard = null;
+  }
+  if (_lastDropIndicatorGroup) {
+    _lastDropIndicatorGroup.classList.remove('drop-above', 'drop-below');
+    _lastDropIndicatorGroup = null;
+  }
   if (!root) return;
   root.querySelectorAll('.dragging, .drop-above, .drop-below').forEach(el => {
     el.classList.remove('dragging', 'drop-above', 'drop-below');
@@ -1100,9 +1128,10 @@ function _buildHighlightCard(ann, catInfo, groupKey, orderedAnns, pdfId, pane) {
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    pane.querySelectorAll('.np-hi-card.drop-above, .np-hi-card.drop-below').forEach(el => {
-      if (el !== card) el.classList.remove('drop-above', 'drop-below');
-    });
+    if (_lastDropIndicatorCard && _lastDropIndicatorCard !== card) {
+      _lastDropIndicatorCard.classList.remove('drop-above', 'drop-below');
+    }
+    _lastDropIndicatorCard = card;
     const rect = card.getBoundingClientRect();
     const isAbove = (e.clientY - rect.top) < rect.height / 2;
     card.classList.toggle('drop-above', isAbove);
@@ -1112,6 +1141,7 @@ function _buildHighlightCard(ann, catInfo, groupKey, orderedAnns, pdfId, pane) {
   card.addEventListener('dragleave', (e) => {
     if (!card.contains(e.relatedTarget)) {
       card.classList.remove('drop-above', 'drop-below');
+      if (_lastDropIndicatorCard === card) _lastDropIndicatorCard = null;
     }
   });
 
@@ -1138,15 +1168,107 @@ function _buildHighlightCard(ann, catInfo, groupKey, orderedAnns, pdfId, pane) {
   return card;
 }
 
+function _createCategoryGroupEl(grp, pane) {
+  const grpEl = document.createElement('div');
+  grpEl.className = 'np-hi-group';
+  grpEl.dataset.groupKey = grp.key;
+  if (grp.catId != null) grpEl.dataset.catId = String(grp.catId);
+
+  const hd = document.createElement('div');
+  hd.className = 'np-hi-group-hd';
+  const canDragCat = grp.catId != null;
+  if (canDragCat) hd.draggable = true;
+
+  hd.innerHTML = `
+    ${canDragCat ? '<span class="np-drag-handle" title="Drag to reorder category" aria-hidden="true">⋮⋮</span>' : ''}
+    <span class="np-hi-cat-dot" style="background:${_escHtml(grp.hex)}" aria-hidden="true"></span>
+    <span class="np-hi-cat-name">${_escHtml(grp.name)}</span>
+    <span class="np-hi-cat-count">${grp.items.length}</span>
+  `;
+
+  if (canDragCat) {
+    hd.addEventListener('dragstart', (e) => {
+      e.stopPropagation();
+      _hiDragState = { type: 'category', catId: grp.catId };
+      grpEl.classList.add('dragging');
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', JSON.stringify(_hiDragState));
+      }
+    });
+
+    hd.addEventListener('dragend', () => {
+      _hiDragState = null;
+      _clearHiDragClasses(pane);
+    });
+
+    grpEl.addEventListener('dragover', (e) => {
+      if (!_hiDragState || _hiDragState.type !== 'category') return;
+      if (String(_hiDragState.catId) === String(grp.catId)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      if (_lastDropIndicatorGroup && _lastDropIndicatorGroup !== grpEl) {
+        _lastDropIndicatorGroup.classList.remove('drop-above', 'drop-below');
+      }
+      _lastDropIndicatorGroup = grpEl;
+      const rect = grpEl.getBoundingClientRect();
+      const isAbove = (e.clientY - rect.top) < rect.height / 2;
+      grpEl.classList.toggle('drop-above', isAbove);
+      grpEl.classList.toggle('drop-below', !isAbove);
+    });
+
+    grpEl.addEventListener('dragleave', (e) => {
+      if (!grpEl.contains(e.relatedTarget)) {
+        grpEl.classList.remove('drop-above', 'drop-below');
+        if (_lastDropIndicatorGroup === grpEl) _lastDropIndicatorGroup = null;
+      }
+    });
+
+    grpEl.addEventListener('drop', (e) => {
+      if (!_hiDragState || _hiDragState.type !== 'category') return;
+      if (String(_hiDragState.catId) === String(grp.catId)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = grpEl.getBoundingClientRect();
+      const position = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
+      const draggedId = _hiDragState.catId;
+      _hiDragState = null;
+      _clearHiDragClasses(pane);
+      window.dispatchEvent(new CustomEvent('la:reorder-color-cat', {
+        detail: {
+          draggedId,
+          targetId: grp.catId,
+          position,
+        },
+      }));
+    });
+  }
+
+  const listEl = document.createElement('div');
+  listEl.className = 'np-hi-group-list';
+  grpEl.appendChild(hd);
+  grpEl.appendChild(listEl);
+  return { grpEl, listEl };
+}
+
 export function renderNotepadHighlights(force = false) {
   if (!force && !_isHighlightsTabVisible()) {
     _highlightsDirty = true;
     return;
   }
+  if (_hiChangedDebounceTimer) {
+    clearTimeout(_hiChangedDebounceTimer);
+    _hiChangedDebounceTimer = null;
+  }
   const pane = $highlightsPane();
   if (!pane) return;
   _highlightsDirty = false;
   const myGen = ++_hiRenderGen;
+
+  const prevScrollTop = pane.querySelector('.np-hi-scroll')?.scrollTop || 0;
+  _lastDropIndicatorCard = null;
+  _lastDropIndicatorGroup = null;
 
   const pdfId = _getHighlightPdfId();
   pane.innerHTML = '';
@@ -1261,6 +1383,19 @@ export function renderNotepadHighlights(force = false) {
     return;
   }
 
+  let userScrolledDuringChunk = false;
+  if (prevScrollTop > 0) {
+    const markUserScrolled = () => { userScrolledDuringChunk = true; };
+    scroll.addEventListener('wheel', markUserScrolled, { once: true, passive: true });
+    scroll.addEventListener('pointerdown', markUserScrolled, { once: true, passive: true });
+    scroll.addEventListener('touchstart', markUserScrolled, { once: true, passive: true });
+  }
+  const restoreScrollIfNeeded = () => {
+    if (prevScrollTop > 0 && !userScrolledDuringChunk) {
+      scroll.scrollTop = prevScrollTop;
+    }
+  };
+
   if (_highlightsView === 'all') {
     const CHUNK_SIZE = 60;
     if (visibleAnns.length > 100) {
@@ -1272,6 +1407,7 @@ export function renderNotepadHighlights(force = false) {
         firstFrag.appendChild(_buildHighlightCard(ann, catInfo, '__all__', orderedAnns, pdfId, pane));
       }
       scroll.appendChild(firstFrag);
+      restoreScrollIfNeeded();
 
       let offset = firstEnd;
       const appendNextChunk = () => {
@@ -1284,6 +1420,7 @@ export function renderNotepadHighlights(force = false) {
           frag.appendChild(_buildHighlightCard(ann, catInfo, '__all__', orderedAnns, pdfId, pane));
         }
         scroll.appendChild(frag);
+        restoreScrollIfNeeded();
         if (offset < visibleAnns.length) {
           requestAnimationFrame(appendNextChunk);
         }
@@ -1298,44 +1435,46 @@ export function renderNotepadHighlights(force = false) {
         frag.appendChild(_buildHighlightCard(ann, catInfo, '__all__', orderedAnns, pdfId, pane));
       }
       scroll.appendChild(frag);
+      restoreScrollIfNeeded();
     }
     return;
   }
 
-  const matchedIds = new Set();
-  const groups = [];
-
+  // Single O(Cats + N) grouping pass into Map using getColorCategoryForHex
+  const catGroupByKey = new Map();
+  const orderedCatGroups = [];
   for (let i = 0; i < cats.length; i++) {
     const cat = cats[i];
-    const catNorm = normalizeHexColor(cat.hex_color) || cat.hex_color || '#c9a84c';
-    const items = [];
-    for (const ann of visibleAnns) {
-      if (matchedIds.has(ann.id)) continue;
-      const info = getColorCategoryForHex(ann.hex_color);
-      const isMatch = !info.isLegacy && (
-        (cat.id != null && info.id === cat.id) ||
-        (cat.id == null && info.hex_color === normalizeHexColor(cat.hex_color))
-      );
-      if (isMatch) {
-        matchedIds.add(ann.id);
-        items.push({ ann, catInfo: info });
-      }
-    }
-    if (items.length > 0) {
-      groups.push({
+    const normCatHex = normalizeHexColor(cat.hex_color);
+    const lookupKey = cat.id != null ? `cat:${cat.id}` : (normCatHex ? `hex:${normCatHex}` : `catidx:${i}`);
+    if (!catGroupByKey.has(lookupKey)) {
+      const grp = {
         key: cat.id != null ? `cat:${cat.id}` : `catidx:${i}`,
         catId: cat.id ?? null,
         name: cat.name || 'Color',
-        hex: catNorm,
-        items,
-      });
+        hex: normCatHex || cat.hex_color || '#c9a84c',
+        items: [],
+      };
+      catGroupByKey.set(lookupKey, grp);
+      orderedCatGroups.push(grp);
     }
   }
 
-  const uncategorized = visibleAnns
-    .filter(ann => !matchedIds.has(ann.id))
-    .map(ann => ({ ann, catInfo: getColorCategoryForHex(ann.hex_color) }));
+  const uncategorized = [];
+  for (const ann of visibleAnns) {
+    const info = getColorCategoryForHex(ann.hex_color);
+    if (!info.isLegacy) {
+      const lookupKey = info.id != null ? `cat:${info.id}` : `hex:${info.hex_color || ''}`;
+      const grp = catGroupByKey.get(lookupKey);
+      if (grp) {
+        grp.items.push({ ann, catInfo: info });
+        continue;
+      }
+    }
+    uncategorized.push({ ann, catInfo: info });
+  }
 
+  const groups = orderedCatGroups.filter(g => g.items.length > 0);
   if (uncategorized.length > 0) {
     groups.push({
       key: '__uncategorized__',
@@ -1346,95 +1485,71 @@ export function renderNotepadHighlights(force = false) {
     });
   }
 
-  const groupsFrag = document.createDocumentFragment();
-  for (const grp of groups) {
-    const grpEl = document.createElement('div');
-    grpEl.className = 'np-hi-group';
-    grpEl.dataset.groupKey = grp.key;
-    if (grp.catId != null) grpEl.dataset.catId = String(grp.catId);
-
-    const hd = document.createElement('div');
-    hd.className = 'np-hi-group-hd';
-    const canDragCat = grp.catId != null;
-    if (canDragCat) hd.draggable = true;
-
-    hd.innerHTML = `
-      ${canDragCat ? '<span class="np-drag-handle" title="Drag to reorder category" aria-hidden="true">⋮⋮</span>' : ''}
-      <span class="np-hi-cat-dot" style="background:${_escHtml(grp.hex)}" aria-hidden="true"></span>
-      <span class="np-hi-cat-name">${_escHtml(grp.name)}</span>
-      <span class="np-hi-cat-count">${grp.items.length}</span>
-    `;
-
-    if (canDragCat) {
-      hd.addEventListener('dragstart', (e) => {
-        e.stopPropagation();
-        _hiDragState = { type: 'category', catId: grp.catId };
-        grpEl.classList.add('dragging');
-        if (e.dataTransfer) {
-          e.dataTransfer.effectAllowed = 'move';
-          e.dataTransfer.setData('text/plain', JSON.stringify(_hiDragState));
-        }
-      });
-
-      hd.addEventListener('dragend', () => {
-        _hiDragState = null;
-        _clearHiDragClasses(pane);
-      });
-
-      grpEl.addEventListener('dragover', (e) => {
-        if (!_hiDragState || _hiDragState.type !== 'category') return;
-        if (String(_hiDragState.catId) === String(grp.catId)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-        pane.querySelectorAll('.np-hi-group.drop-above, .np-hi-group.drop-below').forEach(el => {
-          if (el !== grpEl) el.classList.remove('drop-above', 'drop-below');
-        });
-        const rect = grpEl.getBoundingClientRect();
-        const isAbove = (e.clientY - rect.top) < rect.height / 2;
-        grpEl.classList.toggle('drop-above', isAbove);
-        grpEl.classList.toggle('drop-below', !isAbove);
-      });
-
-      grpEl.addEventListener('dragleave', (e) => {
-        if (!grpEl.contains(e.relatedTarget)) {
-          grpEl.classList.remove('drop-above', 'drop-below');
-        }
-      });
-
-      grpEl.addEventListener('drop', (e) => {
-        if (!_hiDragState || _hiDragState.type !== 'category') return;
-        if (String(_hiDragState.catId) === String(grp.catId)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const rect = grpEl.getBoundingClientRect();
-        const position = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
-        const draggedId = _hiDragState.catId;
-        _hiDragState = null;
-        _clearHiDragClasses(pane);
-        window.dispatchEvent(new CustomEvent('la:reorder-color-cat', {
-          detail: {
-            draggedId,
-            targetId: grp.catId,
-            position,
-          },
-        }));
-      });
+  const CAT_CHUNK_SIZE = 50;
+  if (visibleAnns.length <= 80) {
+    const groupsFrag = document.createDocumentFragment();
+    for (const grp of groups) {
+      const { grpEl, listEl } = _createCategoryGroupEl(grp, pane);
+      const listFrag = document.createDocumentFragment();
+      for (const { ann, catInfo } of grp.items) {
+        listFrag.appendChild(_buildHighlightCard(ann, catInfo, grp.key, orderedAnns, pdfId, pane));
+      }
+      listEl.appendChild(listFrag);
+      groupsFrag.appendChild(grpEl);
     }
-
-    const listEl = document.createElement('div');
-    listEl.className = 'np-hi-group-list';
-    const listFrag = document.createDocumentFragment();
-    for (const { ann, catInfo } of grp.items) {
-      listFrag.appendChild(_buildHighlightCard(ann, catInfo, grp.key, orderedAnns, pdfId, pane));
-    }
-    listEl.appendChild(listFrag);
-
-    grpEl.appendChild(hd);
-    grpEl.appendChild(listEl);
-    groupsFrag.appendChild(grpEl);
+    scroll.appendChild(groupsFrag);
+    restoreScrollIfNeeded();
+    return;
   }
-  scroll.appendChild(groupsFrag);
+
+  let groupIdx = 0;
+  let itemIdx = 0;
+  let curGroupDom = null;
+  let curGroupAttached = false;
+
+  const renderCategoryChunk = (isFirst) => {
+    if (!isFirst && (myGen !== _hiRenderGen || !scroll.isConnected)) return;
+    let budget = CAT_CHUNK_SIZE;
+    const newGroupsFrag = document.createDocumentFragment();
+
+    while (groupIdx < groups.length && budget > 0) {
+      const grp = groups[groupIdx];
+      if (!curGroupDom) {
+        curGroupDom = _createCategoryGroupEl(grp, pane);
+        curGroupAttached = false;
+      }
+      const take = Math.min(budget, grp.items.length - itemIdx);
+      const cardsFrag = document.createDocumentFragment();
+      for (let k = 0; k < take; k++) {
+        const { ann, catInfo } = grp.items[itemIdx + k];
+        cardsFrag.appendChild(_buildHighlightCard(ann, catInfo, grp.key, orderedAnns, pdfId, pane));
+      }
+      curGroupDom.listEl.appendChild(cardsFrag);
+      if (!curGroupAttached) {
+        newGroupsFrag.appendChild(curGroupDom.grpEl);
+        curGroupAttached = true;
+      }
+      itemIdx += take;
+      budget -= take;
+      if (itemIdx >= grp.items.length) {
+        groupIdx++;
+        itemIdx = 0;
+        curGroupDom = null;
+        curGroupAttached = false;
+      }
+    }
+
+    if (newGroupsFrag.childNodes.length > 0) {
+      scroll.appendChild(newGroupsFrag);
+    }
+    restoreScrollIfNeeded();
+
+    if (groupIdx < groups.length) {
+      requestAnimationFrame(() => renderCategoryChunk(false));
+    }
+  };
+
+  renderCategoryChunk(true);
 }
 
 function _applyNotepadTabLayout(tab) {
@@ -3537,7 +3652,25 @@ export function initNotepad() {
 
   window.addEventListener('la:color-order-changed', () => { renderNotepadHighlights(); });
   window.addEventListener('la:colors-updated', () => { renderNotepadHighlights(); });
-  window.addEventListener('la:annotations-changed', () => { renderNotepadHighlights(); });
+  window.addEventListener('la:annotations-changed', () => {
+    if (!_isHighlightsTabVisible()) {
+      if (_hiChangedDebounceTimer) {
+        clearTimeout(_hiChangedDebounceTimer);
+        _hiChangedDebounceTimer = null;
+      }
+      _highlightsDirty = true;
+      return;
+    }
+    if (_hiChangedDebounceTimer) clearTimeout(_hiChangedDebounceTimer);
+    _hiChangedDebounceTimer = setTimeout(() => {
+      _hiChangedDebounceTimer = null;
+      if (_isHighlightsTabVisible()) {
+        renderNotepadHighlights();
+      } else {
+        _highlightsDirty = true;
+      }
+    }, 70);
+  });
 }
 
 function initNotepadResizer() {

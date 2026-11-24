@@ -161,7 +161,7 @@ body.theme-slate {
   --cb-paper-muted: #9c9080;
   --cb-lamp-pool: rgba(218, 134, 78, 0.065);
   --cb-lamp-bar: rgba(221, 108, 69, 0.45);
-  --cb-capsule-bg: rgba(28, 25, 22, 0.86);
+  --cb-capsule-bg: rgba(28, 25, 22, 0.96);
   --cb-receded-bg: #171412;
   --cb-receded-surface-2: #1f1b18;
   --cb-receded-ink: #bdb3a4;
@@ -273,7 +273,7 @@ html, body {
 [data-skin="casebook"] ::selection { background: rgba(221, 108, 69, 0.26); color: var(--cb-paper-lit); }
 [data-skin="folio"] :focus-visible,
 [data-skin="casebook"] :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-[data-skin="casebook"] .capsule { background: var(--cb-capsule-bg); border-color: var(--cb-rule-strong); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+[data-skin="casebook"] .capsule { background: var(--cb-capsule-bg); border-color: var(--cb-rule-strong); }
 html[data-transition="skin"]::view-transition-old(root),
 html[data-transition="skin"]::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
 html[data-transition="skin"]::view-transition-new(root) { z-index: 2; }
@@ -1145,7 +1145,7 @@ body.lib-dragging #lib-tree .li-acts {
   border-radius: 2px;
   box-sizing: border-box;
   cursor: pointer;
-  transition: background .12s ease, outline-color .12s ease, box-shadow .12s ease;
+  transition: none;
 }
 .hi-grp .hr.hr-start::before,
 .hi-grp .hr.hr-end::after {
@@ -2397,7 +2397,7 @@ body.lib-dragging #lib-tree .li-acts {
 #note-editor:focus { border-color: var(--accent); }
 #note-editor:empty::before { content: attr(data-ph); color: var(--ink-subtle, var(--ink-muted)); pointer-events: none; }
 #note-editor.shake { animation: shake .3s ease; }
-.ann-hover-tip { min-width: 260px; width: max-content; max-width: min(520px, 85vw); max-height: 80vh; font-size: 13.5px; line-height: 1.6; padding: 14px 18px; }
+.ann-hover-tip { left: 0; top: 0; will-change: transform; min-width: 260px; width: max-content; max-width: min(520px, 85vw); max-height: 80vh; font-size: 13.5px; line-height: 1.6; padding: 14px 18px; }
 @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-5px)} 75%{transform:translateX(5px)} }
 .ann-btns { display: flex; gap: 6px; margin-top: 8px; justify-content: space-between; }
 .btn-gold {
@@ -3489,7 +3489,7 @@ body.theme-slate {
 
 [data-skin="casebook"] #canvas-scroll {
   background-color: var(--bg);
-  background-image: radial-gradient(ellipse at 50% 24%, var(--cb-lamp-pool), transparent 72%);
+  background-image: none;
 }
 [data-skin="casebook"] .pg-wrap {
   box-shadow: 0 22px 48px rgba(0, 0, 0, 0.72), 0 4px 12px rgba(0, 0, 0, 0.45);

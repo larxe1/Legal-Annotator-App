@@ -10,6 +10,64 @@ let _memoryColorOrder = null;
 let _draggingDotCatId = null;
 let _draggingRowCatId = null;
 
+// ── Cached O(1) normHex -> CatInfo lookup (invalidated on mutator + signature check) ──
+let _colorCatMap = new Map();
+let _cachedCatsRef = null;
+let _cachedCatsLen = -1;
+let _cachedCatsEntries = null;
+let _colorCatCacheDirty = true;
+
+function _invalidateColorCatCache() {
+  _colorCatCacheDirty = true;
+}
+
+function _isColorCatCacheValid(cats) {
+  if (_colorCatCacheDirty || cats !== _cachedCatsRef || cats.length !== _cachedCatsLen || !_cachedCatsEntries) {
+    return false;
+  }
+  for (let i = 0; i < cats.length; i++) {
+    const c = cats[i];
+    const prev = _cachedCatsEntries[i];
+    if (!prev || c !== prev.ref || c?.id !== prev.id || c?.name !== prev.name || c?.hex_color !== prev.hex_color) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function _ensureColorCategoryMap() {
+  const cats = Array.isArray(S.colorCats) ? S.colorCats : [];
+  if (_isColorCatCacheValid(cats)) {
+    return _colorCatMap;
+  }
+  const nextMap = new Map();
+  const nextEntries = new Array(cats.length);
+  for (let i = 0; i < cats.length; i++) {
+    const c = cats[i];
+    nextEntries[i] = {
+      ref: c,
+      id: c?.id,
+      name: c?.name,
+      hex_color: c?.hex_color,
+    };
+    const catNorm = normalizeHexColor(c?.hex_color);
+    if (catNorm && !nextMap.has(catNorm)) {
+      nextMap.set(catNorm, {
+        id: c.id ?? null,
+        name: c.name || 'Color',
+        hex_color: catNorm,
+        isLegacy: false,
+      });
+    }
+  }
+  _colorCatMap = nextMap;
+  _cachedCatsRef = cats;
+  _cachedCatsLen = cats.length;
+  _cachedCatsEntries = nextEntries;
+  _colorCatCacheDirty = false;
+  return _colorCatMap;
+}
+
 function _hexToHsl(hex) {
   const norm = normalizeHexColor(hex);
   if (!norm) return null;
@@ -104,6 +162,7 @@ export function applySavedColorOrder(cats) {
   for (let i = 0; i < indexed.length; i++) {
     cats[i] = indexed[i].cat;
   }
+  if (cats === S.colorCats) _invalidateColorCatCache();
   return cats;
 }
 
@@ -125,6 +184,7 @@ export function reorderColorCat(draggedId, targetId, position = 'before') {
   }
   if (position === 'after') insertIdx += 1;
   S.colorCats.splice(insertIdx, 0, moved);
+  _invalidateColorCatCache();
 
   _saveColorOrder(S.colorCats.map(c => String(c.id)));
   renderColorDots();
@@ -175,16 +235,8 @@ export function getColorCategoryForHex(hex) {
   if (!norm) {
     return { id: null, name: 'Custom', hex_color: null, isLegacy: true };
   }
-  const cats = Array.isArray(S.colorCats) ? S.colorCats : [];
-  const match = cats.find(c => normalizeHexColor(c.hex_color) === norm);
-  if (match) {
-    return {
-      id: match.id ?? null,
-      name: match.name || 'Color',
-      hex_color: norm,
-      isLegacy: false,
-    };
-  }
+  const hit = _ensureColorCategoryMap().get(norm);
+  if (hit) return hit;
   return {
     id: null,
     name: `Custom (${norm})`,
@@ -583,6 +635,7 @@ export function openColorCategoriesModal() {
 }
 
 export function refreshColorCategoryUI({ dispatch = true } = {}) {
+  _invalidateColorCatCache();
   renderColorDots();
   const modal = document.getElementById('mo-color-categories');
   if (modal && (modal.classList.contains('open') || document.getElementById('color-cat-list'))) {
@@ -617,6 +670,7 @@ export function initColors() {
   if (!_colorsListenerAttached && typeof window !== 'undefined') {
     _colorsListenerAttached = true;
     window.addEventListener('la:color-cats-changed', (ev) => {
+      _invalidateColorCatCache();
       if (ev?.detail?.fromColorsJs) return;
       refreshColorCategoryUI({ dispatch: false });
     });

@@ -10,7 +10,7 @@ import {
 } from './db.js';
 import { handlePaste, handleCopy, showTablePicker, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, applyEditorHighlight, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
-import { safeStorageSet, safeStorageGet, scheduleDebouncedStorageSet } from './storage.js';
+import { safeStorageSet, safeStorageGet, scheduleDebouncedLocalAnnsSave } from './storage.js';
 import {
   loadTagsForPdf, getAnnTags, addTagToAnn, removeTagFromAnn,
   getAllTopicsForCurrentPdf, renderAnnPanelTagsSection,
@@ -191,16 +191,10 @@ export function rectToNorm(r, page) {
   };
 }
 
-/**
- * Compare two annotations in natural PDF reading order:
- * page ascending -> top-to-bottom -> same-line left-to-right -> id tie-break.
- */
-export function compareAnnotationsReadingOrder(a, b) {
-  const pageDiff = (Number(a?.page) || 0) - (Number(b?.page) || 0);
+function _compareNormReadingOrder(pageA, rA, idA, pageB, rB, idB) {
+  const pageDiff = pageA - pageB;
   if (pageDiff !== 0) return pageDiff;
 
-  const rA = rectToNorm(a?.rects?.[0], a?.page);
-  const rB = rectToNorm(b?.rects?.[0], b?.page);
   const xA = rA.x, yA = rA.y, hA = rA.h;
   const xB = rB.x, yB = rB.y, hB = rB.h;
 
@@ -215,14 +209,33 @@ export function compareAnnotationsReadingOrder(a, b) {
   }
   if (yA !== yB) return yA - yB;
   if (xA !== xB) return xA - xB;
-  return String(a?.id ?? '').localeCompare(String(b?.id ?? ''));
+  return idA.localeCompare(idB);
 }
 
 /**
- * Return a shallow copy of annotations sorted in natural PDF reading order.
+ * Compare two annotations in natural PDF reading order:
+ * page ascending -> top-to-bottom -> same-line left-to-right -> id tie-break.
+ */
+export function compareAnnotationsReadingOrder(a, b) {
+  return _compareNormReadingOrder(
+    Number(a?.page) || 0,
+    rectToNorm(a?.rects?.[0], a?.page),
+    String(a?.id ?? ''),
+    Number(b?.page) || 0,
+    rectToNorm(b?.rects?.[0], b?.page),
+    String(b?.id ?? '')
+  );
+}
+
+/**
+ * Return annotations sorted in natural PDF reading order (O(1) cached for S.annotations).
  */
 export function getReadingOrderAnnotations(anns = S.annotations) {
   if (!Array.isArray(anns)) return [];
+  if (anns === S.annotations) {
+    _ensureAnnotationIndex();
+    return _orderedAnnotations || [];
+  }
   return [...anns].sort(compareAnnotationsReadingOrder);
 }
 
@@ -231,19 +244,24 @@ let _annsByPage = new Map();
 let _annById = new Map();
 let _indexedAnnsRef = null;
 let _indexedAnnsLen = -1;
+let _orderedAnnotations = null;
+const _tooltipHtmlCache = new Map();
 
 export function invalidateAnnotationPageIndex() {
   _indexedAnnsRef = null;
   _indexedAnnsLen = -1;
+  _orderedAnnotations = null;
   _annsByPage.clear();
   _annById.clear();
+  _tooltipHtmlCache.clear();
 }
 
 function _ensureAnnotationIndex() {
   const anns = Array.isArray(S.annotations) ? S.annotations : [];
-  if (anns !== _indexedAnnsRef || anns.length !== _indexedAnnsLen) {
+  if (anns !== _indexedAnnsRef || anns.length !== _indexedAnnsLen || !_orderedAnnotations) {
     _annsByPage = new Map();
     _annById = new Map();
+    const sortable = [];
     for (const ann of anns) {
       if (!ann) continue;
       const p = Number(ann.page) || 0;
@@ -254,7 +272,15 @@ function _ensureAnnotationIndex() {
       }
       list.push(ann);
       if (ann.id != null) _annById.set(String(ann.id), ann);
+      sortable.push({
+        ann,
+        page: p,
+        norm: rectToNorm(ann.rects?.[0], ann.page),
+        id: String(ann.id ?? ''),
+      });
     }
+    sortable.sort((a, b) => _compareNormReadingOrder(a.page, a.norm, a.id, b.page, b.norm, b.id));
+    _orderedAnnotations = sortable.map(item => item.ann);
     _indexedAnnsRef = anns;
     _indexedAnnsLen = anns.length;
   }
@@ -263,6 +289,10 @@ function _ensureAnnotationIndex() {
 function _getAnnotationsForPage(pageNum) {
   _ensureAnnotationIndex();
   return _annsByPage.get(Number(pageNum) || 0) || [];
+}
+
+export function getAnnotationsForPage(pageNum) {
+  return _getAnnotationsForPage(pageNum);
 }
 
 function _findAnnotationById(id) {
@@ -275,6 +305,10 @@ function _findAnnotationById(id) {
     if (found) _annById.set(key, found);
   }
   return found || null;
+}
+
+export function getAnnotationById(id) {
+  return _findAnnotationById(id) || null;
 }
 
 function _sortRectsReadingOrder(rects, pageNum) {
@@ -300,11 +334,37 @@ function _sortRectsReadingOrder(rects, pageNum) {
   return items.map(it => it.r);
 }
 
+function _getAnnTooltipSig(ann) {
+  const notes = Array.isArray(ann?.notes) ? ann.notes : [];
+  const notesSig = notes
+    .map(n => `${n?.id ?? ''}:${n?.updated_at ?? n?.updatedAt ?? ''}:${n?.note_html ?? ''}`)
+    .join('\x1e');
+  const tags = Array.isArray(ann?.tags) ? ann.tags.join(',') : '';
+  return [
+    ann?.hex_color ?? ann?.color ?? '',
+    ann?.highlighted_text ?? ann?.text ?? '',
+    ann?.note ?? '',
+    notes.length,
+    notesSig,
+    tags,
+  ].join('\x1f');
+}
+
 function _buildAnnTooltipHtml(ann) {
+  const cacheKey = ann?.id != null ? String(ann.id) : null;
+  const sig = cacheKey ? _getAnnTooltipSig(ann) : null;
+  if (cacheKey) {
+    const cached = _tooltipHtmlCache.get(cacheKey);
+    if (cached && cached.sig === sig) return cached.html;
+  }
+
   const notes = Array.isArray(ann?.notes) ? ann.notes : [];
   const genNotes = notes.filter(n => getNoteType(n) === 'general');
   const caseCount = notes.filter(n => getNoteType(n) === 'case').length;
-  if (!genNotes.length && !caseCount) return '';
+  if (!genNotes.length && !caseCount) {
+    if (cacheKey) _tooltipHtmlCache.set(cacheKey, { sig, html: '' });
+    return '';
+  }
 
   let html = '';
   const catInfo = getColorCategoryForHex(ann.hex_color);
@@ -326,6 +386,7 @@ function _buildAnnTooltipHtml(ann) {
   } else if (genNotes.length > 1) {
     html += `<div style="border-top: 1px solid var(--border, rgba(255,255,255,0.15)); margin: 6px 0; padding-top: 6px; font-size: 0.9em; color: var(--ink-muted, var(--muted, #b0aaa0)); text-align: center; font-style: italic;">(click to manage notes)</div>`;
   }
+  if (cacheKey) _tooltipHtmlCache.set(cacheKey, { sig, html });
   return html;
 }
 
@@ -340,6 +401,22 @@ function _ensureAnnHiLayer(annOv) {
     annOv.insertBefore(layer, annOv.firstChild);
   }
   return layer;
+}
+
+let _hoveredAnnId = null;
+let _hoveredGrp = null;
+let _hoverGraceTimer = null;
+
+function _clearHoverState() {
+  if (_hoverGraceTimer) {
+    clearTimeout(_hoverGraceTimer);
+    _hoverGraceTimer = null;
+  }
+  if (_hoveredGrp) {
+    _hoveredGrp.classList.remove('is-hovered');
+    _hoveredGrp = null;
+  }
+  _hoveredAnnId = null;
 }
 
 function _ensureAnnOverlayDelegation(annOv) {
@@ -375,10 +452,24 @@ function _ensureAnnOverlayDelegation(annOv) {
     if (!hr) return;
     const grp = hr.closest('.hi-grp');
     if (!grp || !annOv.contains(grp)) return;
-    if (e.relatedTarget?.closest?.('.hi-grp') === grp) return;
+    const annId = String(grp.dataset.id ?? '');
+    if (_hoverGraceTimer) {
+      clearTimeout(_hoverGraceTimer);
+      _hoverGraceTimer = null;
+    }
+    if (_hoveredAnnId === annId && _hoveredGrp === grp && grp.isConnected) {
+      if (tip && tip.style.display !== 'none') moveTip(e);
+      return;
+    }
+    if (_hoveredGrp && _hoveredGrp !== grp) _hoveredGrp.classList.remove('is-hovered');
+    _hoveredAnnId = annId;
+    _hoveredGrp = grp;
     grp.classList.add('is-hovered');
-    const ann = _findAnnotationById(grp.dataset.id);
-    if (!ann) return;
+    const ann = _findAnnotationById(annId);
+    if (!ann) {
+      hideTip();
+      return;
+    }
     const html = _buildAnnTooltipHtml(ann);
     if (html) showTip(e, html);
     else hideTip();
@@ -390,12 +481,24 @@ function _ensureAnnOverlayDelegation(annOv) {
     const grp = hr.closest('.hi-grp');
     if (!grp || !annOv.contains(grp)) return;
     if (e.relatedTarget?.closest?.('.hi-grp') === grp) return;
-    grp.classList.remove('is-hovered');
-    hideTip();
+    if (_hoverGraceTimer) clearTimeout(_hoverGraceTimer);
+    _hoverGraceTimer = setTimeout(() => {
+      _hoverGraceTimer = null;
+      if (_hoveredGrp === grp) {
+        grp.classList.remove('is-hovered');
+        _hoveredGrp = null;
+        _hoveredAnnId = null;
+        hideTip();
+      }
+    }, 45);
   });
 
   annOv.addEventListener('pointermove', (e) => {
     if (!tip || tip.style.display === 'none') return;
+    if (_hoveredAnnId && _hoveredGrp) {
+      moveTip(e);
+      return;
+    }
     const hr = e.target?.closest?.('.hr');
     if (!hr || !hr.closest('.hi-grp')) return;
     moveTip(e);
@@ -461,6 +564,10 @@ export function drawPageAnnotations(pageNum) {
   _ensureAnnOverlayDelegation(annOv);
   const layer = _ensureAnnHiLayer(annOv);
   layer.textContent = '';
+  if (_hoveredGrp && !_hoveredGrp.isConnected) {
+    _clearHoverState();
+    hideTip();
+  }
   annOv.querySelectorAll('.ann-tag-pill-badge').forEach(el => el.remove());
 
   const pageAnns = _getAnnotationsForPage(pageNum);
@@ -492,6 +599,10 @@ export function drawAnnotation(ann) {
 
   const safeId = _escAttrVal(ann.id);
   layer.querySelectorAll(`[data-id="${safeId}"]`).forEach(el => el.remove());
+  if (_hoveredGrp && !_hoveredGrp.isConnected) {
+    _clearHoverState();
+    hideTip();
+  }
   layer.appendChild(_buildHiGroupEl(ann, pg.viewport || pg.wrap));
 
   const tags = getAnnTags(ann);
@@ -513,6 +624,10 @@ export function redrawAllAnnotations() {
 }
 
 export function clearAnnMark(id) {
+  if (_hoveredAnnId === String(id)) {
+    _clearHoverState();
+    hideTip();
+  }
   const safeId = _escAttrVal(id);
   document.querySelectorAll(`[data-id="${safeId}"]`).forEach(el => el.remove());
 }
@@ -528,6 +643,12 @@ export function updateAnnBadge(pdfId) {
 
 // ── Tooltip ──
 let tip = null;
+let _tipHtml = '';
+let _tipW = 0;
+let _tipH = 0;
+let _tipRaf = 0;
+let _pendingTipX = 0;
+let _pendingTipY = 0;
 // Track the real input device: touchscreen laptops report maxTouchPoints > 0
 // even when the user is hovering with a mouse/touchpad, so only skip the
 // hover tooltip when the last interaction was an actual finger touch.
@@ -535,36 +656,66 @@ let _lastPointerType = 'mouse';
 const _trackPointer = e => { if (e.pointerType) _lastPointerType = e.pointerType; };
 window.addEventListener('pointerdown', _trackPointer, { capture: true, passive: true });
 window.addEventListener('pointermove', _trackPointer, { capture: true, passive: true });
-function showTip(e, html) {
-  if (_lastPointerType === 'touch' || e?.sourceCapabilities?.firesTouchEvents) return;
-  if (!tip) {
-    tip = document.createElement('div');
-    tip.className = 'ann-hover-tip note-body';
-    tip.style.cssText = 'position:fixed;background:var(--surface-paper, var(--navy, #1a2540));border:1px solid var(--border-strong, var(--accent, #c9a84c));border-radius:10px;padding:14px 18px;font-size:13.5px;min-width:260px;width:max-content;max-width:min(520px,85vw);max-height:80vh;overflow-y:auto;line-height:1.6;z-index:700;pointer-events:none;color:var(--ink, var(--text, #e8e4db));box-shadow:var(--shadow-float, 0 8px 28px rgba(0,0,0,.22));word-break:break-word;';
-    document.body.appendChild(tip);
-  }
-  tip.innerHTML = html;
-  tip.style.display = 'block';
-  moveTip(e);
-}
-function moveTip(e) {
+window.addEventListener('resize', () => { _tipW = 0; _tipH = 0; }, { passive: true });
+
+function _applyTipPosition(clientX, clientY) {
   if (!tip) return;
   const pad = 12;
-  const w = tip.offsetWidth || 420;
-  const h = tip.offsetHeight || 160;
-  let x = e.clientX + 14;
-  let y = e.clientY - 10;
+  const w = _tipW || 420;
+  const h = _tipH || 160;
+  let x = clientX + 14;
+  let y = clientY - 10;
   if (x + w + pad > window.innerWidth) {
-    x = Math.max(pad, e.clientX - w - 14);
+    x = Math.max(pad, clientX - w - 14);
   }
   if (y + h + pad > window.innerHeight) {
     y = Math.max(pad, window.innerHeight - h - pad);
   }
   if (y < pad) y = pad;
-  tip.style.left = x + 'px';
-  tip.style.top  = y + 'px';
+  tip.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
 }
-function hideTip() { if (tip) tip.style.display = 'none'; }
+
+function showTip(e, html) {
+  if (_lastPointerType === 'touch' || e?.sourceCapabilities?.firesTouchEvents) return;
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.className = 'ann-hover-tip note-body';
+    tip.style.cssText = 'position:fixed;left:0;top:0;will-change:transform;background:var(--surface-paper, var(--navy, #1a2540));border:1px solid var(--border-strong, var(--accent, #c9a84c));border-radius:10px;padding:14px 18px;font-size:13.5px;min-width:260px;width:max-content;max-width:min(520px,85vw);max-height:80vh;overflow-y:auto;line-height:1.6;z-index:700;pointer-events:none;color:var(--ink, var(--text, #e8e4db));box-shadow:var(--shadow-float, 0 8px 28px rgba(0,0,0,.22));word-break:break-word;';
+    document.body.appendChild(tip);
+  }
+  if (_tipRaf) {
+    cancelAnimationFrame(_tipRaf);
+    _tipRaf = 0;
+  }
+  const htmlChanged = _tipHtml !== html;
+  if (htmlChanged) {
+    tip.innerHTML = html;
+    _tipHtml = html;
+  }
+  tip.style.display = 'block';
+  if (htmlChanged || !_tipW || !_tipH) {
+    _tipW = tip.offsetWidth || 420;
+    _tipH = tip.offsetHeight || 160;
+  }
+  _applyTipPosition(e.clientX, e.clientY);
+}
+function moveTip(e) {
+  if (!tip) return;
+  _pendingTipX = e.clientX;
+  _pendingTipY = e.clientY;
+  if (_tipRaf) return;
+  _tipRaf = requestAnimationFrame(() => {
+    _tipRaf = 0;
+    _applyTipPosition(_pendingTipX, _pendingTipY);
+  });
+}
+function hideTip() {
+  if (_tipRaf) {
+    cancelAnimationFrame(_tipRaf);
+    _tipRaf = 0;
+  }
+  if (tip) tip.style.display = 'none';
+}
 
 export function updateAnnPanelNav(ann = S.selAnn) {
   const prevBtn = document.getElementById('ap-prev-hi');
@@ -625,7 +776,7 @@ export function openAnnPanel(ann) {
   document.querySelectorAll('.ap-tab').forEach(b => {
     b.classList.toggle('active', b.dataset.aptab === activeNoteTab);
   });
-  document.querySelectorAll('.hi-grp').forEach(g => g.classList.remove('selected'));
+  document.querySelectorAll('.hi-grp.selected').forEach(g => g.classList.remove('selected'));
   document.querySelector(`.hi-grp[data-id="${_escAttrVal(ann.id)}"]`)?.classList.add('selected');
   const exEl = document.getElementById('ap-ex');
   if (exEl) {
@@ -644,7 +795,7 @@ export function openAnnPanel(ann) {
 
 export function closeAnnPanel() {
   document.getElementById('ann-panel')?.classList.remove('open');
-  document.querySelectorAll('.hi-grp').forEach(g => g.classList.remove('selected'));
+  document.querySelectorAll('.hi-grp.selected').forEach(g => g.classList.remove('selected'));
   S.selAnn = null;
 }
 
@@ -665,10 +816,7 @@ export async function updateAnnotationColor(ann, nextHex) {
 
     const trueId = ann.pdf_file_id || S.curPDF?.linked_pdf_id || S.curPDF?.id;
     if (trueId) {
-      const cacheKey = 'local_anns_' + trueId;
-      if (safeStorageGet(cacheKey, null) !== null) {
-        scheduleDebouncedStorageSet(cacheKey, () => JSON.stringify(S.annotations), 350);
-      }
+      scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
     }
 
     drawAnnotation(ann);
@@ -692,6 +840,7 @@ export async function updateAnnotationColor(ann, nextHex) {
  */
 export async function deleteAnnotation(targetAnn) {
   if (!targetAnn) return;
+  if (_hoveredAnnId === String(targetAnn.id)) _clearHoverState();
   hideTip();
   autosave('saving');
   try {
@@ -701,10 +850,7 @@ export async function deleteAnnotation(targetAnn) {
     if (trueId) {
       S.annCounts[trueId] = Math.max(0, (S.annCounts[trueId] || 1) - 1);
       updateAnnBadge(trueId);
-      const cacheKey = 'local_anns_' + trueId;
-      if (safeStorageGet(cacheKey, null) !== null) {
-        scheduleDebouncedStorageSet(cacheKey, () => JSON.stringify(S.annotations), 350);
-      }
+      scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
     }
     clearAnnMark(targetAnn.id);
     if (S.selAnn?.id === targetAnn.id) closeAnnPanel();
@@ -745,9 +891,10 @@ function _ensureAnnCtxCloseHandlers() {
   });
   window.addEventListener('scroll', (ev) => {
     const menu = document.getElementById('ann-ctx-menu');
-    if (menu && (ev.target === menu || menu.contains(ev.target))) return;
+    if (!menu || (!menu.classList.contains('open') && !menu.classList.contains('show'))) return;
+    if (ev.target === menu || menu.contains(ev.target)) return;
     closeAnnContextMenu();
-  }, true);
+  }, { capture: true, passive: true });
   window.addEventListener('resize', closeAnnContextMenu);
   window.addEventListener('blur', closeAnnContextMenu);
 }
@@ -1010,7 +1157,7 @@ function renderNotes(ann) {
         invalidateAnnotationPageIndex();
         const trueId = ann.pdf_file_id;
         if (trueId) {
-          scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+          scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
         }
         renderNotes(ann);
         _notifyAnnotationsChanged();
@@ -1087,7 +1234,7 @@ export function initAnnPanel() {
       invalidateAnnotationPageIndex();
       const trueId = targetAnn.pdf_file_id;
       if (trueId) {
-        scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+        scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
       }
       ed.innerHTML = '';
       if (S.selAnn?.id === targetAnn.id) renderNotes(targetAnn);
@@ -1121,7 +1268,7 @@ export function initAnnPanel() {
         invalidateAnnotationPageIndex();
         const trueId = targetAnn?.pdf_file_id;
         if (trueId) {
-          scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+          scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
         }
         if (S.selAnn?.id === targetAnn?.id) renderNotes(targetAnn);
         _notifyAnnotationsChanged();
@@ -1270,6 +1417,7 @@ export function initAnnPanel() {
 
   if (typeof window !== 'undefined') {
     window.addEventListener('la:color-cats-changed', () => {
+      _tooltipHtmlCache.clear();
       if (S.selAnn && document.getElementById('ann-panel')?.classList.contains('open')) {
         renderAnnColors();
       }

@@ -4,6 +4,7 @@
 import { S } from './state.js';
 import { autosave, toast } from './ui.js';
 import { dbSaveDrawings } from './db.js';
+import { ensurePageDrawCanvas } from './viewer.js';
 
 const ERASE_COLOR = '__erase__';
 
@@ -110,8 +111,12 @@ export function renderCanvas(canvas, strokes) {
 
 export function redrawAllDrawings() {
   for (const [pn, pg] of Object.entries(S.pages)) {
-    if (pg?.drawCanvas && pg.rendered) {
-      renderCanvas(pg.drawCanvas, S.drawData[parseInt(pn)] || []);
+    if (!pg?.rendered) continue;
+    const pageNum = parseInt(pn, 10);
+    const strokes = S.drawData[pageNum] || [];
+    if (strokes.length > 0 || pg.drawCanvas) {
+      const c = pg.drawCanvas || ensurePageDrawCanvas(pageNum);
+      if (c) renderCanvas(c, strokes);
     }
   }
 }
@@ -147,7 +152,7 @@ export function initDrawControls() {
     const pg = S.curPage;
     if (!S.drawData[pg]?.length) return;
     S.drawData[pg].pop();
-    const c = S.pages[pg]?.drawCanvas;
+    const c = S.pages[pg]?.drawCanvas || ensurePageDrawCanvas(pg);
     if (c) renderCanvas(c, S.drawData[pg]);
     autosave('saving');
     try {
@@ -163,8 +168,9 @@ export function initDrawControls() {
     if (!S.curPDF) return;
     const trueId = S.curPDF.linked_pdf_id || S.curPDF.id;
     const pg = S.curPage;
+    const hadStrokes = !!(S.drawData[pg]?.length);
     S.drawData[pg] = [];
-    const c = S.pages[pg]?.drawCanvas;
+    const c = S.pages[pg]?.drawCanvas || (hadStrokes ? ensurePageDrawCanvas(pg) : null);
     if (c) renderCanvas(c, []);
     autosave('saving');
     try {
@@ -202,20 +208,11 @@ function updateDrawToolUI() {
 
 // ── Pinch zoom ──
 export function initPinchZoom() {
-  let pinchD = null, pinchS = null, pinching = false;
+  let pinchD = null, pinchS = null, pinching = false, moveAttached = false;
   const sc = document.getElementById('canvas-scroll');
-  sc.addEventListener('touchstart', e => {
-    if (e.touches.length === 2) {
-      pinchD = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY
-      );
-      pinchS = S.scale;
-      pinching = false;
-    }
-  }, { passive: true });
+  if (!sc) return;
 
-  sc.addEventListener('touchmove', e => {
+  const onPinchMove = e => {
     if (e.touches.length === 2 && pinchD) {
       e.preventDefault();
       const dist = Math.hypot(
@@ -232,9 +229,35 @@ export function initPinchZoom() {
       S.scale = Math.max(0.5, Math.min(3, Math.round(pinchS * dist / pinchD * 4) / 4));
       document.getElementById('zoom-lbl').textContent = Math.round(S.scale / 1.5 * 100) + '%';
     }
-  }, { passive: false });
+  };
 
-  sc.addEventListener('touchend', async e => {
+  const detachPinchMove = () => {
+    if (moveAttached) {
+      sc.removeEventListener('touchmove', onPinchMove);
+      moveAttached = false;
+    }
+  };
+
+  // Keep 1-finger scrolling 100% passive: attach non-passive touchmove only while 2 fingers are down
+  sc.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) {
+      pinchD = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      pinchS = S.scale;
+      pinching = false;
+      if (!moveAttached) {
+        sc.addEventListener('touchmove', onPinchMove, { passive: false });
+        moveAttached = true;
+      }
+    }
+  }, { passive: true });
+
+  const onPinchEnd = async e => {
+    if (e.touches.length < 2) {
+      detachPinchMove();
+    }
     if (pinchD && e.touches.length < 2) {
       pinchD = null;
       const changed = pinching && S.scale !== pinchS;
@@ -244,5 +267,8 @@ export function initPinchZoom() {
         reRenderAll();
       }
     }
-  }, { passive: true });
+  };
+
+  sc.addEventListener('touchend', onPinchEnd, { passive: true });
+  sc.addEventListener('touchcancel', onPinchEnd, { passive: true });
 }

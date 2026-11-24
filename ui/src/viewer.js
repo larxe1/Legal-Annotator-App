@@ -2,7 +2,7 @@
 // VIEWER — PDF rendering + page management
 // ═══════════════════════════════════════════════
 import { S, isPdfArchived } from './state.js';
-import { syncOK, syncSpin, jumpToPage, setIsJumping, isUserScrolling, onScrollIdle } from './ui.js';
+import { syncOK, syncSpin, jumpToPage, setIsJumping, isUserScrolling, onScrollIdle, invalidatePageOffsetCache } from './ui.js';
 import { dbLoadAnnotations, dbLoadDrawings, dbLoadBookmarks, dbGetSetting } from './db.js';
 import { driveFetchPDF } from './drive.js';
 import { renderColorDots } from './colors.js';
@@ -10,6 +10,8 @@ import { showTablePicker, handlePaste, handleCopy, insertBannerHeader, toggleGra
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
 import { safeStorageGet, safeStorageSet, flushDebouncedStorageWrites } from './storage.js';
 import { notifyTabOpened, notifyTabClosedToHome, renderStudyDesk } from './goodnotes-ui.js';
+import { setupDrawListeners, renderCanvas } from './draw.js';
+import { hasOcrData, applyOcrToRenderedPage } from './ocr.js';
 
 // Guard set to prevent double listener registration (fixes bug #3)
 const _boxDone  = new Set();
@@ -266,10 +268,201 @@ export async function openFolderDoc(fold) {
 // ── Virtualized Page Rendering Observer & Memory-Managed Document Renderer ──
 let _pageObserver = null;
 let _renderedPages = new Set();
+let _renderingPages = new Set();
+let _activeRenderTasks = new Map(); // pageNum -> PDF.js RenderTask
+let _visibleQueue = new Set();      // pageNums currently intersecting observer
+let _queueDrainScheduled = false;
 let _bgRenderGen = 0;
 let _renderScaleGen = 0;
 let _activeZoomAnchor = null;
 let _activeBlobUrl = null; // kept alive for the full PDF session; revoked on next PDF open
+
+const MAX_SCROLL_CONCURRENT_RENDERS = 3;
+
+function _cancelRenderTask(pageNum) {
+  const task = _activeRenderTasks.get(pageNum);
+  if (task) {
+    _activeRenderTasks.delete(pageNum);
+    try { task.cancel(); } catch {}
+  }
+}
+
+function _cancelAllRenderTasks() {
+  for (const [, task] of _activeRenderTasks) {
+    try { task.cancel(); } catch {}
+  }
+  _activeRenderTasks.clear();
+  _renderingPages.clear();
+}
+
+function _isPageFarFromViewport(pgState, thresholdPx = 1800) {
+  const scrollEl = document.getElementById('canvas-scroll');
+  const wrap = pgState?.wrap;
+  if (!scrollEl || !wrap || !wrap.isConnected) return false;
+  const viewHeight = scrollEl.clientHeight;
+  if (!(viewHeight > 0)) return false;
+  const viewTop = scrollEl.scrollTop;
+  const viewBottom = viewTop + viewHeight;
+  const wrapTop = wrap.offsetTop;
+  const wrapHeight = wrap.offsetHeight || pgState.viewport?.height || 0;
+  return (wrapTop + wrapHeight < viewTop - thresholdPx) || (wrapTop > viewBottom + thresholdPx);
+}
+
+function _scheduleQueueDrain() {
+  if (_queueDrainScheduled) return;
+  _queueDrainScheduled = true;
+  requestAnimationFrame(() => {
+    _queueDrainScheduled = false;
+    _drainVisibleRenderQueue();
+  });
+}
+
+function _drainVisibleRenderQueue() {
+  if (!S.pdfDoc || !_visibleQueue.size) return;
+  const scrollEl = document.getElementById('canvas-scroll');
+  if (!scrollEl) return;
+
+  // Single batched DOM layout read pass (no interleaved writes)
+  const viewTop = scrollEl.scrollTop;
+  const viewHeight = scrollEl.clientHeight || window.innerHeight || 900;
+  const viewBottom = viewTop + viewHeight;
+  const viewCenter = viewTop + viewHeight * 0.5;
+  const scrolling = isUserScrolling();
+
+  const inViewport = [];
+  const nearViewport = [];
+
+  for (const pNum of Array.from(_visibleQueue)) {
+    const pg = S.pages?.[pNum];
+    if (!pg || !pg.wrap || pg.rendered) {
+      _visibleQueue.delete(pNum);
+      continue;
+    }
+    const top = pg.wrap.offsetTop;
+    const h = pg.wrap.offsetHeight || pg.viewport?.height || 0;
+    const bottom = top + h;
+    const dist = Math.abs((top + h * 0.5) - viewCenter);
+
+    if (bottom >= viewTop && top <= viewBottom) {
+      inViewport.push({ pNum, dist });
+    } else if (bottom >= viewTop - 1200 && top <= viewBottom + 1200) {
+      nearViewport.push({ pNum, dist });
+    } else {
+      _visibleQueue.delete(pNum);
+    }
+  }
+
+  // During active fast scroll, cancel in-flight renders that are now far from viewport
+  if (scrolling && _activeRenderTasks.size > 0) {
+    for (const pNum of Array.from(_activeRenderTasks.keys())) {
+      const pg = S.pages?.[pNum];
+      if (pg && _isPageFarFromViewport(pg, 1800)) {
+        _cancelRenderTask(pNum);
+      }
+    }
+  }
+
+  inViewport.sort((a, b) => a.dist - b.dist);
+  nearViewport.sort((a, b) => a.dist - b.dist);
+
+  if (scrolling) {
+    // Scroll-velocity gating: do NOT trigger ±1 neighbor or off-screen margin renders while fast scrolling.
+    // Keep only immediately visible viewport pages responsive up to concurrency cap.
+    for (const { pNum } of inViewport) {
+      if (_renderingPages.size >= MAX_SCROLL_CONCURRENT_RENDERS) break;
+      const pg = S.pages?.[pNum];
+      if (pg && !pg.rendered && !pg.rendering) {
+        ensurePageRendered(pNum);
+      }
+    }
+    return;
+  }
+
+  // Scrolling paused / idle: prioritize visible pages first, then margin pages, then ±1 lookahead
+  for (const { pNum } of inViewport) {
+    const pg = S.pages?.[pNum];
+    if (pg && !pg.rendered && !pg.rendering) {
+      ensurePageRendered(pNum);
+    }
+  }
+  for (const { pNum } of nearViewport) {
+    const pg = S.pages?.[pNum];
+    if (pg && !pg.rendered && !pg.rendering) {
+      ensurePageRendered(pNum);
+    }
+  }
+
+  const primaryPage = inViewport[0]?.pNum ?? nearViewport[0]?.pNum;
+  if (primaryPage) {
+    if (primaryPage < S.totalPages && !S.pages[primaryPage + 1]?.rendered && !S.pages[primaryPage + 1]?.rendering) {
+      ensurePageRendered(primaryPage + 1);
+    }
+    if (primaryPage > 1 && !S.pages[primaryPage - 1]?.rendered && !S.pages[primaryPage - 1]?.rendering) {
+      ensurePageRendered(primaryPage - 1);
+    }
+  }
+}
+
+function _hydrateVisibleTextLayers() {
+  if (!S.pdfDoc || isUserScrolling()) return;
+  const scrollEl = document.getElementById('canvas-scroll');
+  if (!scrollEl) return;
+  const viewTop = scrollEl.scrollTop;
+  const viewHeight = scrollEl.clientHeight || window.innerHeight || 900;
+  const viewBottom = viewTop + viewHeight;
+  const viewCenter = viewTop + viewHeight * 0.5;
+
+  const candidates = [];
+  for (const pNum of _renderedPages) {
+    const pg = S.pages?.[pNum];
+    if (!pg || !pg.rendered || pg.txtLayerPopulated || !pg.wrap) continue;
+    const top = pg.wrap.offsetTop;
+    const h = pg.wrap.offsetHeight || pg.viewport?.height || 0;
+    if (top + h >= viewTop - 600 && top <= viewBottom + 600) {
+      candidates.push({ pNum, dist: Math.abs((top + h * 0.5) - viewCenter) });
+    }
+  }
+  if (!candidates.length) return;
+  candidates.sort((a, b) => a.dist - b.dist);
+
+  let idx = 0;
+  const step = () => {
+    if (isUserScrolling() || !S.pdfDoc) return;
+    while (idx < candidates.length) {
+      const { pNum } = candidates[idx++];
+      const pg = S.pages?.[pNum];
+      if (pg && pg.rendered && !pg.txtLayerPopulated) {
+        ensurePageTextLayer(pNum);
+        break;
+      }
+    }
+    if (idx < candidates.length) {
+      scheduleIdleWork(step);
+    }
+  };
+  scheduleIdleWork(step);
+}
+
+function _ensureCanvasScrollDelegation() {
+  if (typeof document === 'undefined') return;
+  const scroll = document.getElementById('canvas-scroll');
+  if (!scroll || scroll.dataset.txtHydrateDelegated === '1') return;
+  scroll.dataset.txtHydrateDelegated = '1';
+
+  const hydrateFromEvent = (e) => {
+    const wrap = e.target?.closest?.('.pg-wrap[data-page]');
+    if (!wrap) return;
+    const pNum = parseInt(wrap.dataset.page, 10);
+    if (pNum && S.pages?.[pNum]?.rendered && !S.pages[pNum].txtLayerPopulated) {
+      ensurePageTextLayer(pNum);
+    }
+  };
+
+  // Delegated hover & capture pointerdown hydrate deferred .txt-layer spans immediately on interaction
+  scroll.addEventListener('pointerover', hydrateFromEvent, { passive: true });
+  scroll.addEventListener('pointerdown', hydrateFromEvent, { capture: true, passive: true });
+}
+_ensureCanvasScrollDelegation();
 
 export function captureZoomAnchor() {
   if (_activeZoomAnchor) return _activeZoomAnchor;
@@ -316,6 +509,12 @@ export function unrenderFarPages(centerPage = S.curPage || 1) {
         pg.annOv = null;
         pg.srchOv = null;
         pg.rendered = false;
+        pg.txtLayerPopulated = false;
+        pg._pendingTextData = null;
+        pg._pendingOcr = false;
+        pg._vaultHydrated = false;
+        _textDone.delete(pNum);
+        _drawDone.delete(pNum);
         if (pg.wrap) {
           pg.wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);letter-spacing:.05em">Page ${pNum}</div>`;
         }
@@ -339,8 +538,19 @@ function scheduleIdleWork(fn) {
 
 let _bgTriggerFn = null;
 
-// Wake up background renderer when user stops scrolling
+// Wake up queued visible renders, deferred text layers & background renderer when user stops scrolling
 onScrollIdle(() => {
+  const cur = S.curPage || 1;
+  if (S.pdfDoc && S.pages) {
+    for (let p = Math.max(1, cur - 1); p <= Math.min(S.totalPages || 0, cur + 1); p++) {
+      const pg = S.pages[p];
+      if (pg && !pg.rendered && !pg.rendering) {
+        _visibleQueue.add(p);
+      }
+    }
+  }
+  _drainVisibleRenderQueue();
+  _hydrateVisibleTextLayers();
   if (_bgTriggerFn) {
     const fn = _bgTriggerFn;
     _bgTriggerFn = null;
@@ -466,6 +676,19 @@ export async function closeActivePDF() {
   await flushFolderDoc();
   _currentFolderDocId = null;
 
+  ++_renderScaleGen;
+  ++_bgRenderGen;
+  _cancelAllRenderTasks();
+  _visibleQueue.clear();
+  _renderedPages.clear();
+  _boxDone.clear();
+  _drawDone.clear();
+  _textDone.clear();
+  if (_pageObserver) {
+    _pageObserver.disconnect();
+    _pageObserver = null;
+  }
+
   if (S.pdfDoc) {
     try { S.pdfDoc.destroy(); } catch {}
   }
@@ -474,6 +697,7 @@ export async function closeActivePDF() {
   S.pdfDoc = null;
   S.totalPages = 0;
   S.pages = {};
+  invalidatePageOffsetCache();
 
   const { closeOtherPanels } = await import('./ui.js');
   closeOtherPanels();
@@ -516,6 +740,9 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
   // Destroy previous PDF.js document immediately to free RAM/GPU memory
   _activeZoomAnchor = null;
   ++_renderScaleGen;
+  ++_bgRenderGen;
+  _cancelAllRenderTasks();
+  _visibleQueue.clear();
   if (S.pdfDoc) {
     try { S.pdfDoc.destroy(); } catch {}
     S.pdfDoc = null;
@@ -560,6 +787,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
   document.getElementById('content-area').style.display = 'flex';
 
   const scroll = document.getElementById('canvas-scroll');
+  _ensureCanvasScrollDelegation();
   if (scroll && scroll.dataset.massTagDelegated !== '1') {
     scroll.dataset.massTagDelegated = '1';
     scroll.addEventListener('mouseup', (e) => {
@@ -652,6 +880,9 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     _drawDone.clear();
     _textDone.clear();
     _renderedPages.clear();
+    _renderingPages.clear();
+    _visibleQueue.clear();
+    _cancelAllRenderTasks();
 
     if (_pageObserver) {
       _pageObserver.disconnect();
@@ -672,8 +903,9 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       wrap.style.height = vp1.height + 'px';
       wrap.innerHTML = `<div class="pg-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;font-family:var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);letter-spacing:.05em">Page ${p}</div>`;
       scroll.appendChild(wrap);
-      S.pages[p] = { wrap, rendered: false, rendering: false, viewport: vp1, textItems: [] };
+      S.pages[p] = { wrap, rendered: false, rendering: false, viewport: vp1, textItems: [], txtLayerPopulated: false };
     }
+    invalidatePageOffsetCache();
 
     // Determine starting page & ratio:
     // Manual folder-specific default page OVERRIDES automatic last-read bookmark!
@@ -726,22 +958,23 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
       scroll.scrollTop = 0;
     }
 
-    // IntersectionObserver renders pages as they scroll into view (with 1200px pre-render margin)
+    // IntersectionObserver queues pages as they scroll into view (scroll-velocity gated)
     _pageObserver = new IntersectionObserver((entries) => {
+      let added = false;
       for (const entry of entries) {
-        const pNum = parseInt(entry.target.dataset.page);
+        const pNum = parseInt(entry.target.dataset.page, 10);
+        if (!pNum) continue;
         if (entry.isIntersecting) {
-          // Tier 1: Newly visible page (highest priority, immediate)
-          ensurePageRendered(pNum);
-
-          // Tier 2: Lookahead buffer (prepare adjacent ±1 page so user never scrolls into blanks)
-          if (pNum < S.totalPages && !S.pages[pNum + 1]?.rendered && !S.pages[pNum + 1]?.rendering) {
-            ensurePageRendered(pNum + 1);
+          if (!S.pages?.[pNum]?.rendered) {
+            _visibleQueue.add(pNum);
+            added = true;
           }
-          if (pNum > 1 && !S.pages[pNum - 1]?.rendered && !S.pages[pNum - 1]?.rendering) {
-            ensurePageRendered(pNum - 1);
-          }
+        } else {
+          _visibleQueue.delete(pNum);
         }
+      }
+      if (added) {
+        _drainVisibleRenderQueue();
       }
     }, {
       root: scroll,
@@ -881,6 +1114,8 @@ export async function reRenderAll() {
   setIsJumping(true);
   const myScaleGen = ++_renderScaleGen;
   ++_bgRenderGen;
+  _cancelAllRenderTasks();
+  _visibleQueue.clear();
 
   const p1 = await S.pdfDoc.getPage(1);
   if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
@@ -893,7 +1128,16 @@ export async function reRenderAll() {
       pg.wrap.style.width = vp1.width + 'px';
       pg.wrap.style.height = vp1.height + 'px';
       pg.viewport = vp1;
+      pg.textItems = [];
+      pg.txtLayerPopulated = false;
+      pg._pendingTextData = null;
+      pg._pendingOcr = false;
+      pg._vaultHydrated = false;
       if (pg.rendered || pg.rendering) {
+        try {
+          if (pg.pdfCanvas) { pg.pdfCanvas.width = 1; pg.pdfCanvas.height = 1; }
+          if (pg.drawCanvas) { pg.drawCanvas.width = 1; pg.drawCanvas.height = 1; }
+        } catch {}
         pg.rendered = false;
         pg.rendering = false;
         pg._renderPromise = null;
@@ -906,11 +1150,13 @@ export async function reRenderAll() {
       }
     }
   }
+  invalidatePageOffsetCache();
 
   _boxDone.clear();
   _drawDone.clear();
   _textDone.clear();
   _renderedPages.clear();
+  _renderingPages.clear();
 
   // Synchronously restore scroll position to anchorPage + anchorRatio before yielding
   S.curPage = anchorPage;
@@ -948,6 +1194,129 @@ export async function reRenderAll() {
   }
 }
 
+// ── Lazily allocate, append, and wire drawCanvas on a rendered page ──
+export function ensurePageDrawCanvas(pageNum) {
+  const pg = S.pages?.[pageNum];
+  if (!pg || !pg.rendered || !pg.wrap) return null;
+  if (pg.drawCanvas && pg.drawCanvas.isConnected) {
+    if (!_drawDone.has(pageNum)) {
+      _drawDone.add(pageNum);
+      setupDrawListeners(pg.drawCanvas, pageNum);
+    }
+    return pg.drawCanvas;
+  }
+
+  const vp = pg.viewport;
+  const w = vp?.width || pg.pdfCanvas?.width || parseFloat(pg.wrap.style.width) || 0;
+  const h = vp?.height || pg.pdfCanvas?.height || parseFloat(pg.wrap.style.height) || 0;
+  if (!(w > 0 && h > 0)) return null;
+
+  const drawCanvas = document.createElement('canvas');
+  drawCanvas.width = w;
+  drawCanvas.height = h;
+  drawCanvas.className = 'draw-canvas' + (S.mode === 'draw' ? ' active' : '');
+  drawCanvas.dataset.page = pageNum;
+  pg.wrap.appendChild(drawCanvas);
+  pg.drawCanvas = drawCanvas;
+
+  if (!_drawDone.has(pageNum)) {
+    _drawDone.add(pageNum);
+    setupDrawListeners(drawCanvas, pageNum);
+  }
+  if (Array.isArray(S.drawData[pageNum]) && S.drawData[pageNum].length > 0) {
+    renderCanvas(drawCanvas, S.drawData[pageNum]);
+  }
+  return drawCanvas;
+}
+
+// ── Populate deferred native .txt-layer spans from PDF.js textContent ──
+function _populateTextLayerFromTC(pageNum, pgState, tc, vp, scale) {
+  if (!pgState || !pgState.rendered || !pgState.txtLayer || pgState.txtLayerPopulated) return;
+  const txtLayer = pgState.txtLayer;
+  const textFrag = document.createDocumentFragment();
+  const textItems = [];
+  // tx[5] is the PDF baseline in CSS pixel coordinates (Y already flipped by vp.transform).
+  // CSS renders font baselines at ~0.82x the em-size from the span's top edge.
+  for (const item of (tc?.items || [])) {
+    if (!item.str || !item.transform) continue;
+    const span = document.createElement('span');
+    const tx   = pdfjsLib.Util.transform(vp.transform, item.transform);
+    const fh   = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+    const angle = Math.atan2(tx[1], tx[0]);
+    const fontFam = resolvePdfFontFamily(tc.styles, item.fontName);
+    const targetW = Math.abs(item.width || 0) * scale;
+    const scaleX  = computeSpanScaleX(item.str, fh, fontFam, targetW);
+    const topY    = tx[5] - fh * 0.82;
+    span.textContent = item.str;
+    span.style.cssText = `left:${tx[4]}px;top:${topY}px;height:${fh}px;line-height:1;font-size:${fh}px;font-family:${fontFam}`;
+    const tf = buildSpanTransform(angle, scaleX);
+    if (tf) span.style.transform = tf;
+    textFrag.appendChild(span);
+    textItems.push({
+      str: item.str,
+      x: tx[4],
+      y: topY,
+      w: targetW,
+      h: item.height ? item.height * scale : fh,
+    });
+  }
+  txtLayer.appendChild(textFrag);
+  pgState.textItems = textItems;
+  pgState.txtLayerPopulated = true;
+  pgState._pendingTextData = null;
+}
+
+// ── Idempotently hydrate deferred .txt-layer spans for a rendered page ──
+export function ensurePageTextLayer(pageNum) {
+  const pgState = S.pages?.[pageNum];
+  if (!pgState || !pgState.rendered || !pgState.txtLayer || pgState.txtLayerPopulated) {
+    return;
+  }
+
+  // Prefer OCR layer when OCR cache exists for this page (zero double-OCR span build)
+  const trueId = S.curPDF?.linked_pdf_id || S.curPDF?.id || null;
+  if (trueId && hasOcrData(trueId, pageNum)) {
+    const applied = applyOcrToRenderedPage(pageNum, trueId);
+    if (applied || pgState.txtLayerPopulated) {
+      pgState._pendingTextData = null;
+      pgState._pendingOcr = false;
+      return;
+    }
+  }
+
+  const pending = pgState._pendingTextData;
+  if (!pending || pending.scaleGen !== _renderScaleGen) return;
+
+  // Synchronous hydration when textContent is already cached
+  if (pending.tc) {
+    _populateTextLayerFromTC(pageNum, pgState, pending.tc, pending.vp, pending.scale);
+    return;
+  }
+
+  // Deduplicated async textContent fetch -> span build
+  if (pending.tcPromise) return pending.tcPromise;
+  const myScaleGen = pending.scaleGen;
+  const page = pending.page;
+  if (!page || typeof page.getTextContent !== 'function') return;
+
+  pending.tcPromise = page.getTextContent().then((tc) => {
+    if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
+    if (S.pages?.[pageNum] !== pgState || !pgState.rendered || pgState.txtLayerPopulated) return;
+    pending.tc = tc;
+    const tid = S.curPDF?.linked_pdf_id || S.curPDF?.id || null;
+    if (tid && hasOcrData(tid, pageNum) && applyOcrToRenderedPage(pageNum, tid)) {
+      pgState._pendingTextData = null;
+      pgState._pendingOcr = false;
+      return;
+    }
+    _populateTextLayerFromTC(pageNum, pgState, tc, pending.vp, pending.scale);
+  }).catch(() => {}).finally(() => {
+    if (pending) pending.tcPromise = null;
+  });
+
+  return pending.tcPromise;
+}
+
 // ── Render a single page on-demand ──
 export async function ensurePageRendered(pageNum, container = null) {
   if (!S.pdfDoc) return;
@@ -958,7 +1327,7 @@ export async function ensurePageRendered(pageNum, container = null) {
     wrap.className = 'pg-wrap';
     wrap.dataset.page = pageNum;
     scroll.appendChild(wrap);
-    S.pages[pageNum] = { wrap, rendered: false, rendering: false, _renderPromise: null, viewport: null, textItems: [] };
+    S.pages[pageNum] = { wrap, rendered: false, rendering: false, _renderPromise: null, viewport: null, textItems: [], txtLayerPopulated: false };
   }
   const pgState = S.pages[pageNum];
   if (pgState.rendered) return;
@@ -967,41 +1336,74 @@ export async function ensurePageRendered(pageNum, container = null) {
   }
   if (pgState.rendering) return;
 
+  const startedNearViewport = container === null ? !_isPageFarFromViewport(pgState, 1800) : false;
+  const shouldBailOut = () => {
+    if (container !== null) return false;
+    if (!_isPageFarFromViewport(pgState, 1800)) return false;
+    // Do not bail out on non-scrolling programmatic jumps (jumpToPage / idle bg pre-render)
+    if (!isUserScrolling() && !startedNearViewport) return false;
+    return true;
+  };
+
+  if (shouldBailOut()) return;
+
   pgState.rendering = true;
+  _renderingPages.add(pageNum);
   const myScaleGen = _renderScaleGen;
+  let pdfRenderTask = null;
+  let pdfCanvas = null;
 
   const renderTask = (async () => {
     try {
       const page = await S.pdfDoc.getPage(pageNum);
-      if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
+      if (myScaleGen !== _renderScaleGen || !S.pdfDoc || shouldBailOut()) return;
       const vp = page.getViewport({ scale: S.scale });
-      pgState.viewport = vp;
 
-      const wrap = pgState.wrap;
-      const prevHeight = wrap.offsetHeight || vp.height;
-      const scrollEl = document.getElementById('canvas-scroll');
-      // Only pages lying entirely above the viewport need scroll compensation —
-      // a page that straddles the top edge keeps its top fixed so the visible
-      // content does not shift.
-      const wasFullyAbove = !!scrollEl && (wrap.offsetTop + prevHeight) <= scrollEl.scrollTop;
-      wrap.style.width  = vp.width  + 'px';
-      wrap.style.height = vp.height + 'px';
-      wrap.innerHTML = ''; // remove placeholder
-
-      if (scrollEl && wasFullyAbove && Math.abs(vp.height - prevHeight) > 1) {
-        scrollEl.scrollTop += (vp.height - prevHeight);
-      }
-
-      const pdfCanvas = document.createElement('canvas');
+      // Render PDF page off-DOM first so bailouts/cancellations never thrash or corrupt live DOM
+      pdfCanvas = document.createElement('canvas');
       pdfCanvas.width  = vp.width;
       pdfCanvas.height = vp.height;
 
-      const drawCanvas = document.createElement('canvas');
-      drawCanvas.width  = vp.width;
-      drawCanvas.height = vp.height;
-      drawCanvas.className   = 'draw-canvas' + (S.mode === 'draw' ? ' active' : '');
-      drawCanvas.dataset.page = pageNum;
+      pdfRenderTask = page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: vp });
+      _activeRenderTasks.set(pageNum, pdfRenderTask);
+      await pdfRenderTask.promise;
+      if (_activeRenderTasks.get(pageNum) === pdfRenderTask) {
+        _activeRenderTasks.delete(pageNum);
+      }
 
+      if (myScaleGen !== _renderScaleGen || !S.pdfDoc || shouldBailOut()) {
+        try { pdfCanvas.width = 1; pdfCanvas.height = 1; } catch {}
+        pdfCanvas = null;
+        return;
+      }
+
+      pgState.viewport = vp;
+
+      const wrap = pgState.wrap;
+      const scrollEl = container === null ? document.getElementById('canvas-scroll') : null;
+
+      // ── READ PHASE: batch all DOM layout reads BEFORE any DOM style/content writes ──
+      const prevHeight = wrap.offsetHeight || vp.height;
+      const wrapTop = scrollEl ? wrap.offsetTop : 0;
+      const prevScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+      // Only pages lying entirely above the viewport need scroll compensation —
+      // a page that straddles the top edge keeps its top fixed so the visible
+      // content does not shift.
+      const wasFullyAbove = !!scrollEl && (wrapTop + prevHeight) <= prevScrollTop;
+      const heightChanged = Math.abs(vp.height - prevHeight) > 1;
+
+      // Lazy drawCanvas: only allocate if page has drawings or user is in draw mode
+      const hasStrokes = Array.isArray(S.drawData[pageNum]) && S.drawData[pageNum].length > 0;
+      let drawCanvas = null;
+      if (hasStrokes || S.mode === 'draw') {
+        drawCanvas = document.createElement('canvas');
+        drawCanvas.width  = vp.width;
+        drawCanvas.height = vp.height;
+        drawCanvas.className   = 'draw-canvas' + (S.mode === 'draw' ? ' active' : '');
+        drawCanvas.dataset.page = pageNum;
+      }
+
+      // Lightweight empty txt-layer container (1 DOM node); spans hydrated lazily
       const txtLayer = document.createElement('div');
       txtLayer.className = 'txt-layer' + (S.mode === 'text' || S.mode === 'select' ? ' sel' : '');
       txtLayer.style.width  = vp.width  + 'px';
@@ -1019,56 +1421,54 @@ export async function ensurePageRendered(pageNum, container = null) {
       srchOv.style.width  = vp.width  + 'px';
       srchOv.style.height = vp.height + 'px';
 
-      wrap.append(pdfCanvas, annOv, srchOv, txtLayer, drawCanvas);
-
-      // Render PDF page canvas
-      await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: vp }).promise;
-      if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
-
-      // Build text layer.
-      // tx[5] is the PDF baseline in CSS pixel coordinates (Y already flipped by vp.transform).
-      // CSS renders font baselines at ~0.8× the em-size from the span's top edge, so:
-      //   top = tx[5] - fh * 0.8   (places the span so its internal baseline == tx[5])
-      // The old code used tx[5] - fh (1.0×), which sat ~15-20% of fh too high vs the canvas.
-      const tc = await page.getTextContent();
-      if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
-      const textFrag = document.createDocumentFragment();
-      const textItems = [];
-      for (const item of tc.items) {
-        if (!item.str || !item.transform) continue;
-        const span = document.createElement('span');
-        const tx   = pdfjsLib.Util.transform(vp.transform, item.transform);
-        const fh   = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-        const angle = Math.atan2(tx[1], tx[0]);
-        const fontFam = resolvePdfFontFamily(tc.styles, item.fontName);
-        const targetW = Math.abs(item.width || 0) * S.scale;
-        const scaleX  = computeSpanScaleX(item.str, fh, fontFam, targetW);
-        const topY    = tx[5] - fh * 0.82;
-        span.textContent = item.str;
-        span.style.cssText = `left:${tx[4]}px;top:${topY}px;height:${fh}px;line-height:1;font-size:${fh}px;font-family:${fontFam}`;
-        const tf = buildSpanTransform(angle, scaleX);
-        if (tf) span.style.transform = tf;
-        textFrag.appendChild(span);
-        textItems.push({
-          str: item.str,
-          x: tx[4],
-          y: topY,
-          w: targetW,
-          h: item.height ? item.height * S.scale : fh,
-        });
+      // ── WRITE PHASE: apply all DOM mutations in one batch ──
+      wrap.style.width  = vp.width  + 'px';
+      wrap.style.height = vp.height + 'px';
+      wrap.innerHTML = ''; // remove placeholder
+      if (drawCanvas) {
+        wrap.append(pdfCanvas, annOv, srchOv, txtLayer, drawCanvas);
+      } else {
+        wrap.append(pdfCanvas, annOv, srchOv, txtLayer);
       }
-      txtLayer.appendChild(textFrag);
+
+      if (scrollEl && wasFullyAbove && heightChanged) {
+        scrollEl.scrollTop = prevScrollTop + (vp.height - prevHeight);
+      }
+      if (heightChanged) {
+        invalidatePageOffsetCache();
+      }
 
       pgState.pdfCanvas = pdfCanvas;
       pgState.drawCanvas = drawCanvas;
       pgState.txtLayer = txtLayer;
       pgState.annOv = annOv;
       pgState.srchOv = srchOv;
-      pgState.textItems = textItems;
+      pgState.textItems = pgState.textItems || [];
+      pgState.txtLayerPopulated = false;
       pgState.rendered = true;
+      _renderedPages.add(pageNum);
+      _visibleQueue.delete(pageNum);
 
-      // Apply OCR layer if OCR data exists for this page or page is scanned
-      import('./ocr.js').then(m => m.applyOcrToRenderedPage?.(pageNum)).catch(() => {});
+      // Store pending text-hydration state; defer span build while scrolling or when OCR will populate
+      const trueId = S.curPDF?.linked_pdf_id || S.curPDF?.id || null;
+      const hasOcr = !!(trueId && hasOcrData(trueId, pageNum));
+      pgState._pendingOcr = hasOcr;
+      pgState._pendingTextData = {
+        page,
+        vp,
+        scale: S.scale,
+        tc: null,
+        tcPromise: null,
+        scaleGen: myScaleGen,
+      };
+
+      if (!isUserScrolling()) {
+        scheduleIdleWork(() => {
+          if (myScaleGen === _renderScaleGen && !isUserScrolling() && S.pages?.[pageNum] === pgState && !pgState.txtLayerPopulated) {
+            ensurePageTextLayer(pageNum);
+          }
+        });
+      }
 
       // Setup listeners & visuals
       setupAllListeners(pageNum);
@@ -1080,32 +1480,47 @@ export async function ensurePageRendered(pageNum, container = null) {
       drawPageAnnotations(pageNum);
 
       // Redraw drawings on this page
-      if (S.drawData[pageNum]) {
-        const { renderCanvas } = await import('./draw.js');
-        renderCanvas(drawCanvas, S.drawData[pageNum]);
+      if (Array.isArray(S.drawData[pageNum]) && S.drawData[pageNum].length > 0) {
+        const dc = pgState.drawCanvas || ensurePageDrawCanvas(pageNum);
+        if (dc) renderCanvas(dc, S.drawData[pageNum]);
       }
 
-      // Redraw search highlights on this page
-      const { drawSearchHL } = await import('./search.js');
-      for (let i = 0; i < S.searchResults.length; i++) {
-        const res = S.searchResults[i];
-        if (res.page === pageNum) {
-          drawSearchHL(res, S.searchIdx === i);
+      // Redraw search highlights on this page (skip import if no search results)
+      if (S.searchResults && S.searchResults.length > 0) {
+        const { drawSearchHL } = await import('./search.js');
+        if (myScaleGen !== _renderScaleGen || !S.pdfDoc) return;
+        for (let i = 0; i < S.searchResults.length; i++) {
+          const res = S.searchResults[i];
+          if (res.page === pageNum) {
+            drawSearchHL(res, S.searchIdx === i, i);
+          }
         }
       }
 
-      _renderedPages.add(pageNum);
       if (S.totalPages > 50 && _renderedPages.size > MAX_RENDERED_CANVAS_PAGES) {
         scheduleUnrenderFarPages();
       }
     } catch (err) {
-      console.error(`Failed to render page ${pageNum}:`, err);
+      const isCancelled = err?.name === 'RenderingCancelledException' || String(err?.message || '').includes('Rendering cancelled');
+      if (!isCancelled) {
+        console.error(`Failed to render page ${pageNum}:`, err);
+      }
+      if (pdfCanvas && !pgState.rendered) {
+        try { pdfCanvas.width = 1; pdfCanvas.height = 1; } catch {}
+      }
     } finally {
+      if (_activeRenderTasks.get(pageNum) === pdfRenderTask) {
+        _activeRenderTasks.delete(pageNum);
+      }
       if (myScaleGen === _renderScaleGen) {
         pgState.rendering = false;
+        _renderingPages.delete(pageNum);
       }
       if (pgState._renderPromise === renderTask) {
         pgState._renderPromise = null;
+      }
+      if (container === null && _visibleQueue.size > 0) {
+        _scheduleQueueDrain();
       }
     }
   })();
@@ -1196,6 +1611,9 @@ export function setMode(m) {
 function applyModeVisuals(pageNum) {
   const pg = S.pages[pageNum];
   if (!pg) return;
+  if (S.mode === 'draw' && pg.rendered && !pg.drawCanvas) {
+    ensurePageDrawCanvas(pageNum);
+  }
   const { txtLayer, drawCanvas, wrap } = pg;
   if (txtLayer) txtLayer.className = 'txt-layer' + (S.mode === 'text' || S.mode === 'select' ? ' sel' : '');
   if (drawCanvas) drawCanvas.className = 'draw-canvas' + (S.mode === 'draw' ? ' active' : '');
@@ -1204,28 +1622,31 @@ function applyModeVisuals(pageNum) {
 
 // ── Set up all listeners once per page ──
 function setupAllListeners(pageNum) {
-  if (!_textDone.has(pageNum)) {
+  const pg = S.pages[pageNum];
+  if (!pg) return;
+  if (!_textDone.has(pageNum) && pg.txtLayer) {
     _textDone.add(pageNum);
-    const { txtLayer } = S.pages[pageNum];
-    txtLayer.addEventListener('mouseup', (e) => { if (S.mode === 'text') onTextUp(pageNum, e); });
-    txtLayer.addEventListener('touchend', (e) => { if (S.mode === 'text') setTimeout(() => onTextUp(pageNum, e), 60); });
+    pg.txtLayer.addEventListener('mouseup', (e) => { if (S.mode === 'text') onTextUp(pageNum, e); });
+    pg.txtLayer.addEventListener('touchend', (e) => { if (S.mode === 'text') setTimeout(() => onTextUp(pageNum, e), 60); });
   }
-  if (!_boxDone.has(pageNum)) {
+  if (!_boxDone.has(pageNum) && pg.wrap) {
     _boxDone.add(pageNum);
-    setupBoxDrag(S.pages[pageNum].wrap, pageNum);
+    setupBoxDrag(pg.wrap, pageNum);
   }
-  if (!_drawDone.has(pageNum)) {
+  // Only mark _drawDone when drawCanvas actually exists and is wired
+  if (!_drawDone.has(pageNum) && pg.drawCanvas) {
     _drawDone.add(pageNum);
-    // Use dynamic import to avoid circular dependency
-    import('./draw.js').then(({ setupDrawListeners }) => {
-      setupDrawListeners(S.pages[pageNum].drawCanvas, pageNum);
-    });
+    setupDrawListeners(pg.drawCanvas, pageNum);
   }
 }
 
 // ── Text selection highlight ──
 function extractRangeTextWithSpacing(range, txtLayer) {
   if (!range || !txtLayer) return '';
+  const pNum = _getPageNumFromNode(txtLayer);
+  if (pNum && S.pages?.[pNum]?.rendered && !S.pages[pNum].txtLayerPopulated) {
+    ensurePageTextLayer(pNum);
+  }
   const spans = txtLayer.querySelectorAll('span');
   if (!spans.length) return '';
 
@@ -1321,11 +1742,14 @@ export async function findOverlappingAnnotationsForRange(range) {
     if (!pg?.rendered || !pg?.txtLayer || !pg?.wrap) continue;
     let intersects = false;
     try {
-      intersects = range.intersectsNode(pg.txtLayer);
+      intersects = range.intersectsNode(pg.txtLayer) || (!pg.txtLayerPopulated && range.intersectsNode(pg.wrap));
     } catch {
       intersects = false;
     }
     if (!intersects) continue;
+    if (!pg.txtLayerPopulated) {
+      await ensurePageTextLayer(pNum);
+    }
 
     const wr = pg.wrap.getBoundingClientRect();
     if (!(wr.width > 0 && wr.height > 0)) continue;
@@ -1351,7 +1775,7 @@ export async function findOverlappingAnnotationsForRange(range) {
 
   if (!pageSelections.length) return [];
 
-  const { rectToPx, compareAnnotationsReadingOrder } = await import('./annotate.js');
+  const { rectToPx, compareAnnotationsReadingOrder, getAnnotationsForPage } = await import('./annotate.js');
   const seenIds = new Set();
   const matchedAnns = [];
 
@@ -1360,7 +1784,8 @@ export async function findOverlappingAnnotationsForRange(range) {
     const vpH = pg.viewport?.height || wr.height;
     if (!(vpW > 0 && vpH > 0)) continue;
 
-    for (const ann of S.annotations) {
+    const pageAnns = getAnnotationsForPage(pNum);
+    for (const ann of pageAnns) {
       if (ann.page !== pNum || seenIds.has(ann.id)) continue;
       const annNormRects = [];
       for (const r of (ann.rects || [])) {
@@ -1423,11 +1848,20 @@ async function onTextUp(pageNum, evt = null) {
   const clientRects = Array.from(range.getClientRects()).filter(r => r.width > 1 && r.height > 1);
   if (!clientRects.length) return;
 
+  if (pageNum && S.pages?.[pageNum]?.rendered && !S.pages[pageNum].txtLayerPopulated) {
+    await ensurePageTextLayer(pageNum);
+  }
   const intersectingPages = [];
   for (const [k, pState] of Object.entries(S.pages || {})) {
     if (!pState?.rendered || !pState?.txtLayer) continue;
+    const pNum = parseInt(k, 10);
     try {
-      if (range.intersectsNode(pState.txtLayer)) intersectingPages.push(parseInt(k, 10));
+      const hitsLayer = range.intersectsNode(pState.txtLayer);
+      const hitsWrap = !hitsLayer && !pState.txtLayerPopulated && pState.wrap && range.intersectsNode(pState.wrap);
+      if (hitsLayer || hitsWrap) {
+        if (!pState.txtLayerPopulated) await ensurePageTextLayer(pNum);
+        intersectingPages.push(pNum);
+      }
     } catch {}
   }
   intersectingPages.sort((a, b) => a - b);
@@ -1464,6 +1898,9 @@ async function onTextUp(pageNum, evt = null) {
   const targetPage = startPage ?? pageNum;
   const pg = S.pages[targetPage];
   if (!pg || !pg.wrap) return;
+  if (!pg.txtLayerPopulated) {
+    await ensurePageTextLayer(targetPage);
+  }
 
   const text = extractRangeTextWithSpacing(range, pg.txtLayer) || rawSelText;
   const wr   = pg.wrap.getBoundingClientRect();

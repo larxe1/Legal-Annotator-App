@@ -264,11 +264,17 @@ function _isSidebarBusy() {
   );
 }
 
+let _sidebarAutoHide = null;
+
 export function isSidebarAutoHide() {
-  return safeStorageGet('sidebar_autohide', 'false') === 'true';
+  if (_sidebarAutoHide === null) {
+    _sidebarAutoHide = safeStorageGet('sidebar_autohide', 'false') === 'true';
+  }
+  return _sidebarAutoHide;
 }
 
 export function setSidebarAutoHide(enabled, showNotification = true) {
+  _sidebarAutoHide = Boolean(enabled);
   safeStorageSet('sidebar_autohide', String(enabled));
   const app = document.getElementById('app');
   const pinBtn = document.getElementById('btn-pin-sidebar');
@@ -437,14 +443,13 @@ export function initSidebar() {
 
   // 5. Global mouse move near left edge (safety net for quick mouse motions)
   window.addEventListener('mousemove', (e) => {
-    if (!isSidebarAutoHide()) return;
-    if (e.clientX <= 12) {
-      handleHoverEnter();
-    }
-  });
+    if (!_sidebarAutoHide || e.clientX > 12) return;
+    handleHoverEnter();
+  }, { passive: true });
 
   // 6. Close sidebar when clicking outside or resizing
   window.addEventListener('resize', () => {
+    invalidatePageOffsetCache();
     if (window.innerWidth <= 1024) {
       closeSidebar();
     }
@@ -825,6 +830,75 @@ export function setIsJumping(val) {
 }
 
 const _cloudBmTimers = new Map();
+let _scrollSaveTimer = null;
+let _pendingScrollSave = null;
+let _pageOffsets = null;
+let _pageOffsetsTotal = 0;
+let _pageOffsetsFirstWrap = null;
+let _pageOffsetsLastWrap = null;
+
+export function invalidatePageOffsetCache() {
+  _pageOffsets = null;
+  _pageOffsetsTotal = 0;
+  _pageOffsetsFirstWrap = null;
+  _pageOffsetsLastWrap = null;
+}
+
+function _getCachedPageOffsets(total) {
+  const firstWrap = S.pages?.[1]?.wrap || null;
+  const lastWrap = S.pages?.[total]?.wrap || null;
+  if (
+    _pageOffsets &&
+    _pageOffsetsTotal === total &&
+    _pageOffsetsFirstWrap === firstWrap &&
+    _pageOffsetsLastWrap === lastWrap
+  ) {
+    return _pageOffsets;
+  }
+  const offsets = new Float64Array(total + 1);
+  for (let i = 1; i <= total; i++) {
+    const w = S.pages?.[i]?.wrap;
+    if (!w) return null;
+    offsets[i] = w.offsetTop;
+  }
+  _pageOffsets = offsets;
+  _pageOffsetsTotal = total;
+  _pageOffsetsFirstWrap = firstWrap;
+  _pageOffsetsLastWrap = lastWrap;
+  return _pageOffsets;
+}
+
+function _scheduleScrollSaveReadingPosition(pdfFile, pageNum) {
+  _pendingScrollSave = { pdfFile, pageNum };
+  if (_scrollSaveTimer) clearTimeout(_scrollSaveTimer);
+  _scrollSaveTimer = setTimeout(() => {
+    _scrollSaveTimer = null;
+    const pending = _pendingScrollSave;
+    _pendingScrollSave = null;
+    if (pending && pending.pdfFile && S.curPDF?.id === pending.pdfFile.id) {
+      saveReadingPosition(pending.pdfFile, S.curPage || pending.pageNum, null, false);
+    }
+  }, 300);
+}
+
+function _flushPendingScrollSave() {
+  if (_scrollSaveTimer) {
+    clearTimeout(_scrollSaveTimer);
+    _scrollSaveTimer = null;
+  }
+  const pending = _pendingScrollSave;
+  _pendingScrollSave = null;
+  if (pending && pending.pdfFile && S.curPDF?.id === pending.pdfFile.id && !_isJumping) {
+    saveReadingPosition(pending.pdfFile, S.curPage || pending.pageNum, null, true);
+  }
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  window.addEventListener('beforeunload', _flushPendingScrollSave);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') _flushPendingScrollSave();
+  });
+}
 
 export function parseReadPosPayload(raw) {
   if (!raw) return { page: 1, ratio: 0, updatedAt: 0 };
@@ -857,6 +931,11 @@ export function parseReadPosPayload(raw) {
 
 export function saveReadingPosition(pdfFile, pageNum, scrollRatio = null, immediateCloud = false) {
   if (!pdfFile || !pageNum) return;
+  if (_scrollSaveTimer) {
+    clearTimeout(_scrollSaveTimer);
+    _scrollSaveTimer = null;
+  }
+  _pendingScrollSave = null;
   const trueId = pdfFile.linked_pdf_id || pdfFile.id;
   let ratio = 0;
   if (scrollRatio === null) {
@@ -904,6 +983,11 @@ export function saveReadingPosition(pdfFile, pageNum, scrollRatio = null, immedi
 }
 
 export function flushCurrentReadingPosition() {
+  if (_scrollSaveTimer) {
+    clearTimeout(_scrollSaveTimer);
+    _scrollSaveTimer = null;
+  }
+  _pendingScrollSave = null;
   if (S.curPDF && S.curPage && !_isJumping) {
     saveReadingPosition(S.curPDF, S.curPage, null, true);
   }
@@ -997,6 +1081,7 @@ export function initNavButtons() {
       if (_isJumping || !S.totalPages) return;
 
       const targetY = scrollEl.scrollTop + 80;
+      const cachedOffsets = _getCachedPageOffsets(S.totalPages);
 
       // Binary search over the real page positions. Pages can have different
       // sizes (and placeholders differ from rendered pages), so a uniform-slot
@@ -1005,9 +1090,15 @@ export function initNavButtons() {
       let lo = 1, hi = S.totalPages, foundPage = 1;
       while (lo <= hi) {
         const mid = (lo + hi) >> 1;
-        const w = S.pages?.[mid]?.wrap;
-        if (!w) break;
-        if (w.offsetTop <= targetY) { foundPage = mid; lo = mid + 1; }
+        let top;
+        if (cachedOffsets) {
+          top = cachedOffsets[mid];
+        } else {
+          const w = S.pages?.[mid]?.wrap;
+          if (!w) break;
+          top = w.offsetTop;
+        }
+        if (top <= targetY) { foundPage = mid; lo = mid + 1; }
         else hi = mid - 1;
       }
 
@@ -1015,7 +1106,7 @@ export function initNavButtons() {
         S.curPage = foundPage;
         document.getElementById('pg-input').value = foundPage;
         if (S.curPDF) {
-          saveReadingPosition(S.curPDF, foundPage, null, false);
+          _scheduleScrollSaveReadingPosition(S.curPDF, foundPage);
         }
 
         // Efficient thumbnail highlight: only toggle previous and current thumbnail instead of scanning all items
@@ -1031,7 +1122,7 @@ export function initNavButtons() {
         updateAppTitle();
       }
     }, 60);
-  });
+  }, { passive: true });
 }
 
 export async function jumpToPage(pg, smooth = false, ratio = 0) {

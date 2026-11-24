@@ -12,7 +12,19 @@ function _escHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
-function renderSearchColorFilter() {
+let _lastColorFilterSig = '';
+
+function _computeColorFilterSig() {
+  const cats = S.colorCats || [];
+  let catKey = '';
+  for (let i = 0; i < cats.length; i++) {
+    const c = cats[i];
+    if (c) catKey += `${c.hex_color || ''}:${c.name || ''}|`;
+  }
+  return `${searchMode}|${selectedColorFilter}|${S.annotations?.length || 0}|${catKey}`;
+}
+
+function renderSearchColorFilter(force = false) {
   const panel = document.getElementById('search-panel');
   const annResults = document.getElementById('search-ann-results');
   if (!panel || !annResults) return;
@@ -26,6 +38,16 @@ function renderSearchColorFilter() {
   }
 
   bar.style.display = searchMode === 'ann' ? 'flex' : 'none';
+  if (searchMode !== 'ann') {
+    _lastColorFilterSig = '';
+    return;
+  }
+
+  const sig = _computeColorFilterSig();
+  if (!force && sig === _lastColorFilterSig && bar.childElementCount > 0) {
+    return;
+  }
+  _lastColorFilterSig = sig;
   bar.innerHTML = '';
 
   const seen = new Set();
@@ -45,6 +67,7 @@ function renderSearchColorFilter() {
 
   if (selectedColorFilter && !seen.has(selectedColorFilter)) {
     selectedColorFilter = '';
+    _lastColorFilterSig = _computeColorFilterSig();
   }
 
   const makeChip = (hex, label) => {
@@ -74,16 +97,18 @@ function renderSearchColorFilter() {
     btn.appendChild(txt);
     btn.addEventListener('click', () => {
       selectedColorFilter = (selectedColorFilter === hex) ? '' : hex;
-      renderSearchColorFilter();
+      renderSearchColorFilter(true);
       runSearch();
     });
     return btn;
   };
 
-  bar.appendChild(makeChip('', 'All colors'));
+  const frag = document.createDocumentFragment();
+  frag.appendChild(makeChip('', 'All colors'));
   for (const opt of options) {
-    bar.appendChild(makeChip(opt.hex_color, opt.name));
+    frag.appendChild(makeChip(opt.hex_color, opt.name));
   }
+  bar.appendChild(frag);
 }
 
 export function openSearch() {
@@ -122,7 +147,7 @@ export function initSearch() {
 
   if (typeof window !== 'undefined') {
     window.addEventListener('la:color-cats-changed', () => {
-      renderSearchColorFilter();
+      renderSearchColorFilter(true);
       if (searchMode === 'ann' && document.getElementById('search-panel')?.classList.contains('open')) {
         runSearch();
       }
@@ -356,7 +381,9 @@ async function runPDFSearch(q) {
 
   if (currentQueryId !== _searchQueryId) return;
 
-  for (const res of S.searchResults) drawSearchHL(res, false);
+  for (let i = 0; i < S.searchResults.length; i++) {
+    drawSearchHL(S.searchResults[i], false, i);
+  }
   S.searchIdx = 0;
 
   if (S.searchResults.length) {
@@ -366,11 +393,12 @@ async function runPDFSearch(q) {
   }
 }
 
-export function drawSearchHL(res, isCurrent) {
+export function drawSearchHL(res, isCurrent, srIdx = -1) {
   const pg = S.pages[res.page];
   if (!pg || !pg.rendered || !pg.srchOv) return;
+  const idx = srIdx >= 0 ? srIdx : S.searchResults.indexOf(res);
   // Prevent duplicate highlights
-  const existing = pg.srchOv.querySelector(`.srch-hi[data-sridx="${S.searchResults.indexOf(res)}"]`);
+  const existing = pg.srchOv.querySelector(`.srch-hi[data-sridx="${idx}"]`);
   if (existing) {
     existing.classList.toggle('current', isCurrent);
     return;
@@ -378,7 +406,7 @@ export function drawSearchHL(res, isCurrent) {
   const d  = document.createElement('div');
   d.className = 'srch-hi' + (isCurrent ? ' current' : '');
   d.style.cssText = `left:${res.matchX}px;top:${res.matchY - res.matchH * .1}px;width:${res.matchW}px;height:${res.matchH * 1.2}px`;
-  d.dataset.sridx = S.searchResults.indexOf(res);
+  d.dataset.sridx = idx;
   pg.srchOv.appendChild(d);
 }
 
@@ -397,7 +425,7 @@ async function highlightCurrentResult() {
   await jumpToPage(res.page, false, ratio);
   if (myGen !== _highlightGen) return; // user already moved to another result
 
-  drawSearchHL(res, true);
+  drawSearchHL(res, true, S.searchIdx);
   const el = document.querySelector(`.srch-hi[data-sridx="${S.searchIdx}"]`);
   if (el) el.classList.add('current');
   document.getElementById('search-count').textContent = `${S.searchIdx + 1} / ${S.searchResults.length}`;
@@ -414,25 +442,45 @@ function runAnnSearch(q) {
   const results = document.getElementById('search-ann-results');
   results.style.display = 'block';
   renderSearchColorFilter();
-  const stripHTML = html => html.replace(/<[^>]*>/g, '');
-  const matches = S.annotations.filter(a => {
-    if (selectedColorFilter && normalizeHexColor(a.hex_color) !== selectedColorFilter) return false;
-    if (!q) return true;
-    return (
-      a.highlighted_text?.toLowerCase().includes(q) ||
-      a.notes.some(n => stripHTML(n.note_html).toLowerCase().includes(q))
-    );
-  });
+  const stripHTML = html => (html || '').replace(/<[^>]*>/g, '');
+  const matchedEntries = [];
+  for (const ann of S.annotations || []) {
+    if (selectedColorFilter && normalizeHexColor(ann.hex_color) !== selectedColorFilter) continue;
+    const notes = Array.isArray(ann.notes) ? ann.notes : [];
+    if (!q) {
+      const firstNote = notes[0] || null;
+      matchedEntries.push({
+        ann,
+        noteMatch: firstNote,
+        notePlain: firstNote ? stripHTML(firstNote.note_html) : '',
+      });
+      continue;
+    }
+    const textHit = (ann.highlighted_text || '').toLowerCase().includes(q);
+    let noteMatch = null;
+    let notePlain = '';
+    for (const n of notes) {
+      const plain = stripHTML(n.note_html);
+      if (plain.toLowerCase().includes(q)) {
+        noteMatch = n;
+        notePlain = plain;
+        break;
+      }
+    }
+    if (textHit || noteMatch) {
+      matchedEntries.push({ ann, noteMatch, notePlain });
+    }
+  }
   document.getElementById('search-count').textContent =
-    matches.length ? `${matches.length} match${matches.length === 1 ? '' : 'es'}` : 'No matches';
-  if (!matches.length) {
+    matchedEntries.length ? `${matchedEntries.length} match${matchedEntries.length === 1 ? '' : 'es'}` : 'No matches';
+  if (!matchedEntries.length) {
     results.innerHTML = '<div class="sar-empty">No matching annotations.</div>';
     return;
   }
   results.innerHTML = '';
-  const sorted = [...matches].sort((a, b) => a.page - b.page);
-  for (const ann of sorted) {
-    const noteMatch = q ? ann.notes.find(n => stripHTML(n.note_html).toLowerCase().includes(q)) : ann.notes[0];
+  matchedEntries.sort((a, b) => a.ann.page - b.ann.page);
+  const frag = document.createDocumentFragment();
+  for (const { ann, noteMatch, notePlain } of matchedEntries) {
     const isCase = noteMatch?.note_html?.includes('data-note-type="case"');
     const catInfo = getColorCategoryForHex(ann.hex_color);
     const catDotColor = catInfo.hex_color || ann.hex_color || '#c9a84c';
@@ -444,15 +492,17 @@ function runAnnSearch(q) {
         : '<span style="color:var(--muted);font-size:10px"><svg class="icon" style="width:11px;height:11px;vertical-align:-1px;margin-right:3px" aria-hidden="true"><use href="#i-note"/></svg>Note: </span>')
       : '';
     const catBadge = `<span class="sar-cat" style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);margin-left:8px;"><span style="width:7px;height:7px;border-radius:50%;background:${_escHtml(catDotColor)};display:inline-block;"></span>${_escHtml(catInfo.name)}</span>`;
+    const hiText = ann.highlighted_text || '';
     item.innerHTML =
-      `<div class="sar-ex">"${_escHtml(ann.highlighted_text.slice(0, 60))}${ann.highlighted_text.length > 60 ? '…' : ''}"</div>` +
-      (noteMatch ? `<div class="sar-note">${tag}${_escHtml(stripHTML(noteMatch.note_html).slice(0, 70))}</div>` : '') +
+      `<div class="sar-ex">"${_escHtml(hiText.slice(0, 60))}${hiText.length > 60 ? '…' : ''}"</div>` +
+      (noteMatch ? `<div class="sar-note">${tag}${_escHtml(notePlain.slice(0, 70))}</div>` : '') +
       `<div class="sar-page">Page ${ann.page}${catBadge}</div>`;
     item.addEventListener('click', async () => {
       const { jumpToPage } = await import('./ui.js');
       await jumpToPage(ann.page);
       import('./annotate.js').then(({ openAnnPanel }) => setTimeout(() => openAnnPanel(ann), 300));
     });
-    results.appendChild(item);
+    frag.appendChild(item);
   }
+  results.appendChild(frag);
 }

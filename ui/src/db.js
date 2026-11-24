@@ -11,7 +11,7 @@ import {
 } from './drive.js';
 import { broadcastSync } from './sync.js';
 import { safeDbWrite, enqueueAction } from './outbox.js';
-import { safeStorageSet, safeStorageGet, safeStorageRemove, scheduleDebouncedStorageSet, isNetworkError } from './storage.js';
+import { safeStorageSet, safeStorageGet, safeStorageRemove, scheduleDebouncedLocalAnnsSave, isNetworkError } from './storage.js';
 import { logNotepadDiagnostic } from './diag.js';
 
 // Inline sync helpers (avoids circular dep with ui.js)
@@ -559,7 +559,15 @@ export async function dbLoadAnnotations(pfid) {
       ...a,
       notes: notes.filter(n => n.annotation_id === a.id),
     }));
-    safeStorageSet('local_anns_' + pfid, JSON.stringify(S.annotations));
+    const annsJson = JSON.stringify(S.annotations);
+    if (annsJson.length > 1500000) {
+      safeStorageRemove('local_anns_' + pfid);
+      import('./offline.js')
+        .then(m => m.putOfflineRecord?.(pfid, { annotations: S.annotations }))
+        .catch(() => {});
+    } else {
+      safeStorageSet('local_anns_' + pfid, annsJson, S.annotations);
+    }
   } catch {
     S.annotations = await _loadOfflineCopy(pfid, 'local_anns_' + pfid, 'annotations', []);
     if (!Array.isArray(S.annotations)) S.annotations = [];
@@ -579,7 +587,7 @@ export async function dbCreateAnnotation(ann) {
   };
   await safeDbWrite(db, 'annotations', 'upsert', annRec);
   const pdfId = ann.pdf_file_id;
-  scheduleDebouncedStorageSet('local_anns_' + pdfId, () => JSON.stringify(S.annotations), 350);
+  scheduleDebouncedLocalAnnsSave(pdfId, () => S.annotations);
   broadcastSync({ type: 'ANNOTATIONS_CHANGED', pdfId });
 }
 
@@ -594,7 +602,7 @@ export async function dbDelAnnotation(id) {
   S.annotations = S.annotations.filter(a => a.id !== id);
   if (S.currentPdfId) {
     const pdfId = S.currentPdfId;
-    scheduleDebouncedStorageSet('local_anns_' + pdfId, () => JSON.stringify(S.annotations), 350);
+    scheduleDebouncedLocalAnnsSave(pdfId, () => S.annotations);
   }
   broadcastSync({ type: 'ANNOTATIONS_CHANGED' });
 }

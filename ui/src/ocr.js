@@ -13,6 +13,7 @@ import { driveFetchPDF, driveUpdatePDF } from './drive.js';
 
 // ── In-Memory OCR Cache: trueId → { [pageNum]: { lines: [{ str, x, y, w, h, words }], fullText, updatedAt } }
 const _ocrCache = {};
+const _ocrLocalLoaded = new Set();
 
 // ── Background Task & Worker State ──
 let _tessPromise = null;
@@ -157,17 +158,20 @@ export function getOcrPageData(trueId, pageNum) {
     return _ocrCache[tid][pageNum];
   }
 
-  // 2. LocalStorage cache
-  try {
-    const raw = safeStorageGet('ocr_cache_' + tid);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (!_ocrCache[tid]) _ocrCache[tid] = {};
-      Object.assign(_ocrCache[tid], parsed);
-      return _ocrCache[tid][pageNum] || null;
+  // 2. LocalStorage cache (hydrate at most once per PDF ID so repeated page checks stay O(1))
+  if (!_ocrLocalLoaded.has(tid)) {
+    _ocrLocalLoaded.add(tid);
+    try {
+      const raw = safeStorageGet('ocr_cache_' + tid);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (!_ocrCache[tid]) _ocrCache[tid] = {};
+        Object.assign(_ocrCache[tid], parsed);
+        return _ocrCache[tid][pageNum] || null;
+      }
+    } catch (e) {
+      console.warn('[OCR] Error reading local OCR cache:', e);
     }
-  } catch (e) {
-    console.warn('[OCR] Error reading local OCR cache:', e);
   }
 
   return null;
@@ -197,6 +201,7 @@ export async function saveOcrPageData(trueId, pageNum, pageResult, options = {})
   if (!tid || !pageNum || !pageResult) return;
 
   if (!_ocrCache[tid]) _ocrCache[tid] = {};
+  _ocrLocalLoaded.add(tid);
 
   // 1. Desktop Vault first (writes individual ~8KB page file to disk with zero RAM accumulation)
   if (typeof window !== 'undefined' && window.__DESKTOP_PDFIUM__?.savePageText) {
@@ -295,6 +300,7 @@ export async function loadOcrForCurrentPdf(trueId = null) {
   if (!tid) return {};
 
   // 1. Initial hydrate from local storage for instant responsiveness
+  _ocrLocalLoaded.add(tid);
   try {
     const rawLocal = safeStorageGet('ocr_cache_' + tid);
     if (rawLocal) {
@@ -502,9 +508,12 @@ export function applyOcrToRenderedPage(pageNum, trueId = null) {
 
   txtLayer.appendChild(fragment);
   pgState.textItems = newTextItems;
+  pgState.txtLayerPopulated = true;
+  pgState._pendingTextData = null;
+  pgState._pendingOcr = false;
 
-  // Ensure text selection layer is interactive when in text mode
-  if (S.mode === 'text') {
+  // Ensure text selection layer is interactive when in text/select mode
+  if (S.mode === 'text' || S.mode === 'select') {
     txtLayer.classList.add('sel');
   }
 

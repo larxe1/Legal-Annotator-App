@@ -1299,7 +1299,19 @@ function initTableHoverCopyBtn() {
     btn.style.left = `${left}px`;
   }
 
+  const canvasScrollEl = document.getElementById('canvas-scroll');
+
   document.addEventListener('mouseover', (e) => {
+    if (canvasScrollEl && canvasScrollEl.contains(e.target)) {
+      if (_hoveredTableEl && !_hoverHideTimer) {
+        _hoverHideTimer = setTimeout(() => {
+          btn.style.display = 'none';
+          _hoveredTableEl = null;
+          _hoverHideTimer = null;
+        }, 200);
+      }
+      return;
+    }
     if (e.target === btn || btn.contains(e.target)) {
       if (_hoverHideTimer) {
         clearTimeout(_hoverHideTimer);
@@ -1331,7 +1343,7 @@ function initTableHoverCopyBtn() {
       btn.style.display = 'none';
       _hoveredTableEl = null;
     }
-  }, true);
+  }, { capture: true, passive: true });
 }
 
 function modifyTable(action) {

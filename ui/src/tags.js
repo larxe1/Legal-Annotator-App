@@ -2,10 +2,10 @@
 // TAGS & TOPIC COVERAGE WORKSPACE — Tags, Quick Step Scroll, & Outside Laws
 // ═══════════════════════════════════════════════════════════════════════════
 import { S } from './state.js';
-import { rectToPx, compareAnnotationsReadingOrder } from './annotate.js';
+import { rectToPx, compareAnnotationsReadingOrder, getAnnotationsForPage, getAnnotationById } from './annotate.js';
 import { toast, autosave, closeOtherPanels } from './ui.js';
 import { dbGetSetting, dbSetSetting } from './db.js';
-import { safeStorageSet, safeStorageGet, scheduleDebouncedStorageSet } from './storage.js';
+import { safeStorageSet, safeStorageGet, scheduleDebouncedLocalAnnsSave } from './storage.js';
 import { exportTagNotesToPDF } from './export.js';
 import {
   handlePaste, handleCopy, showTablePicker, insertBannerHeader,
@@ -52,6 +52,61 @@ let _topicNotesSaveTimer = null;
 let selectedFilterTag = 'ALL';
 let activeNotesTopic = null;
 let _tagJumpIndices = {};
+let _singleTopicRenderGen = 0;
+
+// ── Lazily-Invalidated Tag Index: Map<tagName, Ann[]> ──
+let _tagIndexMap = new Map();
+let _tagIndexTaggedCount = 0;
+let _tagIndexVersion = 0;
+let _tagIndexBuiltVersion = -1;
+let _tagIndexAnnsRef = null;
+let _tagIndexAnnsLen = -1;
+
+function _invalidateTagIndex() {
+  _tagIndexVersion++;
+}
+
+function _ensureTagIndex() {
+  const anns = Array.isArray(S.annotations) ? S.annotations : [];
+  if (
+    _tagIndexBuiltVersion !== _tagIndexVersion ||
+    _tagIndexAnnsRef !== anns ||
+    _tagIndexAnnsLen !== anns.length
+  ) {
+    const nextMap = new Map();
+    let taggedCount = 0;
+    for (const ann of anns) {
+      if (!ann) continue;
+      const tags = getAnnTags(ann);
+      if (!tags || tags.length === 0) continue;
+      taggedCount++;
+      const seenForAnn = tags.length > 1 ? new Set() : null;
+      for (const t of tags) {
+        if (seenForAnn) {
+          if (seenForAnn.has(t)) continue;
+          seenForAnn.add(t);
+        }
+        let arr = nextMap.get(t);
+        if (!arr) {
+          arr = [];
+          nextMap.set(t, arr);
+        }
+        arr.push(ann);
+      }
+    }
+    _tagIndexMap = nextMap;
+    _tagIndexTaggedCount = taggedCount;
+    _tagIndexBuiltVersion = _tagIndexVersion;
+    _tagIndexAnnsRef = anns;
+    _tagIndexAnnsLen = anns.length;
+  }
+  return _tagIndexMap;
+}
+
+function _getAnnsForTag(tagName) {
+  if (!tagName) return [];
+  return _ensureTagIndex().get(tagName) || [];
+}
 
 function getCurTrueId() {
   if (currentPdfTrueId) return currentPdfTrueId;
@@ -99,6 +154,7 @@ function syncAnnTagsWithState() {
     currentTagData.updatedAt = Date.now();
     safeStorageSet('local_pdf_tags_v1_' + currentPdfTrueId, JSON.stringify(currentTagData));
   }
+  _invalidateTagIndex();
 }
 
 // ── Schedule Debounced Cloud Save to Supabase app_settings ──
@@ -232,10 +288,11 @@ export async function addTagToAnn(ann, tagName, options = {}) {
   }
 
   currentTagData.updatedAt = Date.now();
+  _invalidateTagIndex();
 
   safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
   if (!options.skipSaveAnn && trueId) {
-    scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+    scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
   }
 
   scheduleCloudSave(trueId);
@@ -273,9 +330,10 @@ export async function removeTagFromAnn(ann, tagName, options = {}) {
     currentTagData.updatedAt = Date.now();
     safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
   }
+  _invalidateTagIndex();
 
   if (!options.skipSaveAnn && trueId) {
-    scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+    scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
   }
 
   scheduleCloudSave(trueId);
@@ -343,8 +401,9 @@ export async function addTagToAnnsBatch(anns, tagName) {
   }
 
   currentTagData.updatedAt = now;
+  _invalidateTagIndex();
   safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
-  scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+  scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
   scheduleCloudSave(trueId);
 
   for (const ann of modifiedAnns) {
@@ -406,7 +465,8 @@ export async function removeTagFromAnnsBatch(anns, tagName) {
     currentTagData.updatedAt = Date.now();
     safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
   }
-  scheduleDebouncedStorageSet('local_anns_' + trueId, () => JSON.stringify(S.annotations), 350);
+  _invalidateTagIndex();
+  scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
   scheduleCloudSave(trueId);
 
   for (const ann of modifiedAnns) {
@@ -430,15 +490,17 @@ export async function removeTagFromAnnsBatch(anns, tagName) {
 
 export function getAllTopicsForCurrentPdf() {
   if (!currentTagData || !currentTagData.topics) return [];
+  const map = _ensureTagIndex();
   const list = Object.values(currentTagData.topics);
   return list.map(t => {
-    const count = (S.annotations || []).filter(a => getAnnTags(a).includes(t.name)).length;
+    const count = map.get(t.name)?.length || 0;
     return { ...t, count };
   }).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
 export function onAnnDeleted(annId) {
   if (!annId || !currentTagData) return;
+  _invalidateTagIndex();
   if (currentTagData.annTags && currentTagData.annTags[annId]) {
     delete currentTagData.annTags[annId];
     currentTagData.updatedAt = Date.now();
@@ -618,12 +680,14 @@ export function renderAnnPanelTagsSection(ann) {
 }
 
 // ── 4. Floating Tag Pill Badge on PDF Highlights ──
-export function redrawTagBadgeForAnn(ann, pageDims = null) {
+export function redrawTagBadgeForAnn(ann, pageDims = null, skipRemove = false) {
   if (!ann) return;
   const pg = S.pages?.[ann.page];
   if (!pg || !pg.rendered || !pg.annOv) return;
 
-  pg.annOv.querySelectorAll(`.ann-tag-pill-badge[data-id="${ann.id}"]`).forEach(el => el.remove());
+  if (!skipRemove) {
+    pg.annOv.querySelectorAll(`.ann-tag-pill-badge[data-id="${ann.id}"]`).forEach(el => el.remove());
+  }
 
   const tags = getAnnTags(ann);
   if (!tags || tags.length === 0) return;
@@ -657,17 +721,13 @@ export function redrawTagBadgeForAnn(ann, pageDims = null) {
 
 export function redrawAllTagBadges() {
   if (!S.pages) return;
-  const renderedPageDims = new Map();
   for (const [pageKey, pg] of Object.entries(S.pages)) {
     if (!pg || !pg.rendered || !pg.annOv) continue;
     pg.annOv.querySelectorAll('.ann-tag-pill-badge').forEach(el => el.remove());
-    renderedPageDims.set(Number(pageKey), pg.viewport || pg.wrap);
-  }
-  if (renderedPageDims.size === 0 || !Array.isArray(S.annotations)) return;
-  for (const ann of S.annotations) {
-    const dims = renderedPageDims.get(Number(ann.page));
-    if (dims) {
-      redrawTagBadgeForAnn(ann, dims);
+    const dims = pg.viewport || pg.wrap;
+    const pageAnns = getAnnotationsForPage(Number(pageKey));
+    for (const ann of pageAnns) {
+      redrawTagBadgeForAnn(ann, dims, true);
     }
   }
 }
@@ -691,7 +751,7 @@ export async function jumpToAnn(ann) {
 
 export async function jumpThroughTag(tagName, direction = 1) {
   if (!tagName) return;
-  const matching = (S.annotations || []).filter(a => getAnnTags(a).includes(tagName));
+  const matching = [..._getAnnsForTag(tagName)];
   if (!matching.length) {
     toast(`No highlights tagged with "${tagName}"`);
     return;
@@ -742,7 +802,8 @@ export function renderTagsPanel() {
   if (!panel) return;
 
   const allTopics = getAllTopicsForCurrentPdf();
-  const totalTaggedAnns = (S.annotations || []).filter(a => getAnnTags(a).length > 0).length;
+  _ensureTagIndex();
+  const totalTaggedAnns = _tagIndexTaggedCount;
 
   // Header
   const hd = panel.querySelector('.tp-hd');
@@ -841,50 +902,54 @@ export function renderTagsPanel() {
   }
 }
 
+function _buildTopicAnnCardHtml(ann) {
+  const notes = Array.isArray(ann.notes) ? ann.notes : [];
+  const hasCase = notes.some(n => n.note_html?.includes('data-note-type="case"'));
+  const noteCount = notes.length;
+  return `
+    <div class="tp-ann-card" data-ann-id="${ann.id}">
+      <div class="tp-ann-hd">
+        <span class="tp-ann-page">Page ${ann.page}</span>
+        <div class="tp-ann-badges">
+          ${hasCase ? '<span class="tp-mini-badge case">⚖️ Case</span>' : ''}
+          ${noteCount > 0 ? `<span class="tp-mini-badge note">📝 ${noteCount}</span>` : ''}
+        </div>
+        <button class="tp-ann-untag-btn" title="Remove tag from this provision" data-untag="${ann.id}">✕</button>
+      </div>
+      <div class="tp-ann-quote">"${escapeHtml(ann.highlighted_text || '(Box Highlight)')}"</div>
+      <div class="tp-ann-ft">
+        <button class="tp-ann-jump-btn" data-jump="${ann.id}">Jump to Provision ↗</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderSingleTopicView(container, tagName) {
+  const myGen = ++_singleTopicRenderGen;
   const topic = currentTagData?.topics?.[tagName] || {
     name: tagName,
     color: pickTopicColor(tagName),
     notesHtml: '',
   };
   const color = topic.color || pickTopicColor(tagName);
-  const matching = (S.annotations || []).filter(a => getAnnTags(a).includes(tagName));
+  const matching = [..._getAnnsForTag(tagName)];
   matching.sort(compareAnnotationsReadingOrder);
 
   const curIdx = (_tagJumpIndices[tagName] ?? -1) + 1;
   const posLabel = matching.length > 0 ? (curIdx > 0 ? `${curIdx} of ${matching.length}` : `1 of ${matching.length}`) : '0 of 0';
 
-  let listHtml = '';
+  const shouldChunk = matching.length > 60;
+  let initialListHtml = '';
   if (matching.length === 0) {
-    listHtml = `
+    initialListHtml = `
       <div class="tp-empty">
         <div style="font-size:32px;margin-bottom:8px">🏷️</div>
         <div style="font-weight:600;color:#e8e4db;margin-bottom:4px">No highlights tagged "${escapeHtml(tagName)}" yet.</div>
         <div style="font-size:12px;color:var(--muted);line-height:1.5">Highlight provisions in the codal and click <strong>+ ${escapeHtml(tagName)}</strong> in the Notes Panel to link them to this topic!</div>
       </div>
     `;
-  } else {
-    listHtml = matching.map(ann => {
-      const notes = Array.isArray(ann.notes) ? ann.notes : [];
-      const hasCase = notes.some(n => n.note_html?.includes('data-note-type="case"'));
-      const noteCount = notes.length;
-      return `
-        <div class="tp-ann-card" data-ann-id="${ann.id}">
-          <div class="tp-ann-hd">
-            <span class="tp-ann-page">Page ${ann.page}</span>
-            <div class="tp-ann-badges">
-              ${hasCase ? '<span class="tp-mini-badge case">⚖️ Case</span>' : ''}
-              ${noteCount > 0 ? `<span class="tp-mini-badge note">📝 ${noteCount}</span>` : ''}
-            </div>
-            <button class="tp-ann-untag-btn" title="Remove tag from this provision" data-untag="${ann.id}">✕</button>
-          </div>
-          <div class="tp-ann-quote">"${escapeHtml(ann.highlighted_text || '(Box Highlight)')}"</div>
-          <div class="tp-ann-ft">
-            <button class="tp-ann-jump-btn" data-jump="${ann.id}">Jump to Provision ↗</button>
-          </div>
-        </div>
-      `;
-    }).join('');
+  } else if (!shouldChunk) {
+    initialListHtml = matching.map(_buildTopicAnnCardHtml).join('');
   }
 
   container.innerHTML = `
@@ -917,10 +982,10 @@ function renderSingleTopicView(container, tagName) {
     </div>
 
     <div class="tp-provisions-sec-title">Tagged Codal Provisions:</div>
-    <div class="tp-anns-list">${listHtml}</div>
+    <div class="tp-anns-list">${initialListHtml}</div>
   `;
 
-  // Wire buttons
+  // Wire header/stepper buttons
   container.querySelector('#tp-btn-open-workspace')?.addEventListener('click', () => {
     openTopicNotesModal(tagName);
   });
@@ -931,27 +996,48 @@ function renderSingleTopicView(container, tagName) {
   container.querySelector('#tp-step-prev')?.addEventListener('click', () => jumpThroughTag(tagName, -1));
   container.querySelector('#tp-step-next')?.addEventListener('click', () => jumpThroughTag(tagName, 1));
 
-  container.querySelectorAll('[data-jump]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const annId = btn.dataset.jump;
-      const target = S.annotations?.find(a => a.id === annId);
+  // Event delegation on .tp-anns-list supports both synchronous and chunked rAF cards
+  const listEl = container.querySelector('.tp-anns-list');
+  listEl?.addEventListener('click', async (e) => {
+    const jumpBtn = e.target.closest('[data-jump]');
+    if (jumpBtn) {
+      const target = getAnnotationById(jumpBtn.dataset.jump);
       if (target) jumpToAnn(target);
-    });
-  });
-
-  container.querySelectorAll('[data-untag]').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
+      return;
+    }
+    const untagBtn = e.target.closest('[data-untag]');
+    if (untagBtn) {
       e.stopPropagation();
-      const annId = btn.dataset.untag;
-      const target = S.annotations?.find(a => a.id === annId);
+      const target = getAnnotationById(untagBtn.dataset.untag);
       if (target) {
         await removeTagFromAnn(target, tagName);
       }
-    });
+    }
   });
+
+  if (shouldChunk && listEl) {
+    const CHUNK_SIZE = 50;
+    let offset = 0;
+    const appendBatch = (isFirst) => {
+      if (!isFirst && (myGen !== _singleTopicRenderGen || !listEl.isConnected)) return;
+      const end = Math.min(offset + CHUNK_SIZE, matching.length);
+      let chunkHtml = '';
+      for (; offset < end; offset++) {
+        chunkHtml += _buildTopicAnnCardHtml(matching[offset]);
+      }
+      if (chunkHtml) {
+        listEl.insertAdjacentHTML('beforeend', chunkHtml);
+      }
+      if (offset < matching.length) {
+        requestAnimationFrame(() => appendBatch(false));
+      }
+    };
+    appendBatch(true);
+  }
 }
 
 function renderAllTopicsView(container, allTopics) {
+  _singleTopicRenderGen++;
   if (allTopics.length === 0) {
     container.innerHTML = `
       <div class="tp-empty">
@@ -1029,7 +1115,7 @@ export function openTopicNotesModal(tagName) {
   };
 
   const color = topic.color || pickTopicColor(tagName);
-  const matching = (S.annotations || []).filter(a => getAnnTags(a).includes(tagName));
+  const matching = [..._getAnnsForTag(tagName)];
   matching.sort(compareAnnotationsReadingOrder);
 
   // Title and badge
@@ -1168,7 +1254,7 @@ export function printTagNotes(tagName) {
     color: pickTopicColor(tagName),
     notesHtml: '',
   };
-  const matching = (S.annotations || []).filter(a => getAnnTags(a).includes(tagName));
+  const matching = _getAnnsForTag(tagName);
   exportTagNotesToPDF({
     tagName,
     tagColor: topic?.color || pickTopicColor(tagName),

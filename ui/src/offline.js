@@ -107,7 +107,7 @@ let _mirrorInitialized = false;
 export function initOfflineMirror() {
   if (_mirrorInitialized) return;
   _mirrorInitialized = true;
-  setStorageMirrorHook((key, value) => {
+  setStorageMirrorHook((key, value, rawObj) => {
     if (!key || typeof key !== 'string') return;
     if (key.startsWith('local_notepad_') && !key.startsWith('local_notepad_write_ts_') && !key.startsWith('local_notepad_sync_ts_')) {
       const pdfId = key.slice('local_notepad_'.length);
@@ -118,17 +118,26 @@ export function initOfflineMirror() {
     } else if (key.startsWith('local_anns_')) {
       const pdfId = key.slice('local_anns_'.length);
       if (pdfId) {
-        try { putOfflineRecord(pdfId, { annotations: JSON.parse(value || '[]') }); } catch {}
+        try {
+          const anns = rawObj !== undefined ? rawObj : JSON.parse(value || '[]');
+          putOfflineRecord(pdfId, { annotations: anns });
+        } catch {}
       }
     } else if (key.startsWith('local_bms_')) {
       const pdfId = key.slice('local_bms_'.length);
       if (pdfId) {
-        try { putOfflineRecord(pdfId, { bookmarks: JSON.parse(value || '[]') }); } catch {}
+        try {
+          const bms = rawObj !== undefined ? rawObj : JSON.parse(value || '[]');
+          putOfflineRecord(pdfId, { bookmarks: bms });
+        } catch {}
       }
     } else if (key.startsWith('local_draws_')) {
       const pdfId = key.slice('local_draws_'.length);
       if (pdfId) {
-        try { putOfflineRecord(pdfId, { drawings: JSON.parse(value || '{}') }); } catch {}
+        try {
+          const draws = rawObj !== undefined ? rawObj : JSON.parse(value || '{}');
+          putOfflineRecord(pdfId, { drawings: draws });
+        } catch {}
       }
     }
   });
@@ -369,7 +378,11 @@ async function _downloadNotesBatch(targetPdfIds = null, onProgress = null) {
     // Also prime localStorage for instant 0ms synchronous access when space permits
     if (finalContent) safeStorageSet('local_notepad_' + pid, finalContent);
     if (finalDigest) safeStorageSet('local_digest_' + pid, finalDigest);
-    if (finalAnns.length) safeStorageSet('local_anns_' + pid, JSON.stringify(finalAnns));
+    if (finalAnns.length) {
+      const annsJson = JSON.stringify(finalAnns);
+      if (annsJson.length <= 1500000) safeStorageSet('local_anns_' + pid, annsJson, finalAnns);
+      else safeStorageRemove('local_anns_' + pid);
+    }
     if (finalBms.length) safeStorageSet('local_bms_' + pid, JSON.stringify(finalBms));
 
     if (finalAnns.length) S.annCounts[pid] = finalAnns.length;
