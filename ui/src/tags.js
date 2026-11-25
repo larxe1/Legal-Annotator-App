@@ -964,56 +964,22 @@ export function renderAnnPanelTagsSection(ann) {
   });
 }
 
-// ── 4. Floating Tag Pill Badge on PDF Highlights ──
+// ── 4. Floating Tag Pill Badge on PDF Highlights (disabled — tags stay backend-only) ──
 export function redrawTagBadgeForAnn(ann, pageDims = null, skipRemove = false) {
-  if (!ann) return;
+  if (!ann || skipRemove) return;
   const pg = S.pages?.[ann.page];
   if (!pg || !pg.rendered || !pg.annOv) return;
-
-  if (!skipRemove) {
-    pg.annOv.querySelectorAll(`.ann-tag-pill-badge[data-id="${ann.id}"]`).forEach(el => el.remove());
-  }
-
-  const tags = getAnnTags(ann);
-  if (!tags || tags.length === 0) return;
-
-  const firstRect = ann.rects && ann.rects[0];
-  if (!firstRect) return;
-  const pxRect = rectToPx(firstRect, pageDims || pg.viewport || pg.wrap);
-
-  const badge = document.createElement('div');
-  badge.className = 'ann-tag-pill-badge';
-  badge.dataset.id = ann.id;
-  badge.style.left = `${Math.max(2, pxRect.x + pxRect.w - 6)}px`;
-  badge.style.top = `${Math.max(2, pxRect.y - 12)}px`;
-
-  const tagLabel = tags.length === 1 ? tags[0] : `${tags[0]} +${tags.length - 1}`;
-  const topic = currentTagData?.topics?.[tags[0]];
-  const color = topic?.color || pickTopicColor(tags[0]);
-
-  badge.style.borderColor = `${color}99`;
-  badge.style.color = color;
-  badge.innerHTML = `<span style="font-size:10px">🏷️</span> <span class="tag-txt">${escapeHtml(tagLabel)}</span>`;
-  badge.title = tags.join(', ') + ' (Click to open Tags Menu)';
-
-  badge.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleTagsPanel(tags[0]);
+  const targetId = String(ann.id);
+  pg.annOv.querySelectorAll('.ann-tag-pill-badge').forEach(el => {
+    if (el.dataset?.id === targetId || el.getAttribute('data-id') === targetId) el.remove();
   });
-
-  pg.annOv.appendChild(badge);
 }
 
 export function redrawAllTagBadges() {
   if (!S.pages) return;
-  for (const [pageKey, pg] of Object.entries(S.pages)) {
+  for (const pg of Object.values(S.pages)) {
     if (!pg || !pg.rendered || !pg.annOv) continue;
     pg.annOv.querySelectorAll('.ann-tag-pill-badge').forEach(el => el.remove());
-    const dims = pg.viewport || pg.wrap;
-    const pageAnns = getAnnotationsForPage(Number(pageKey));
-    for (const ann of pageAnns) {
-      redrawTagBadgeForAnn(ann, dims, true);
-    }
   }
 }
 
@@ -1834,36 +1800,6 @@ function injectTagsCSS() {
   const style = document.createElement('style');
   style.id = 'tags-dynamic-styles';
   style.textContent = `
-    /* Floating Tag Badge on PDF Highlight */
-    .ann-tag-pill-badge {
-      position: absolute;
-      z-index: 15;
-      background: rgba(15, 23, 42, 0.94);
-      border: 1px solid rgba(245, 158, 11, 0.7);
-      color: #fbbf24;
-      font-size: 10px;
-      font-weight: 600;
-      font-family: var(--font-ui, 'Public Sans', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif);
-      padding: 2px 7px;
-      border-radius: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-      cursor: pointer;
-      white-space: nowrap;
-      pointer-events: auto;
-      user-select: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 3px;
-      transform: translateY(-50%);
-      transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
-    }
-    .ann-tag-pill-badge:hover {
-      transform: translateY(-50%) scale(1.08);
-      border-color: #f59e0b;
-      background: #0f172a;
-      box-shadow: 0 4px 14px rgba(245, 158, 11, 0.45);
-    }
-
     /* Provision Luminous Pulse Flash */
     @keyframes annTagFlashPulse {
       0% { filter: brightness(1.8) drop-shadow(0 0 14px #f59e0b); outline: 3px solid #f59e0b; }

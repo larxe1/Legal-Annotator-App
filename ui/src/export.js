@@ -4,7 +4,6 @@ import { toast } from './ui.js';
 import { safeStorageGet } from './storage.js';
 import { getCachedNotepad } from './notepad.js';
 import { getNoteType, getNoteBody, compareAnnotationsReadingOrder } from './annotate.js';
-import { getColorCategoryForHex } from './colors.js';
 
 // Strip emojis using Unicode property escapes and common icon sets
 export const stripEmojis = (str) => {
@@ -19,6 +18,8 @@ export const stripEmojis = (str) => {
 export function cleanAndSanitizeHtml(html) {
   if (!html) return '';
   let clean = stripEmojis(html);
+  // Strip pasted inline page-break declarations so pasted notes cannot force hidden print breaks
+  clean = clean.replace(/(?:page-break-before|page-break-after|break-before|break-after)\s*:[^;"']*;?/gi, '');
   // Replace inline light colors (white, off-white, light gray) with dark slate
   clean = clean
     .replace(/color:\s*(#[d-fD-F0-9]{3,6}|rgb\(\s*2[0-5][0-9]\s*,\s*2[0-5][0-9]\s*,\s*2[0-5][0-9]\s*\)|white|#fff|#f1f5f9|#e8e4db|#e0dbd2)/gi, 'color: #0f172a')
@@ -748,7 +749,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
   const standaloneControlsScript = embeddedPreview
     ? ''
     : `
-    function setLayoutMode(mode) {
+    window.setLayoutMode = function(mode) {
       var container = document.getElementById('document-body');
       var btnTight = document.getElementById('btn-mode-tight');
       var btnCompact = document.getElementById('btn-mode-compact');
@@ -770,9 +771,9 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       if (typeof window.paginateDocumentIntoPages === 'function') {
         window.paginateDocumentIntoPages();
       }
-    }
+    };
 
-    function setColumns(cols) {
+    window.setColumns = function(cols) {
       var container = document.getElementById('document-body');
       var btn1 = document.getElementById('btn-col-1');
       var btn2 = document.getElementById('btn-col-2');
@@ -789,7 +790,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       if (typeof window.paginateDocumentIntoPages === 'function') {
         window.paginateDocumentIntoPages();
       }
-    }
+    };
     `;
 
   const scriptHtml = `
@@ -927,7 +928,8 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           cls.contains('section-badge') ||
           cls.contains('np-banner-hdr') ||
           cls.contains('folder-header-wrap') ||
-          cls.contains('ps-toc-heading');
+          cls.contains('ps-toc-heading') ||
+          cls.contains('tag-print-header');
       }
 
       function hasMeaningfulDom(node) {
@@ -935,9 +937,22 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         if (node.nodeType === 3) return node.nodeValue.trim().length > 0;
         if (node.nodeType !== 1) return false;
         var tag = node.tagName;
-        if (tag === 'IMG' || tag === 'TABLE' || tag === 'HR') return true;
-        if (node.querySelector && node.querySelector('img, table, hr')) return true;
+        if (tag === 'IMG' || tag === 'TABLE') return true;
+        if (node.querySelector && node.querySelector('img, table')) return true;
         return (node.textContent || '').trim().length > 0;
+      }
+
+      function isVoidOrAtomicTag(tag) {
+        return tag === 'IMG' || tag === 'BR' || tag === 'HR' || tag === 'SVG' ||
+          tag === 'CANVAS' || tag === 'IFRAME' || tag === 'VIDEO' || tag === 'AUDIO' ||
+          tag === 'INPUT' || tag === 'BUTTON' || tag === 'SELECT' || tag === 'TEXTAREA';
+      }
+
+      function hasNestedBlockChildren(el) {
+        return Boolean(
+          el && el.querySelector &&
+          el.querySelector('div, p, ul, ol, table, blockquote, section, article, main, aside, details, dl, dd, dt, figure, pre, h1, h2, h3, h4, h5, h6, hr')
+        );
       }
 
       function isSplittableContainer(el) {
@@ -949,13 +964,19 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             cls.contains('case-notes-body') ||
             cls.contains('note-content') ||
             cls.contains('print-toc-block') ||
-            cls.contains('ps-toc-list')) {
+            cls.contains('ps-toc-list') ||
+            cls.contains('tag-print-item') ||
+            cls.contains('tag-print-notes') ||
+            cls.contains('tag-print-cases') ||
+            cls.contains('tag-print-topic-notes')) {
           return true;
         }
         var tag = el.tagName;
-        if (tag === 'BLOCKQUOTE') return true;
-        if (tag === 'DIV' && !isHeadingEl(el) && !cls.contains('ps-toc-row')) {
-          return el.children.length > 0;
+        if (!isHeadingEl(el) && !cls.contains('ps-toc-row') &&
+            (tag === 'DIV' || tag === 'BLOCKQUOTE' || tag === 'SECTION' ||
+             tag === 'ARTICLE' || tag === 'MAIN' || tag === 'ASIDE' ||
+             tag === 'DETAILS' || tag === 'DL' || tag === 'DD' || tag === 'FIGURE')) {
+          return el.children.length > 0 && hasNestedBlockChildren(el);
         }
         return false;
       }
@@ -1151,7 +1172,10 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         }
       }
 
-      function splitTableRow(tr, topTbody, colEl, maxH, forceFirstRow) {
+      function splitTableRow(tr, topTbody, colEl, maxH, forceFirstRow, remPx) {
+        if (typeof remPx !== 'number') {
+          remPx = maxH - getColHeight(colEl);
+        }
         var cells = Array.from(tr.children);
         if (cells.length === 0) return { trTop: null, trRest: tr };
         if (cells.some(function(c) { return (c.rowSpan || 1) > 1; })) {
@@ -1193,15 +1217,11 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           }
         }
 
-        if (anyCellSplitFailed && !forceFirstRow) {
-          topTbody.removeChild(trTop);
-          return { trTop: null, trRest: tr };
-        }
-
         var topHasAny = topCells.some(hasMeaningfulDom);
         var restHasAny = restCells.some(hasMeaningfulDom);
+        var canAllowPartial = topHasAny && (forceFirstRow || !anyCellSplitFailed || (remPx >= 120 && restHasAny));
 
-        if (!topHasAny) {
+        if (!canAllowPartial) {
           topTbody.removeChild(trTop);
           return { trTop: null, trRest: tr };
         }
@@ -1273,7 +1293,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
 
           var remPx = maxH - getColHeight(colEl);
           if (remPx >= 38 || (colWasEmpty && rowsPlaced === 0)) {
-            var rowRes = splitTableRow(tr, topTbody, colEl, maxH, colWasEmpty && rowsPlaced === 0);
+            var rowRes = splitTableRow(tr, topTbody, colEl, maxH, colWasEmpty && rowsPlaced === 0, remPx);
             if (rowRes.trTop) {
               rowsPlaced++;
               if (rowRes.trRest) restTbody.appendChild(rowRes.trRest);
@@ -1387,7 +1407,10 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
       function splitContainer(containerEl, parentTarget, colEl, maxH, colWasEmpty) {
         var topC = containerEl.cloneNode(false);
         var restC = containerEl.cloneNode(false);
-        if (containerEl.classList.contains('case-section') || containerEl.classList.contains('folder-notes-section')) {
+        if (containerEl.classList.contains('case-section') ||
+            containerEl.classList.contains('folder-notes-section') ||
+            containerEl.classList.contains('tag-print-item') ||
+            containerEl.classList.contains('tag-print-topic-notes')) {
           restC.classList.add('is-continuation');
           restC.removeAttribute('data-toc-id');
         }
@@ -1476,6 +1499,9 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           }
           return { top: null, rest: containerEl };
         }
+        while (restC.firstChild && !hasMeaningfulDom(restC.firstChild)) {
+          restC.removeChild(restC.firstChild);
+        }
         if (!hasMeaningfulDom(restC)) {
           return { top: topC, rest: null };
         }
@@ -1491,9 +1517,8 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         if (tag === 'UL' || tag === 'OL') {
           return splitList(el, parentTarget, colEl, maxH, colWasEmpty);
         }
-        if (tag === 'P' || tag === 'LI') {
-          var hasNestedBlocks = el.querySelector && el.querySelector('ul, ol, table, div, p, blockquote');
-          if (hasNestedBlocks) {
+        if (tag === 'P' || tag === 'LI' || tag === 'DT' || tag === 'DD') {
+          if (hasNestedBlockChildren(el)) {
             return splitContainer(el, parentTarget, colEl, maxH, colWasEmpty);
           }
           return splitInlineBlock(el, parentTarget, colEl, maxH, colWasEmpty);
@@ -1501,7 +1526,16 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         if (isSplittableContainer(el)) {
           return splitContainer(el, parentTarget, colEl, maxH, colWasEmpty);
         }
-        if ((tag === 'DIV' || tag === 'BLOCKQUOTE') && hasMeaningfulDom(el)) {
+        if ((tag === 'DIV' || tag === 'BLOCKQUOTE' || tag === 'SECTION' ||
+             tag === 'ARTICLE' || tag === 'MAIN' || tag === 'ASIDE' ||
+             tag === 'DETAILS' || tag === 'DL' || tag === 'FIGURE' || tag === 'PRE') &&
+            hasMeaningfulDom(el)) {
+          return splitInlineBlock(el, parentTarget, colEl, maxH, colWasEmpty);
+        }
+        if (!isVoidOrAtomicTag(tag) && hasMeaningfulDom(el)) {
+          if (hasNestedBlockChildren(el)) {
+            return splitContainer(el, parentTarget, colEl, maxH, colWasEmpty);
+          }
           return splitInlineBlock(el, parentTarget, colEl, maxH, colWasEmpty);
         }
         return { top: null, rest: el };
@@ -1678,19 +1712,15 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           }
 
           var hideTopicNotes = bodyEl.classList.contains('hide-tag-topic-notes');
-          var hideQuotes = bodyEl.classList.contains('hide-tag-quotes');
           var hideNotes = bodyEl.classList.contains('hide-tag-notes');
           var hideCases = bodyEl.classList.contains('hide-tag-cases');
-          var onlyWithNotes = bodyEl.classList.contains('only-tag-with-notes');
 
           function pruneHiddenToggleNodes(node) {
             if (!node || node.nodeType !== 1) return node;
             var cls = node.classList;
             if (hideTopicNotes && cls.contains('tag-print-topic-notes')) return null;
-            if (hideQuotes && cls.contains('tag-print-quote')) return null;
             if (hideNotes && cls.contains('tag-print-notes')) return null;
             if (hideCases && cls.contains('tag-print-cases')) return null;
-            if (onlyWithNotes && cls.contains('tag-print-item') && node.getAttribute('data-has-notes') === '0') return null;
             if (node.children && node.children.length > 0) {
               var kids = Array.from(node.children);
               for (var ki = 0; ki < kids.length; ki++) {
@@ -1698,7 +1728,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
                   node.removeChild(kids[ki]);
                 }
               }
-              if (cls.contains('tag-print-item') && !node.querySelector('.tag-print-quote, .tag-print-notes, .tag-print-cases')) {
+              if (cls.contains('tag-print-item') && !node.querySelector('.tag-print-notes, .tag-print-cases')) {
                 return null;
               }
             }
@@ -1778,7 +1808,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
                 if (splitRes.rest) {
                   queue.unshift(splitRes.rest);
                 }
-                if (queue.length > 0) {
+                if (queue.length > 0 && (splitRes.rest || (cur.maxColHeight - getColHeight(cur.colEl)) < 24)) {
                   cur = advanceColumn(queue);
                 }
                 continue;
@@ -2482,43 +2512,12 @@ export function exportTagNotesToPDF({ tagName, tagColor, topicNotesHtml, pdfTitl
   const anns = Array.isArray(annotations) ? [...annotations] : [];
   const hasTopicNotes = hasMeaningfulContent(topicNotesHtml);
 
-  if (anns.length === 0 && !hasTopicNotes) {
-    toast(`Nothing to print for "${tagName || 'Topic'}" yet.`);
-    return;
-  }
-
   anns.sort(compareAnnotationsReadingOrder);
 
-  const safeTagName = escapeHtml(tagName || 'Topic');
-  const cleanDocTitle = stripEmojis(pdfTitle || 'Document') || 'Document';
-  const safeDocTitle = escapeHtml(cleanDocTitle);
-  const resolvedTagColor = /^#[0-9a-fA-F]{3,8}$/.test(String(tagColor || '').trim())
-    ? String(tagColor).trim()
-    : '#c9a84c';
-
-  let sectionsHtml = `
-    <div class="tag-print-header" data-case-name="${safeTagName}" data-folder-path="${safeDocTitle}" style="border-left: 4pt solid ${resolvedTagColor};">
-      <div class="tag-print-header-top">
-        <span class="tag-print-title-dot" style="background: ${resolvedTagColor};"></span>
-        <h1 class="tag-print-title">${safeTagName}</h1>
-      </div>
-      <div class="tag-print-sub">
-        <span>${safeDocTitle}</span>
-        <span>&bull;</span>
-        <span>${anns.length} Highlight${anns.length === 1 ? '' : 's'}</span>
-        ${hasTopicNotes ? '<span>&bull;</span><span>Includes Topic Notes</span>' : ''}
-      </div>
-    </div>
-  `;
-
-  if (hasTopicNotes) {
-    sectionsHtml += `
-      <div class="tag-print-topic-notes">
-        <div class="section-badge tag-print-sec-lbl">Topic Notes &amp; Outside Laws</div>
-        <div class="note-content">${cleanAndSanitizeHtml(topicNotesHtml)}</div>
-      </div>
-    `;
-  }
+  let noteItemsCount = 0;
+  let hasAnyGeneralNotes = false;
+  let hasAnyCaseNotes = false;
+  let itemsHtml = '';
 
   for (const ann of anns) {
     if (!ann) continue;
@@ -2536,29 +2535,17 @@ export function exportTagNotesToPDF({ tagName, tagColor, topicNotesHtml, pdfTitl
       }
     }
 
-    const hasNotes = generalNotes.length > 0 || caseNotes.length > 0;
-    const catInfo = getColorCategoryForHex(ann.hex_color);
-    const annColor = catInfo.hex_color || (/^#[0-9a-fA-F]{3,8}$/.test(String(ann.hex_color || '').trim()) ? String(ann.hex_color).trim() : '#c9a84c');
-    const catName = escapeHtml(stripEmojis(catInfo.name || 'Highlight') || catInfo.name || 'Highlight');
-    const quoteText = escapeHtml(ann.highlighted_text || '(Box Highlight)');
+    if (generalNotes.length === 0 && caseNotes.length === 0) continue;
 
-    let itemInnerHtml = `
-      <div class="tag-print-quote" style="border-left: 3pt solid ${escapeHtml(annColor)};">
-        <div class="tag-print-meta">
-          <span class="tag-print-page-badge">Page ${escapeHtml(String(ann.page ?? ''))}</span>
-          <span class="tag-print-cat-badge">
-            <span class="tag-print-cat-dot" style="background: ${escapeHtml(annColor)};"></span>
-            <span>${catName}</span>
-          </span>
-        </div>
-        <div class="tag-print-quote-text">&ldquo;${quoteText}&rdquo;</div>
-      </div>
-    `;
+    noteItemsCount++;
+    if (generalNotes.length > 0) hasAnyGeneralNotes = true;
+    if (caseNotes.length > 0) hasAnyCaseNotes = true;
 
+    let itemInnerHtml = '';
     if (generalNotes.length > 0) {
       itemInnerHtml += `
         <div class="tag-print-notes">
-          <div class="section-badge tag-print-sec-lbl">Notes</div>
+          ${caseNotes.length > 0 ? '<div class="section-badge tag-print-sec-lbl">Notes</div>' : ''}
           <div class="note-content">${generalNotes.map(b => cleanAndSanitizeHtml(b)).join('')}</div>
         </div>
       `;
@@ -2573,22 +2560,68 @@ export function exportTagNotesToPDF({ tagName, tagColor, topicNotesHtml, pdfTitl
       `;
     }
 
-    sectionsHtml += `
-      <div class="tag-print-item" data-has-notes="${hasNotes ? '1' : '0'}">
+    itemsHtml += `
+      <div class="tag-print-item">
         ${itemInnerHtml}
       </div>
     `;
   }
 
-  const extraTopBarControlsHtml = `
-    <div class="btn-group" id="tag-print-toggles">
-      ${hasTopicNotes ? '<button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-topic-notes" data-invert="1" title="Show or hide Topic Notes & Outside Laws">Topic Notes</button>' : ''}
-      <button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-quotes" data-invert="1" title="Show or hide Highlighted Quotes">Quotes</button>
-      <button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-notes" data-invert="1" title="Show or hide General Notes">Notes</button>
-      <button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-cases" data-invert="1" title="Show or hide Case Summaries">Cases</button>
-      <button type="button" class="btn-toggle" data-tag-toggle="only-tag-with-notes" title="Show only highlights that have notes or case summaries">Only w/ Notes</button>
+  if (noteItemsCount === 0 && !hasTopicNotes) {
+    toast(`No notes to print for "${tagName || 'Topic'}" yet.`);
+    return;
+  }
+
+  const safeTagName = escapeHtml(tagName || 'Topic');
+  const cleanDocTitle = stripEmojis(pdfTitle || 'Document') || 'Document';
+  const safeDocTitle = escapeHtml(cleanDocTitle);
+  const resolvedTagColor = /^#[0-9a-fA-F]{3,8}$/.test(String(tagColor || '').trim())
+    ? String(tagColor).trim()
+    : '#c9a84c';
+
+  const subCountHtml = noteItemsCount > 0
+    ? `<span>${noteItemsCount} Note${noteItemsCount === 1 ? '' : 's'}</span>${hasTopicNotes ? '<span>&bull;</span><span>Includes Topic Notes</span>' : ''}`
+    : '<span>Topic Notes</span>';
+
+  let sectionsHtml = `
+    <div class="tag-print-header" data-case-name="${safeTagName}" data-folder-path="${safeDocTitle}" style="border-left: 4pt solid ${resolvedTagColor};">
+      <div class="tag-print-header-top">
+        <span class="tag-print-title-dot" style="background: ${resolvedTagColor};"></span>
+        <h1 class="tag-print-title">${safeTagName}</h1>
+      </div>
+      <div class="tag-print-sub">
+        <span>${safeDocTitle}</span>
+        <span>&bull;</span>
+        ${subCountHtml}
+      </div>
     </div>
   `;
+
+  if (hasTopicNotes) {
+    sectionsHtml += `
+      <div class="tag-print-topic-notes">
+        <div class="section-badge tag-print-sec-lbl">Topic Notes &amp; Outside Laws</div>
+        <div class="note-content">${cleanAndSanitizeHtml(topicNotesHtml)}</div>
+      </div>
+    `;
+  }
+
+  sectionsHtml += itemsHtml;
+
+  const toggleBtns = [];
+  if (hasTopicNotes) {
+    toggleBtns.push('<button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-topic-notes" data-invert="1" title="Show or hide Topic Notes & Outside Laws">Topic Notes</button>');
+  }
+  if (hasAnyGeneralNotes) {
+    toggleBtns.push('<button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-notes" data-invert="1" title="Show or hide General Notes">Notes</button>');
+  }
+  if (hasAnyCaseNotes) {
+    toggleBtns.push('<button type="button" class="btn-toggle active" data-tag-toggle="hide-tag-cases" data-invert="1" title="Show or hide Case Summaries">Cases</button>');
+  }
+
+  const extraTopBarControlsHtml = toggleBtns.length >= 2
+    ? `<div class="btn-group" id="tag-print-toggles">\n      ${toggleBtns.join('\n      ')}\n    </div>`
+    : '';
 
   const extraStyles = `
     .tag-print-header {
@@ -2647,60 +2680,25 @@ export function exportTagNotesToPDF({ tagName, tagColor, topicNotesHtml, pdfTitl
       border-radius: 4pt;
       background: #ffffff;
     }
-    .tag-print-quote {
-      padding-left: 7pt;
-      margin-bottom: 4pt;
-    }
-    .tag-print-quote:last-child {
-      margin-bottom: 0;
-    }
-    .tag-print-meta {
-      display: flex;
-      align-items: center;
-      gap: 6pt;
-      margin-bottom: 2.5pt;
-      font-size: 7.5pt;
-    }
-    .tag-print-page-badge {
-      font-weight: 700;
-      color: #0f172a;
-      background: #e2e8f0;
-      padding: 0.5pt 4pt;
-      border-radius: 2.5pt;
-    }
-    .tag-print-cat-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 3.5pt;
-      color: #334155;
-      font-weight: 600;
-    }
-    .tag-print-cat-dot {
-      width: 6pt;
-      height: 6pt;
-      border-radius: 50%;
-      display: inline-block;
-    }
-    .tag-print-quote-text {
-      font-family: 'Literata', Georgia, serif;
-      font-style: italic;
-      font-size: 8.5pt;
-      line-height: 1.35;
-      color: #1e293b;
+    .tag-print-item.is-continuation,
+    .tag-print-topic-notes.is-continuation {
+      margin-top: 0 !important;
+      border-top-left-radius: 0 !important;
+      border-top-right-radius: 0 !important;
     }
     .tag-print-notes {
-      margin-top: 4pt;
-      padding-top: 4pt;
       padding-left: 7pt;
-      border-top: 0.5pt dashed #cbd5e1;
       border-left: 2pt solid #64748b;
     }
     .tag-print-cases {
+      padding-left: 7pt;
+      border-left: 2pt solid #0284c7;
+    }
+    .tag-print-notes:not(:first-child),
+    .tag-print-cases:not(:first-child) {
       margin-top: 4pt;
       padding-top: 4pt;
-      padding-left: 7pt;
       border-top: 0.5pt dashed #cbd5e1;
-      border-left: 2pt solid #0284c7;
     }
     .tight-mode .tag-print-header {
       margin-bottom: 4pt;
@@ -2711,15 +2709,9 @@ export function exportTagNotesToPDF({ tagName, tagColor, topicNotesHtml, pdfTitl
       margin-bottom: 3.5pt;
       padding: 4pt 6pt;
     }
-    .standard-mode .tag-print-quote-text {
-      font-size: 9.5pt;
-      line-height: 1.45;
-    }
     .hide-tag-topic-notes .tag-print-topic-notes { display: none !important; }
-    .hide-tag-quotes .tag-print-quote { display: none !important; }
     .hide-tag-notes .tag-print-notes { display: none !important; }
     .hide-tag-cases .tag-print-cases { display: none !important; }
-    .only-tag-with-notes .tag-print-item[data-has-notes="0"] { display: none !important; }
   `;
 
   const extraScript = `
@@ -2744,12 +2736,15 @@ export function exportTagNotesToPDF({ tagName, tagColor, topicNotesHtml, pdfTitl
   `;
 
   const cleanTagTitle = stripEmojis(tagName || 'Tag Notes') || tagName || 'Tag Notes';
+  const subtitleSummary = noteItemsCount > 0
+    ? `${noteItemsCount} Note${noteItemsCount === 1 ? '' : 's'}${hasTopicNotes ? ' &bull; Topic Notes' : ''}`
+    : 'Topic Notes';
   renderExportPrintDocument({
     htmlContent: sectionsHtml,
     caseRegistry: [],
     orientation: 'portrait',
     pageTitle: `${cleanTagTitle} — ${cleanDocTitle}`,
-    subtitleHtml: `${safeTagName} &bull; ${anns.length} Highlight${anns.length === 1 ? '' : 's'}`,
+    subtitleHtml: `${safeTagName} &bull; ${subtitleSummary}`,
     fallbackPath: cleanDocTitle,
     autoPrint: false,
     extraTopBarControlsHtml,

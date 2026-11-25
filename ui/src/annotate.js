@@ -14,7 +14,7 @@ import { safeStorageSet, safeStorageGet, scheduleDebouncedLocalAnnsSave } from '
 import {
   loadTagsForPdf, getAnnTags, addTagToAnn, removeTagFromAnn,
   getAllTopicsForCurrentPdf, renderAnnPanelTagsSection,
-  initTagsPanel, toggleTagsPanel, redrawTagBadgeForAnn,
+  initTagsPanel, toggleTagsPanel,
   getActiveQuickTag, setActiveQuickTag, onAnnDeleted,
   updateSelMenuMassTagButton
 } from './tags.js';
@@ -575,17 +575,10 @@ export function drawPageAnnotations(pageNum) {
 
   const pageDims = pg.viewport || pg.wrap;
   const frag = document.createDocumentFragment();
-  const taggedAnns = [];
   for (const ann of pageAnns) {
     frag.appendChild(_buildHiGroupEl(ann, pageDims));
-    const tags = getAnnTags(ann);
-    if (tags && tags.length > 0) taggedAnns.push(ann);
   }
   layer.appendChild(frag);
-
-  for (const ann of taggedAnns) {
-    redrawTagBadgeForAnn(ann, pg.viewport);
-  }
 }
 
 // ── Draw annotation overlay ──
@@ -604,13 +597,7 @@ export function drawAnnotation(ann) {
     hideTip();
   }
   layer.appendChild(_buildHiGroupEl(ann, pg.viewport || pg.wrap));
-
-  const tags = getAnnTags(ann);
-  if (tags && tags.length > 0) {
-    redrawTagBadgeForAnn(ann, pg.viewport);
-  } else {
-    annOv.querySelectorAll(`.ann-tag-pill-badge[data-id="${safeId}"]`).forEach(el => el.remove());
-  }
+  annOv.querySelectorAll(`.ann-tag-pill-badge[data-id="${safeId}"]`).forEach(el => el.remove());
 }
 
 export function redrawAllAnnotations() {
