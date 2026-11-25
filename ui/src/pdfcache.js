@@ -66,18 +66,89 @@ function getDB() {
   return _dbPromise;
 }
 
+// ── Timeout & IndexedDB Transaction Helpers ──
+async function _withTimeout(promise, ms, fallbackValue) {
+  let timer = null;
+  const safePromise = Promise.resolve(promise).catch(() => fallbackValue);
+  try {
+    return await Promise.race([
+      safePromise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(fallbackValue), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function _runIdbRequest(db, storeName, mode, runReq, timeoutMs = 2500, fallbackValue = null) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const done = (val) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(val);
+    };
+    timer = setTimeout(() => done(fallbackValue), timeoutMs);
+    try {
+      const tx = db.transaction(storeName, mode);
+      tx.onabort = () => done(fallbackValue);
+      tx.onerror = () => done(fallbackValue);
+      const store = tx.objectStore(storeName);
+      const req = runReq(store);
+      req.onsuccess = () => done(req.result);
+      req.onerror = () => done(fallbackValue);
+    } catch {
+      done(fallbackValue);
+    }
+  });
+}
+
+function _idbGetWithTimeout(db, storeName, key, timeoutMs = 2500) {
+  return _runIdbRequest(db, storeName, 'readonly', (store) => store.get(key), timeoutMs, null);
+}
+
+function _runIdbWrite(db, storeName, runReq, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const done = (ok = false) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(ok);
+    };
+    timer = setTimeout(() => {
+      console.warn(`[PDFCache] IndexedDB write on "${storeName}" timed out; continuing`);
+      done(false);
+    }, timeoutMs);
+    try {
+      const tx = db.transaction(storeName, 'readwrite');
+      tx.oncomplete = () => done(true);
+      tx.onabort = () => done(false);
+      tx.onerror = (e) => {
+        console.warn(`[PDFCache] IndexedDB write error on "${storeName}"`, tx.error || e);
+        done(false);
+      };
+      const store = tx.objectStore(storeName);
+      const req = runReq(store);
+      if (req) req.onerror = () => done(false);
+    } catch {
+      done(false);
+    }
+  });
+}
+
 // ── Notepad History in IndexedDB (virtually unlimited quota) ──
 export async function getNotepadHistoryIDB(pdfId) {
   try {
     const db = await getDB();
     if (!db || !db.objectStoreNames.contains(HISTORY_STORE)) return null;
-    return new Promise((resolve) => {
-      const tx = db.transaction(HISTORY_STORE, 'readonly');
-      const store = tx.objectStore(HISTORY_STORE);
-      const req = store.get(pdfId);
-      req.onsuccess = () => resolve(req.result ? req.result.history : null);
-      req.onerror = () => resolve(null);
-    });
+    const res = await _idbGetWithTimeout(db, HISTORY_STORE, pdfId, 2500);
+    return res ? res.history : null;
   } catch (err) {
     console.warn('[PDFCache] getNotepadHistoryIDB error', err);
     return null;
@@ -114,14 +185,9 @@ export async function requestPersistentStorage() {
 async function getStoredDirHandle() {
   try {
     const db = await getDB();
-    if (!db) return null;
-    return new Promise((resolve) => {
-      const tx = db.transaction(CONFIG_STORE, 'readonly');
-      const store = tx.objectStore(CONFIG_STORE);
-      const req = store.get('custom_dir_handle');
-      req.onsuccess = () => resolve(req.result ? req.result.handle : null);
-      req.onerror = () => resolve(null);
-    });
+    if (!db || !db.objectStoreNames.contains(CONFIG_STORE)) return null;
+    const res = await _idbGetWithTimeout(db, CONFIG_STORE, 'custom_dir_handle', 2500);
+    return res ? res.handle : null;
   } catch {
     return null;
   }
@@ -151,12 +217,15 @@ async function clearStoredDirHandle() {
   }
 }
 
-async function verifyPermission(fileHandle, readWrite = false) {
+async function verifyPermission(fileHandle, readWrite = false, interactive = false) {
   if (!fileHandle) return false;
   const options = { mode: readWrite ? 'readwrite' : 'read' };
   try {
-    if ((await fileHandle.queryPermission(options)) === 'granted') return true;
-    if ((await fileHandle.requestPermission(options)) === 'granted') return true;
+    const queried = await _withTimeout(fileHandle.queryPermission(options), 1500, 'denied');
+    if (queried === 'granted') return true;
+    if (!interactive) return false;
+    const requested = await _withTimeout(fileHandle.requestPermission(options), 15000, 'denied');
+    return requested === 'granted';
   } catch (e) {
     console.warn('[PDFCache] Permission verification failed:', e);
   }
@@ -176,7 +245,7 @@ export async function chooseCustomDirectory() {
       startIn: 'documents'
     });
 
-    const ok = await verifyPermission(handle, true);
+    const ok = await verifyPermission(handle, true, true);
     if (!ok) {
       alert('Permission to write to the selected folder was not granted.');
       return null;
@@ -248,14 +317,9 @@ export async function isPDFCached(fileId) {
   if (!fileId) return false;
   try {
     const db = await getDB();
-    if (!db) return false;
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.count(fileId);
-      req.onsuccess = () => resolve(req.result > 0);
-      req.onerror = () => resolve(false);
-    });
+    if (!db || !db.objectStoreNames.contains(STORE_NAME)) return false;
+    const count = await _runIdbRequest(db, STORE_NAME, 'readonly', (store) => store.count(fileId), 2500, 0);
+    return (count || 0) > 0;
   } catch {
     return false;
   }
@@ -264,28 +328,16 @@ export async function isPDFCached(fileId) {
 export async function getCachedPDF(fileId) {
   try {
     const db = await getDB();
-    if (!db) return null;
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.get(fileId);
-      req.onsuccess = async () => {
-        const item = req.result;
-        if (!item) return resolve(null);
-        try {
-          // Return the Blob directly — caller uses URL.createObjectURL(), no conversion needed
-          if (item.blob) return resolve(item.blob);
-          if (item.buffer) {
-            // Legacy ArrayBuffer entries: wrap in Blob for consistency
-            return resolve(new Blob([item.buffer], { type: 'application/pdf' }));
-          }
-          resolve(null);
-        } catch {
-          resolve(null);
-        }
-      };
-      req.onerror = () => resolve(null);
-    });
+    if (!db || !db.objectStoreNames.contains(STORE_NAME)) return null;
+    const item = await _idbGetWithTimeout(db, STORE_NAME, fileId, 5000);
+    if (!item) return null;
+    // Return the Blob directly — caller uses URL.createObjectURL(), no conversion needed
+    if (item.blob) return item.blob;
+    if (item.buffer) {
+      // Legacy ArrayBuffer entries: wrap in Blob for consistency
+      return new Blob([item.buffer], { type: 'application/pdf' });
+    }
+    return null;
   } catch (err) {
     console.warn('[PDFCache] getCachedPDF failed', err);
     return null;
@@ -296,28 +348,32 @@ export async function setCachedPDF(fileId, data, name = '') {
   try {
     const db = await getDB();
     if (!db || !data) return;
-    
+
     // Store as native Blob in IndexedDB (zero-copy streaming, avoids V8 clone memory spikes)
     const blob = (data instanceof Blob) ? data : new Blob([data], { type: 'application/pdf' });
     const size = blob.size;
 
-    // 1. Always save in IndexedDB for fast random access
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    store.put({
-      id: fileId,
-      name: name,
-      size: size,
-      blob: blob,
-      saved_at: Date.now(),
-    });
+    // 1. Always save in IndexedDB for fast random access (bounded so a stuck tx never hangs)
+    await _runIdbWrite(
+      db,
+      STORE_NAME,
+      (store) =>
+        store.put({
+          id: fileId,
+          name: name,
+          size: size,
+          blob: blob,
+          saved_at: Date.now(),
+        }),
+      4000
+    );
 
-    // 2. Also save to Custom PC Folder if configured
+    // 2. Also save to Custom PC Folder if configured (non-interactive only so background saves never prompt/hang)
     const dirHandle = await getStoredDirHandle();
     if (dirHandle) {
-      const hasPerm = await verifyPermission(dirHandle, true);
+      const hasPerm = await verifyPermission(dirHandle, true, false);
       if (hasPerm) {
-        await writeToCustomDir(dirHandle, fileId, blob, name);
+        await _withTimeout(writeToCustomDir(dirHandle, fileId, blob, name), 4000, undefined);
       }
     }
   } catch (err) {
@@ -344,30 +400,23 @@ export async function getCacheStorageStats() {
     const customDir = getCustomDirectoryName();
     const isCustomSupported = 'showDirectoryPicker' in window;
 
-    if (!db) {
+    if (!db || !db.objectStoreNames.contains(STORE_NAME)) {
       return { count: 0, totalBytes: 0, formattedSize: '0 MB', customDir, isCustomSupported };
     }
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.getAll();
-      req.onsuccess = () => {
-        const items = req.result || [];
-        let totalBytes = 0;
-        items.forEach(item => {
-          totalBytes += item.size || item.blob?.size || item.buffer?.byteLength || 0;
-        });
-        const mb = (totalBytes / (1024 * 1024)).toFixed(1);
-        resolve({
-          count: items.length,
-          totalBytes,
-          formattedSize: `${mb} MB`,
-          customDir,
-          isCustomSupported
-        });
-      };
-      req.onerror = () => resolve({ count: 0, totalBytes: 0, formattedSize: '0 MB', customDir, isCustomSupported });
+    const result = await _runIdbRequest(db, STORE_NAME, 'readonly', (store) => store.getAll(), 5000, null);
+    const items = Array.isArray(result) ? result : [];
+    let totalBytes = 0;
+    items.forEach(item => {
+      totalBytes += item.size || item.blob?.size || item.buffer?.byteLength || 0;
     });
+    const mb = (totalBytes / (1024 * 1024)).toFixed(1);
+    return {
+      count: items.length,
+      totalBytes,
+      formattedSize: `${mb} MB`,
+      customDir,
+      isCustomSupported
+    };
   } catch (e) {
     console.warn('[PDFCache] getCacheStorageStats failed', e);
     return { count: 0, totalBytes: 0, formattedSize: '0 MB', customDir: null, isCustomSupported: false };
@@ -378,14 +427,8 @@ export async function getCacheStorageStats() {
 export async function clearAllCachedPDFs() {
   try {
     const db = await getDB();
-    if (!db) return;
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.clear();
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    });
+    if (!db || !db.objectStoreNames.contains(STORE_NAME)) return;
+    await _runIdbWrite(db, STORE_NAME, (store) => store.clear(), 4000);
   } catch (e) {
     console.warn('[PDFCache] clearAllCachedPDFs failed', e);
   }
@@ -430,14 +473,9 @@ const DL_FOLDER_KEY = 'download_folder_handle';
 export async function getDownloadFolderHandle() {
   try {
     const db = await getDB();
-    if (!db) return null;
-    return new Promise((resolve) => {
-      const tx = db.transaction(CONFIG_STORE, 'readonly');
-      const store = tx.objectStore(CONFIG_STORE);
-      const req = store.get(DL_FOLDER_KEY);
-      req.onsuccess = () => resolve(req.result ? req.result.handle : null);
-      req.onerror = () => resolve(null);
-    });
+    if (!db || !db.objectStoreNames.contains(CONFIG_STORE)) return null;
+    const res = await _idbGetWithTimeout(db, CONFIG_STORE, DL_FOLDER_KEY, 2500);
+    return res ? res.handle : null;
   } catch {
     return null;
   }
@@ -484,7 +522,7 @@ export async function chooseDownloadFolder() {
       mode: 'readwrite',
       startIn: 'downloads'
     });
-    const ok = await verifyPermission(handle, true);
+    const ok = await verifyPermission(handle, true, true);
     if (!ok) return null;
     await setDownloadFolderHandle(handle);
     return handle.name;
@@ -503,7 +541,7 @@ export async function downloadPDFToPC(blob, filename) {
   try {
     const dirHandle = await getDownloadFolderHandle();
     if (dirHandle) {
-      const hasPerm = await verifyPermission(dirHandle, true);
+      const hasPerm = await verifyPermission(dirHandle, true, true);
       if (hasPerm) {
         const fileHandle = await dirHandle.getFileHandle(finalName, { create: true });
         const writable = await fileHandle.createWritable();

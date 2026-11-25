@@ -20,6 +20,7 @@ let _sharedFolderFiles = []; // [{ id, name }]
 let _localFiles = []; // File[]
 let _isRunning = false;
 let _importAbortController = null;
+let _importRunId = 0;
 let _diagnosticLogs = []; // string[]
 
 function createAbortError(msg = 'Cancelled') {
@@ -571,11 +572,15 @@ function ensureSyllabusModal() {
   // Wire listeners
   const closeFn = () => {
     if (_isRunning) {
+      _importRunId++;
       _importAbortController?.abort();
-      const progTxt = document.getElementById('syl-progress-txt');
-      if (progTxt) progTxt.textContent = 'Cancelling import…';
+      _importAbortController = null;
+      _isRunning = false;
+      const progWrap = document.getElementById('syl-progress-wrap');
+      if (progWrap) progWrap.style.display = 'none';
+      const runBtn = document.getElementById('syl-run-btn');
+      if (runBtn) runBtn.disabled = false;
       toast('Import cancelled');
-      return;
     }
     closeModal('mo-syllabus');
   };
@@ -1497,7 +1502,15 @@ async function copyLibraryPdfIndependently(sourceDriveId, finalName, targetDrive
       } catch {}
     }
     if (blob) {
-      await setCachedPDF(newDriveId, blob, finalName);
+      await withPromiseTimeout(
+        setCachedPDF(newDriveId, blob, finalName),
+        4_000,
+        'Local PDF cache save',
+        signal
+      ).catch((e) => {
+        if (e?.name === 'AbortError' || signal?.aborted) throw e;
+        console.warn('[Syllabus] Local PDF cache save skipped:', e);
+      });
     }
     return newDriveId;
   }
@@ -1521,13 +1534,22 @@ async function copyLibraryPdfIndependently(sourceDriveId, finalName, targetDrive
     const uploaded = await driveUploadPDF(fileObj, targetDriveFolderId, { signal });
     if (uploaded?.id) newDriveId = uploaded.id;
   }
-  await setCachedPDF(newDriveId, blob, finalName);
+  await withPromiseTimeout(
+    setCachedPDF(newDriveId, blob, finalName),
+    4_000,
+    'Local PDF cache save',
+    signal
+  ).catch((e) => {
+    if (e?.name === 'AbortError' || signal?.aborted) throw e;
+    console.warn('[Syllabus] Local PDF cache save skipped:', e);
+  });
   return newDriveId;
 }
 
 // ── Execute Import, Renaming, and Auto-Ordering ──
 async function executeSyllabusImport() {
   if (_isRunning || !_targetFolderId || !_parsedRows.length) return;
+  const myRunId = ++_importRunId;
   _isRunning = true;
   _importAbortController = new AbortController();
   const signal = _importAbortController.signal;
@@ -1610,8 +1632,13 @@ async function executeSyllabusImport() {
             signal
           );
           if (signal.aborted) break;
-          if (progTxt) progTxt.textContent = `Saving (${completed + 1}/${actionableRows.length}): ${finalName}…`;
-          const rec = await dbRegisterPDF(_targetFolderId, finalName, newDriveId, null);
+          if (progTxt) progTxt.textContent = `Registering in library (${completed + 1}/${actionableRows.length}): ${finalName}…`;
+          const rec = await withPromiseTimeout(
+            dbRegisterPDF(_targetFolderId, finalName, newDriveId, null),
+            12_000,
+            'Library database save',
+            signal
+          );
           orderedPdfRecords.push({ pdf: rec, syllabusNum: parseFloat(row.num) });
           importedCount++;
         } else {
@@ -1658,9 +1685,24 @@ async function executeSyllabusImport() {
             }
 
             if (signal.aborted) break;
-            if (progTxt) progTxt.textContent = `Saving (${completed + 1}/${actionableRows.length}): ${finalName}…`;
-            await setCachedPDF(savedDriveId, blob, finalName);
-            const rec = await dbRegisterPDF(_targetFolderId, finalName, savedDriveId, null);
+            if (progTxt) progTxt.textContent = `Saving to cache (${completed + 1}/${actionableRows.length}): ${finalName}…`;
+            await withPromiseTimeout(
+              setCachedPDF(savedDriveId, blob, finalName),
+              4_000,
+              'Local PDF cache save',
+              signal
+            ).catch((e) => {
+              if (e?.name === 'AbortError' || signal?.aborted) throw e;
+              console.warn('[Syllabus] Local PDF cache save skipped:', e);
+            });
+            if (signal.aborted) break;
+            if (progTxt) progTxt.textContent = `Registering in library (${completed + 1}/${actionableRows.length}): ${finalName}…`;
+            const rec = await withPromiseTimeout(
+              dbRegisterPDF(_targetFolderId, finalName, savedDriveId, null),
+              12_000,
+              'Library database save',
+              signal
+            );
             orderedPdfRecords.push({ pdf: rec, syllabusNum: parseFloat(row.num) });
             importedCount++;
           }
@@ -1730,6 +1772,7 @@ async function executeSyllabusImport() {
       }
 
       for (let i = 0; i < finalFolderOrder.length; i++) {
+        if (signal.aborted) break;
         const p = finalFolderOrder[i];
         if (p.sort_order !== i) {
           await dbReorderPDF(p.id, i);
@@ -1737,48 +1780,47 @@ async function executeSyllabusImport() {
       }
     }
 
-    S.expandedFold[_targetFolderId] = true;
-    const { renderLibrary } = await import('./library.js');
-    renderLibrary();
+    if (!signal.aborted && myRunId === _importRunId) {
+      S.expandedFold[_targetFolderId] = true;
+      const { renderLibrary } = await import('./library.js');
+      if (!signal.aborted && myRunId === _importRunId) {
+        renderLibrary();
 
-    const summaryParts = [];
-    if (importedCount > 0) summaryParts.push(`${importedCount} imported`);
-    if (reorderedCount > 0) summaryParts.push(`${reorderedCount} ordered`);
-    if (failedCount > 0) summaryParts.push(`${failedCount} failed`);
+        const summaryParts = [];
+        if (importedCount > 0) summaryParts.push(`${importedCount} imported`);
+        if (reorderedCount > 0) summaryParts.push(`${reorderedCount} ordered`);
+        if (failedCount > 0) summaryParts.push(`${failedCount} failed`);
 
-    if (signal.aborted) {
-      const suffix = summaryParts.length ? ` (${summaryParts.join(', ')})` : '';
-      toast(`Import cancelled${suffix}`);
-      matchAllRows();
-      renderPreviewList();
-    } else {
-      toast(`✅ Syllabus complete: ${summaryParts.join(', ')}!`);
+        toast(`✅ Syllabus complete: ${summaryParts.join(', ')}!`);
 
-      if (failedCount === 0) {
-        _parsedRows = [];
-        const pasteBox = document.getElementById('syl-paste-box');
-        if (pasteBox) pasteBox.innerHTML = '';
-        closeModal('mo-syllabus');
-      } else {
-        if (diagWrap && diagLog && _diagnosticLogs.length) {
-          diagLog.textContent = _diagnosticLogs.join('\n\n');
-          diagWrap.style.display = 'flex';
+        if (failedCount === 0) {
+          _parsedRows = [];
+          const pasteBox = document.getElementById('syl-paste-box');
+          if (pasteBox) pasteBox.innerHTML = '';
+          closeModal('mo-syllabus');
+        } else {
+          if (diagWrap && diagLog && _diagnosticLogs.length) {
+            diagLog.textContent = _diagnosticLogs.join('\n\n');
+            diagWrap.style.display = 'flex';
+          }
+          matchAllRows();
+          renderPreviewList();
         }
-        matchAllRows();
-        renderPreviewList();
       }
     }
   } catch (err) {
-    if (signal.aborted || err?.name === 'AbortError') {
+    if (signal.aborted || err?.name === 'AbortError' || myRunId !== _importRunId) {
       console.info('[Syllabus] Import cancelled');
     } else {
       console.error('[Syllabus] Import failed:', err);
       toast('❌ Syllabus import error: ' + (err.message || err));
     }
   } finally {
-    _isRunning = false;
-    _importAbortController = null;
-    if (progWrap) progWrap.style.display = 'none';
-    if (runBtn) runBtn.disabled = false;
+    if (myRunId === _importRunId) {
+      _isRunning = false;
+      _importAbortController = null;
+      if (progWrap) progWrap.style.display = 'none';
+      if (runBtn) runBtn.disabled = false;
+    }
   }
 }

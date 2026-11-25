@@ -1,7 +1,7 @@
 {
-    "version":  "1.27.3",
-    "build":  98,
-    "updatedAt":  "2026-11-25T12:35:57Z",
+    "version":  "1.27.4",
+    "build":  99,
+    "updatedAt":  "2026-11-25T13:34:29Z",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Added request timeouts, cancel support, fast restricted-file short-circuiting, and non-blocking native Drive downloads to prevent Syllabus Auto-Import from hanging."
+    "notes":  "Fixed Syllabus Auto-Import hanging on Saving by adding IndexedDB transaction abort/timeout guards, preventing background folder permission prompts during cache writes, bounding cache and library registration timeouts, and allowing Cancel/Close to dismiss the import modal immediately."
 }
