@@ -19,7 +19,92 @@ let _parsedRows = [];
 let _sharedFolderFiles = []; // [{ id, name }]
 let _localFiles = []; // File[]
 let _isRunning = false;
+let _importAbortController = null;
 let _diagnosticLogs = []; // string[]
+
+function createAbortError(msg = 'Cancelled') {
+  if (typeof DOMException === 'function') {
+    return new DOMException(msg, 'AbortError');
+  }
+  const err = new Error(msg);
+  err.name = 'AbortError';
+  return err;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 25000, externalSignal = null) {
+  if (externalSignal?.aborted) {
+    throw createAbortError();
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  let externalAborted = false;
+
+  const onExternalAbort = () => {
+    externalAborted = true;
+    controller.abort();
+  };
+  if (externalSignal) {
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (timedOut) {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    if (externalAborted || externalSignal?.aborted) {
+      throw createAbortError();
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
+  }
+}
+
+async function withPromiseTimeout(promise, timeoutMs, label = 'Operation', externalSignal = null) {
+  if (externalSignal?.aborted) {
+    throw createAbortError(`${label} cancelled`);
+  }
+  let timer = null;
+  let onAbort = null;
+  const guards = [];
+
+  if (timeoutMs > 0) {
+    guards.push(
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`));
+        }, timeoutMs);
+      })
+    );
+  }
+  if (externalSignal) {
+    guards.push(
+      new Promise((_, reject) => {
+        onAbort = () => reject(createAbortError(`${label} cancelled`));
+        externalSignal.addEventListener('abort', onAbort, { once: true });
+      })
+    );
+  }
+
+  try {
+    if (!guards.length) return await promise;
+    return await Promise.race([promise, ...guards]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (externalSignal && onAbort) {
+      externalSignal.removeEventListener('abort', onAbort);
+    }
+  }
+}
 
 let _syllabusToken = safeStorageGet('syllabusSourceToken') || null;
 let _syllabusEmail = safeStorageGet('syllabusSourceEmail') || DEFAULT_SYLLABUS_EMAIL;
@@ -90,9 +175,11 @@ async function requestSyllabusToken(silent = false, forceRefresh = false) {
 
   let email = hintEmail;
   try {
-    const ur = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    const ur = await fetchWithTimeout(
+      'https://www.googleapis.com/oauth2/v3/userinfo',
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+      12_000
+    );
     if (ur.ok) {
       const uinfo = await ur.json();
       if (uinfo.email) email = uinfo.email;
@@ -483,7 +570,13 @@ function ensureSyllabusModal() {
 
   // Wire listeners
   const closeFn = () => {
-    if (_isRunning) return;
+    if (_isRunning) {
+      _importAbortController?.abort();
+      const progTxt = document.getElementById('syl-progress-txt');
+      if (progTxt) progTxt.textContent = 'Cancelling import…';
+      toast('Import cancelled');
+      return;
+    }
     closeModal('mo-syllabus');
   };
   document.getElementById('syl-close-top').addEventListener('click', closeFn);
@@ -1182,21 +1275,29 @@ function renderPreviewList() {
   }
 }
 
-async function listFilesInDriveFolderId(folderId) {
-  await ensureSyllabusTokenFresh(false);
+async function listFilesInDriveFolderId(folderId, signal = null) {
+  if (signal?.aborted) throw createAbortError('Import cancelled');
+  await withPromiseTimeout(ensureSyllabusTokenFresh(false), 15_000, 'Syllabus session check', signal).catch(() => {});
+  if (signal?.aborted) throw createAbortError('Import cancelled');
   const activeTok = getActiveSourceToken();
   let files = null;
 
   if (window.__DESKTOP_PDFIUM__?.listGDriveFolder) {
-    files = await window.__DESKTOP_PDFIUM__.listGDriveFolder(folderId, activeTok);
+    files = await withPromiseTimeout(
+      window.__DESKTOP_PDFIUM__.listGDriveFolder(folderId, activeTok),
+      20_000,
+      'Desktop Google Drive folder listing',
+      signal
+    );
   }
 
   const tokensToTry = [activeTok, S.driveToken].filter(Boolean);
   for (const tok of tokensToTry) {
+    if (signal?.aborted) throw createAbortError('Import cancelled');
     if (files && files.length) break;
     const q = encodeURIComponent(`'${folderId}' in parents and trashed = false`);
     const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType)&pageSize=500&supportsAllDrives=true&includeItemsFromAllDrives=true`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${tok}` } });
+    const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${tok}` } }, 20_000, signal);
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.files) && data.files.length) files = data.files;
@@ -1250,29 +1351,73 @@ async function scanSharedDriveFolder() {
 }
 
 // ── Download an external Google Drive PDF file as a Blob (with full diagnostics) ──
-async function fetchExternalDrivePDFWithDiag(fileId, row) {
+async function fetchExternalDrivePDFWithDiag(fileId, row, signal = null) {
+  if (signal?.aborted) {
+    const err = new Error('Import cancelled');
+    err.name = 'AbortError';
+    throw err;
+  }
+
   const primaryTok = getActiveSourceToken();
   const fallbackTok = S.driveToken && S.driveToken !== primaryTok ? S.driveToken : null;
   const diag = [];
 
+  const throwConciseDiagError = () => {
+    const joined = diag.join(' | ');
+    let shortReason = 'Download Failed';
+    if (joined.includes('RESTRICTED') || joined.includes('HTTP 404') || joined.includes('HTTP 403')) {
+      shortReason = _syllabusHasReadonly
+        ? 'Restricted (Wrong Email?)'
+        : 'Restricted (Click 🔑 Sign in Gmail)';
+    } else if (joined.includes('DOCX') || joined.includes('.docx')) {
+      shortReason = 'Word .docx (Not PDF)';
+    }
+
+    row.lastError = shortReason;
+    row.diagnostics = diag;
+    throw new Error(`${shortReason}\n${diag.map(d => '  • ' + d).join('\n')}`);
+  };
+
   // 1. Desktop Native Downloader (returns { ok, blob, error, diagnostics })
   if (window.__DESKTOP_PDFIUM__?.downloadGDriveFile) {
-    const res = await window.__DESKTOP_PDFIUM__.downloadGDriveFile(fileId, primaryTok, fallbackTok);
+    const res = await withPromiseTimeout(
+      window.__DESKTOP_PDFIUM__.downloadGDriveFile(fileId, primaryTok, fallbackTok),
+      45_000,
+      'Desktop Google Drive download',
+      signal
+    );
     if (Array.isArray(res?.diagnostics)) diag.push(...res.diagnostics);
     if (res?.ok && res?.blob && res.blob.size > 100) {
       return { blob: res.blob, diagnostics: diag };
+    }
+    if (res?.error && !diag.includes(res.error)) {
+      diag.push(String(res.error));
+    }
+
+    const desktopJoined = [
+      ...(Array.isArray(res?.diagnostics) ? res.diagnostics : []),
+      res?.error ? String(res.error) : '',
+    ].join(' | ');
+    const hasRestrictedOrNotFound = /\bHTTP\s*(?:403|404)\b|\bRESTRICTED\b/i.test(desktopJoined);
+    const hasTimeoutOrNetworkErr = /\b(?:timed?\s*out|timeout|network|connection|dns|econn|enotfound|reset|refused|unreachable)\b/i.test(desktopJoined);
+    if (res && hasRestrictedOrNotFound && !hasTimeoutOrNetworkErr) {
+      throwConciseDiagError();
     }
   }
 
   // 2. Web / OAuth Drive API v3 download (checks metadata + handles Google Docs export)
   const tokens = [primaryTok, fallbackTok].filter(Boolean);
   for (const tok of tokens) {
+    if (signal?.aborted) throw createAbortError('Import cancelled');
     let targetId = fileId;
     let mimeType = '';
+    let skipDownload = false;
     try {
-      const metaRes = await fetch(
+      const metaRes = await fetchWithTimeout(
         `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(targetId)}?fields=id,name,mimeType,shortcutDetails&supportsAllDrives=true`,
-        { headers: { Authorization: `Bearer ${tok}` } }
+        { headers: { Authorization: `Bearer ${tok}` } },
+        12_000,
+        signal
       );
       if (metaRes.ok) {
         const meta = await metaRes.json();
@@ -1283,16 +1428,21 @@ async function fetchExternalDrivePDFWithDiag(fileId, row) {
       } else {
         const errJson = await metaRes.json().catch(() => ({}));
         diag.push(`Browser Drive API metadata: HTTP ${metaRes.status} — ${errJson?.error?.message || metaRes.statusText}`);
+        if (metaRes.status === 401 || metaRes.status === 403 || metaRes.status === 404) {
+          skipDownload = true;
+        }
       }
     } catch (e) {
+      if (e?.name === 'AbortError' || signal?.aborted) throw e;
       diag.push(`Browser Drive API metadata error: ${e.message || e}`);
     }
+    if (skipDownload) continue;
 
     const dlUrl = mimeType === 'application/vnd.google-apps.document'
       ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(targetId)}/export?mimeType=application/pdf`
       : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(targetId)}?alt=media&supportsAllDrives=true`;
 
-    const res = await fetch(dlUrl, { headers: { Authorization: `Bearer ${tok}` } });
+    const res = await fetchWithTimeout(dlUrl, { headers: { Authorization: `Bearer ${tok}` } }, 30_000, signal);
     if (res.ok) {
       const blob = await res.blob();
       if (blob.size > 100) return { blob, diagnostics: diag };
@@ -1302,24 +1452,12 @@ async function fetchExternalDrivePDFWithDiag(fileId, row) {
     }
   }
 
-  // Determine concise human-readable reason for badge
-  const joined = diag.join(' | ');
-  let shortReason = 'Download Failed';
-  if (joined.includes('RESTRICTED') || joined.includes('HTTP 404') || joined.includes('HTTP 403')) {
-    shortReason = _syllabusHasReadonly
-      ? 'Restricted (Wrong Email?)'
-      : 'Restricted (Click 🔑 Sign in Gmail)';
-  } else if (joined.includes('DOCX') || joined.includes('.docx')) {
-    shortReason = 'Word .docx (Not PDF)';
-  }
-
-  row.lastError = shortReason;
-  row.diagnostics = diag;
-  throw new Error(`${shortReason}\n${diag.map(d => '  • ' + d).join('\n')}`);
+  throwConciseDiagError();
 }
 
 // ── Create an independent Google Drive copy of an existing library PDF ──
-async function copyLibraryPdfIndependently(sourceDriveId, finalName, targetDriveFolderId) {
+async function copyLibraryPdfIndependently(sourceDriveId, finalName, targetDriveFolderId, signal = null) {
+  if (signal?.aborted) throw createAbortError('Import cancelled');
   let newDriveId = null;
   let blob = await getCachedPDF(sourceDriveId).catch(() => null);
 
@@ -1327,7 +1465,7 @@ async function copyLibraryPdfIndependently(sourceDriveId, finalName, targetDrive
     try {
       const body = { name: `${finalName}.pdf` };
       if (targetDriveFolderId) body.parents = [targetDriveFolderId];
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(sourceDriveId)}/copy?supportsAllDrives=true&fields=id,name`,
         {
           method: 'POST',
@@ -1336,16 +1474,21 @@ async function copyLibraryPdfIndependently(sourceDriveId, finalName, targetDrive
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(body),
-        }
+        },
+        25_000,
+        signal
       );
       if (res.ok) {
         const data = await res.json();
         if (data?.id) newDriveId = data.id;
       }
     } catch (e) {
+      if (e?.name === 'AbortError' || signal?.aborted) throw e;
       console.warn('[Syllabus] Server-side Drive copy fallback:', e);
     }
   }
+
+  if (signal?.aborted) throw createAbortError('Import cancelled');
 
   if (newDriveId) {
     if (!blob) {
@@ -1363,18 +1506,19 @@ async function copyLibraryPdfIndependently(sourceDriveId, finalName, targetDrive
     try {
       blob = await driveFetchPDF(sourceDriveId, null, finalName);
     } catch {
-      const r = await fetchExternalDrivePDFWithDiag(sourceDriveId, {});
+      const r = await fetchExternalDrivePDFWithDiag(sourceDriveId, {}, signal);
       blob = r.blob;
     }
   }
   if (!blob) {
     throw new Error(`Could not read existing library PDF (${finalName})`);
   }
+  if (signal?.aborted) throw createAbortError('Import cancelled');
 
   const fileObj = new File([blob], `${finalName}.pdf`, { type: 'application/pdf' });
   newDriveId = 'local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
   if (S.driveToken) {
-    const uploaded = await driveUploadPDF(fileObj, targetDriveFolderId);
+    const uploaded = await driveUploadPDF(fileObj, targetDriveFolderId, { signal });
     if (uploaded?.id) newDriveId = uploaded.id;
   }
   await setCachedPDF(newDriveId, blob, finalName);
@@ -1385,6 +1529,8 @@ async function copyLibraryPdfIndependently(sourceDriveId, finalName, targetDrive
 async function executeSyllabusImport() {
   if (_isRunning || !_targetFolderId || !_parsedRows.length) return;
   _isRunning = true;
+  _importAbortController = new AbortController();
+  const signal = _importAbortController.signal;
 
   const runBtn = document.getElementById('syl-run-btn');
   const progWrap = document.getElementById('syl-progress-wrap');
@@ -1418,12 +1564,18 @@ async function executeSyllabusImport() {
     if (needsUpload) {
       if (progTxt) progTxt.textContent = 'Verifying Google Drive sessions…';
       await Promise.all([
-        ensureSyllabusTokenFresh(false).catch(() => {}),
-        ensureDriveTokenFresh().catch(() => {}),
+        withPromiseTimeout(ensureSyllabusTokenFresh(false), 15_000, 'Syllabus session check', signal).catch(() => {}),
+        withPromiseTimeout(ensureDriveTokenFresh(), 15_000, 'Drive session check', signal).catch(() => {}),
       ]);
+      if (signal.aborted) throw createAbortError('Import cancelled');
       if (S.driveToken) {
         if (progTxt) progTxt.textContent = 'Preparing Google Drive folder…';
-        targetDriveFolderId = await driveResolveFolderPath(_targetFolderId);
+        targetDriveFolderId = await withPromiseTimeout(
+          driveResolveFolderPath(_targetFolderId),
+          15_000,
+          'Google Drive folder lookup',
+          signal
+        );
       }
     }
 
@@ -1434,6 +1586,7 @@ async function executeSyllabusImport() {
     let failedCount = 0;
 
     for (const row of actionableRows) {
+      if (signal.aborted) break;
       const finalName = (row.customName || formatRowName(row)).replace(/\.pdf$/i, '').trim();
       const pct = Math.round((completed / actionableRows.length) * 100);
       if (progTxt) progTxt.textContent = `Processing (${completed + 1}/${actionableRows.length}): ${finalName}…`;
@@ -1449,11 +1602,15 @@ async function executeSyllabusImport() {
           orderedPdfRecords.push({ pdf: pdfRec, syllabusNum: parseFloat(row.num) });
           reorderedCount++;
         } else if (row.matchedLibraryPdf && !row.driveFileId && !row.driveFolderId) {
+          if (progTxt) progTxt.textContent = `Uploading to Drive (${completed + 1}/${actionableRows.length}): ${finalName}…`;
           const newDriveId = await copyLibraryPdfIndependently(
             row.matchedLibraryPdf.driveFileId,
             finalName,
-            targetDriveFolderId
+            targetDriveFolderId,
+            signal
           );
+          if (signal.aborted) break;
+          if (progTxt) progTxt.textContent = `Saving (${completed + 1}/${actionableRows.length}): ${finalName}…`;
           const rec = await dbRegisterPDF(_targetFolderId, finalName, newDriveId, null);
           orderedPdfRecords.push({ pdf: rec, syllabusNum: parseFloat(row.num) });
           importedCount++;
@@ -1463,7 +1620,7 @@ async function executeSyllabusImport() {
 
           // If the row linked to a Google Drive Folder instead of a file, scan that folder and pick the matching/first PDF!
           if (!extDriveId && row.driveFolderId) {
-            const folderFiles = await listFilesInDriveFolderId(row.driveFolderId);
+            const folderFiles = await listFilesInDriveFolderId(row.driveFolderId, signal);
             if (!folderFiles.length) {
               row.lastError = 'Folder Empty / Restricted';
               throw new Error(`Row linked to Drive Folder (${row.driveFolderId}), but folder could not be listed or is restricted. Click '🔑 Sign in Gmail' above.`);
@@ -1481,21 +1638,27 @@ async function executeSyllabusImport() {
           }
 
           if (extDriveId) {
-            const dlRes = await fetchExternalDrivePDFWithDiag(extDriveId, row);
+            if (progTxt) progTxt.textContent = `Downloading (${completed + 1}/${actionableRows.length}): ${finalName}…`;
+            const dlRes = await fetchExternalDrivePDFWithDiag(extDriveId, row, signal);
             blob = dlRes.blob;
           } else if (row.matchedLocalFile) {
             blob = row.matchedLocalFile;
           }
+
+          if (signal.aborted) break;
 
           if (blob) {
             const fileObj = new File([blob], `${finalName}.pdf`, { type: 'application/pdf' });
             let savedDriveId = extDriveId || ('local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7));
 
             if (S.driveToken) {
-              const uploaded = await driveUploadPDF(fileObj, targetDriveFolderId);
+              if (progTxt) progTxt.textContent = `Uploading to Drive (${completed + 1}/${actionableRows.length}): ${finalName}…`;
+              const uploaded = await driveUploadPDF(fileObj, targetDriveFolderId, { signal });
               if (uploaded?.id) savedDriveId = uploaded.id;
             }
 
+            if (signal.aborted) break;
+            if (progTxt) progTxt.textContent = `Saving (${completed + 1}/${actionableRows.length}): ${finalName}…`;
             await setCachedPDF(savedDriveId, blob, finalName);
             const rec = await dbRegisterPDF(_targetFolderId, finalName, savedDriveId, null);
             orderedPdfRecords.push({ pdf: rec, syllabusNum: parseFloat(row.num) });
@@ -1503,6 +1666,9 @@ async function executeSyllabusImport() {
           }
         }
       } catch (rowErr) {
+        if (signal.aborted || rowErr?.name === 'AbortError') {
+          break;
+        }
         console.warn(`[Syllabus] Failed row "${finalName}":`, rowErr);
         if (!row.lastError) row.lastError = 'Failed';
         _diagnosticLogs.push(
@@ -1514,58 +1680,60 @@ async function executeSyllabusImport() {
       completed++;
     }
 
-    // ── Final Step: Auto-Order all PDFs in the target folder ──
-    if (progTxt) progTxt.textContent = 'Applying syllabus order…';
-    if (progPct) progPct.textContent = '100%';
-    if (progBar) progBar.style.width = '100%';
+    if (!signal.aborted) {
+      // ── Final Step: Auto-Order all PDFs in the target folder ──
+      if (progTxt) progTxt.textContent = 'Applying syllabus order…';
+      if (progPct) progPct.textContent = '100%';
+      if (progBar) progBar.style.width = '100%';
 
-    const syllabusIds = new Set(orderedPdfRecords.map(x => x.pdf.id));
-    const otherPdfs = S.pdfs
-      .filter(p => p.folder_id === _targetFolderId && !syllabusIds.has(p.id))
-      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      const syllabusIds = new Set(orderedPdfRecords.map(x => x.pdf.id));
+      const otherPdfs = S.pdfs
+        .filter(p => p.folder_id === _targetFolderId && !syllabusIds.has(p.id))
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
 
-    const extractLeadingNum = name => {
-      const m = (name || '').trim().match(/^(\d{1,4}(?:\.\d{1,3})?)\s*[.)|-]/);
-      return m ? parseFloat(m[1]) : NaN;
-    };
+      const extractLeadingNum = name => {
+        const m = (name || '').trim().match(/^(\d{1,4}(?:\.\d{1,3})?)\s*[.)|-]/);
+        return m ? parseFloat(m[1]) : NaN;
+      };
 
-    const allHaveNumbers =
-      otherPdfs.length > 0 &&
-      orderedPdfRecords.some(x => Number.isFinite(x.syllabusNum)) &&
-      otherPdfs.filter(p => Number.isFinite(extractLeadingNum(p.name))).length >= Math.ceil(otherPdfs.length * 0.5);
+      const allHaveNumbers =
+        otherPdfs.length > 0 &&
+        orderedPdfRecords.some(x => Number.isFinite(x.syllabusNum)) &&
+        otherPdfs.filter(p => Number.isFinite(extractLeadingNum(p.name))).length >= Math.ceil(otherPdfs.length * 0.5);
 
-    let finalFolderOrder = [];
-    if (allHaveNumbers) {
-      const combined = [
-        ...otherPdfs.map((p, i) => ({
-          pdf: p,
-          num: extractLeadingNum(p.name),
-          origIdx: i,
-        })),
-        ...orderedPdfRecords.map((x, i) => ({
-          pdf: x.pdf,
-          num: Number.isFinite(x.syllabusNum) ? x.syllabusNum : extractLeadingNum(x.pdf.name),
-          origIdx: 10000 + i,
-        })),
-      ];
-      combined.sort((a, b) => {
-        const na = Number.isFinite(a.num) ? a.num : Infinity;
-        const nb = Number.isFinite(b.num) ? b.num : Infinity;
-        if (na !== nb) return na - nb;
-        return a.origIdx - b.origIdx;
-      });
-      finalFolderOrder = combined.map(c => c.pdf);
-    } else {
-      finalFolderOrder = [
-        ...otherPdfs,
-        ...orderedPdfRecords.map(x => x.pdf),
-      ];
-    }
+      let finalFolderOrder = [];
+      if (allHaveNumbers) {
+        const combined = [
+          ...otherPdfs.map((p, i) => ({
+            pdf: p,
+            num: extractLeadingNum(p.name),
+            origIdx: i,
+          })),
+          ...orderedPdfRecords.map((x, i) => ({
+            pdf: x.pdf,
+            num: Number.isFinite(x.syllabusNum) ? x.syllabusNum : extractLeadingNum(x.pdf.name),
+            origIdx: 10000 + i,
+          })),
+        ];
+        combined.sort((a, b) => {
+          const na = Number.isFinite(a.num) ? a.num : Infinity;
+          const nb = Number.isFinite(b.num) ? b.num : Infinity;
+          if (na !== nb) return na - nb;
+          return a.origIdx - b.origIdx;
+        });
+        finalFolderOrder = combined.map(c => c.pdf);
+      } else {
+        finalFolderOrder = [
+          ...otherPdfs,
+          ...orderedPdfRecords.map(x => x.pdf),
+        ];
+      }
 
-    for (let i = 0; i < finalFolderOrder.length; i++) {
-      const p = finalFolderOrder[i];
-      if (p.sort_order !== i) {
-        await dbReorderPDF(p.id, i);
+      for (let i = 0; i < finalFolderOrder.length; i++) {
+        const p = finalFolderOrder[i];
+        if (p.sort_order !== i) {
+          await dbReorderPDF(p.id, i);
+        }
       }
     }
 
@@ -1577,26 +1745,39 @@ async function executeSyllabusImport() {
     if (importedCount > 0) summaryParts.push(`${importedCount} imported`);
     if (reorderedCount > 0) summaryParts.push(`${reorderedCount} ordered`);
     if (failedCount > 0) summaryParts.push(`${failedCount} failed`);
-    toast(`✅ Syllabus complete: ${summaryParts.join(', ')}!`);
 
-    if (failedCount === 0) {
-      _parsedRows = [];
-      const pasteBox = document.getElementById('syl-paste-box');
-      if (pasteBox) pasteBox.innerHTML = '';
-      closeModal('mo-syllabus');
-    } else {
-      if (diagWrap && diagLog && _diagnosticLogs.length) {
-        diagLog.textContent = _diagnosticLogs.join('\n\n');
-        diagWrap.style.display = 'flex';
-      }
+    if (signal.aborted) {
+      const suffix = summaryParts.length ? ` (${summaryParts.join(', ')})` : '';
+      toast(`Import cancelled${suffix}`);
       matchAllRows();
       renderPreviewList();
+    } else {
+      toast(`✅ Syllabus complete: ${summaryParts.join(', ')}!`);
+
+      if (failedCount === 0) {
+        _parsedRows = [];
+        const pasteBox = document.getElementById('syl-paste-box');
+        if (pasteBox) pasteBox.innerHTML = '';
+        closeModal('mo-syllabus');
+      } else {
+        if (diagWrap && diagLog && _diagnosticLogs.length) {
+          diagLog.textContent = _diagnosticLogs.join('\n\n');
+          diagWrap.style.display = 'flex';
+        }
+        matchAllRows();
+        renderPreviewList();
+      }
     }
   } catch (err) {
-    console.error('[Syllabus] Import failed:', err);
-    toast('❌ Syllabus import error: ' + (err.message || err));
+    if (signal.aborted || err?.name === 'AbortError') {
+      console.info('[Syllabus] Import cancelled');
+    } else {
+      console.error('[Syllabus] Import failed:', err);
+      toast('❌ Syllabus import error: ' + (err.message || err));
+    }
   } finally {
     _isRunning = false;
+    _importAbortController = null;
     if (progWrap) progWrap.style.display = 'none';
     if (runBtn) runBtn.disabled = false;
   }

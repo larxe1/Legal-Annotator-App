@@ -1,7 +1,7 @@
 {
-    "version":  "1.27.2",
-    "build":  97,
-    "updatedAt":  "2026-11-25T12:27:18Z",
+    "version":  "1.27.3",
+    "build":  98,
+    "updatedAt":  "2026-11-25T12:35:57Z",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Cleaned up Tag Print to show only notes without page, category, or highlight quotes, skipped note-less highlights, fixed pagination bugs causing sparse or blank pages, and removed floating tag badges from PDF highlight visuals."
+    "notes":  "Added request timeouts, cancel support, fast restricted-file short-circuiting, and non-blocking native Drive downloads to prevent Syllabus Auto-Import from hanging."
 }

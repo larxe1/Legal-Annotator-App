@@ -3806,23 +3806,20 @@ async fn desktop_gdrive_download_file(
         }));
     }
 
-    #[cfg(target_os = "windows")]
-    use std::os::windows::process::CommandExt;
-
     let mut diag: Vec<String> = Vec::new();
     diag.push(format!("Target File ID: {}", safe_id));
 
-    let mut tokens_to_try: Vec<(&str, String)> = Vec::new();
+    let mut tokens_to_try: Vec<(String, String)> = Vec::new();
     if let Some(t) = token {
         let trimmed = t.trim().to_string();
         if !trimmed.is_empty() {
-            tokens_to_try.push(("Syllabus Gmail Token", trimmed));
+            tokens_to_try.push(("Syllabus Gmail Token".to_string(), trimmed));
         }
     }
     if let Some(ft) = fallback_token {
         let trimmed = ft.trim().to_string();
         if !trimmed.is_empty() && !tokens_to_try.iter().any(|(_, existing)| existing == &trimmed) {
-            tokens_to_try.push(("Main App Drive Token", trimmed));
+            tokens_to_try.push(("Main App Drive Token".to_string(), trimmed));
         }
     }
 
@@ -3830,199 +3827,312 @@ async fn desktop_gdrive_download_file(
         diag.push("No Google OAuth token provided — skipping authenticated Drive API.".into());
     }
 
-    // 1. Try Google Drive API with provided OAuth token(s)
-    for (label, tok) in &tokens_to_try {
-        let auth_hdr = format!("Authorization: Bearer {}", tok);
-        let mut target_id = safe_id.clone();
-        let mut mime_type = String::new();
-
-        // 1a. Check file metadata (resolves shortcuts & detects Google Docs)
-        let meta_url = format!(
-            "https://www.googleapis.com/drive/v3/files/{}?fields=id,name,mimeType,shortcutDetails&supportsAllDrives=true",
-            target_id
-        );
-        let mut meta_cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
-        meta_cmd.args(["-L", "--silent", "--max-time", "25", "-H", &auth_hdr, &meta_url]);
+    tauri::async_runtime::spawn_blocking(move || -> serde_json::Value {
         #[cfg(target_os = "windows")]
-        meta_cmd.creation_flags(0x08000000);
+        use std::os::windows::process::CommandExt;
 
-        if let Ok(meta_out) = meta_cmd.output() {
-            if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&meta_out.stdout) {
-                if let Some(err_obj) = meta_json.get("error") {
-                    let code = err_obj.get("code").and_then(|c| c.as_u64()).unwrap_or(0);
-                    let msg = err_obj
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("Unknown API error");
-                    diag.push(format!(
-                        "{}: Metadata check returned HTTP {} — {} (If 404/403 on a restricted file, sign in with the specific Gmail that has access or grant drive.readonly permission)",
-                        label, code, msg
-                    ));
-                } else {
-                    mime_type = meta_json
-                        .get("mimeType")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let fname = meta_json.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    diag.push(format!(
-                        "{}: Metadata OK — name=\"{}\", mimeType=\"{}\"",
-                        label, fname, mime_type
-                    ));
-                    if mime_type == "application/vnd.google-apps.shortcut" {
-                        if let Some(tid) = meta_json
-                            .get("shortcutDetails")
-                            .and_then(|s| s.get("targetId"))
-                            .and_then(|t| t.as_str())
-                        {
-                            target_id = sanitize_cache_id(tid);
-                            diag.push(format!("{}: Followed Drive shortcut to targetId={}", label, target_id));
+        fn format_curl_status_error(label: &str, phase: &str, out: &std::process::Output) -> String {
+            let code = out
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string());
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if stderr.is_empty() {
+                format!("{}: {} curl exited with status {}", label, phase, code)
+            } else {
+                format!("{}: {} curl exited with status {} — {}", label, phase, code, stderr)
+            }
+        }
+
+        // 1. Try Google Drive API with provided OAuth token(s)
+        for (label, tok) in &tokens_to_try {
+            let auth_hdr = format!("Authorization: Bearer {}", tok);
+            let mut target_id = safe_id.clone();
+            let mut mime_type = String::new();
+
+            // 1a. Check file metadata (resolves shortcuts & detects Google Docs)
+            let meta_url = format!(
+                "https://www.googleapis.com/drive/v3/files/{}?fields=id,name,mimeType,shortcutDetails&supportsAllDrives=true",
+                target_id
+            );
+            let mut meta_cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+            meta_cmd.args([
+                "-L",
+                "--silent",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "12",
+                "-H",
+                &auth_hdr,
+                &meta_url,
+            ]);
+            #[cfg(target_os = "windows")]
+            meta_cmd.creation_flags(0x08000000);
+
+            match meta_cmd.output() {
+                Ok(meta_out) => {
+                    if !meta_out.status.success() {
+                        diag.push(format_curl_status_error(label, "Metadata", &meta_out));
+                    }
+                    if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&meta_out.stdout) {
+                        if let Some(err_obj) = meta_json.get("error") {
+                            let code = err_obj.get("code").and_then(|c| c.as_u64()).unwrap_or(0);
+                            let msg = err_obj
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("Unknown API error");
+                            diag.push(format!(
+                                "{}: Metadata check returned HTTP {} — {} (If 404/403 on a restricted file, sign in with the specific Gmail that has access or grant drive.readonly permission)",
+                                label, code, msg
+                            ));
+                            if matches!(code, 401 | 403 | 404) {
+                                continue;
+                            }
+                        } else {
+                            mime_type = meta_json
+                                .get("mimeType")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let fname = meta_json.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                            diag.push(format!(
+                                "{}: Metadata OK — name=\"{}\", mimeType=\"{}\"",
+                                label, fname, mime_type
+                            ));
+                            if mime_type == "application/vnd.google-apps.shortcut" {
+                                if let Some(tid) = meta_json
+                                    .get("shortcutDetails")
+                                    .and_then(|s| s.get("targetId"))
+                                    .and_then(|t| t.as_str())
+                                {
+                                    target_id = sanitize_cache_id(tid);
+                                    diag.push(format!("{}: Followed Drive shortcut to targetId={}", label, target_id));
+                                }
+                            }
+                        }
+                    } else if meta_out.status.success() {
+                        if meta_out.stdout.is_empty() {
+                            diag.push(format!("{}: Metadata check returned empty response", label));
+                        } else {
+                            diag.push(format!(
+                                "{}: Metadata check returned non-JSON response ({} bytes)",
+                                label,
+                                meta_out.stdout.len()
+                            ));
                         }
                     }
                 }
+                Err(e) => {
+                    diag.push(format!("{}: Metadata curl execution failed — {}", label, e));
+                }
             }
-        }
 
-        // 1b. If Google Doc, export as PDF; otherwise download via alt=media
-        let dl_url = if mime_type == "application/vnd.google-apps.document" {
-            format!(
-                "https://www.googleapis.com/drive/v3/files/{}/export?mimeType=application/pdf",
-                target_id
-            )
-        } else {
-            format!(
-                "https://www.googleapis.com/drive/v3/files/{}?alt=media&supportsAllDrives=true",
-                target_id
-            )
-        };
-
-        let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
-        cmd.args(["-L", "--silent", "--max-time", "90", "-H", &auth_hdr, &dl_url]);
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x08000000);
-
-        if let Ok(out) = cmd.output() {
-            if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
-                diag.push(format!("{}: Downloaded valid PDF ({} bytes)", label, out.stdout.len()));
-                let cache_dir = resolve_data_dir().join("pdf_cache");
-                let _ = fs::create_dir_all(&cache_dir);
-                let _ = fs::write(cache_dir.join(format!("{}.pdf", safe_id)), &out.stdout);
-                return Ok(serde_json::json!({
-                    "ok": true,
-                    "base64": BASE64.encode(&out.stdout),
-                    "diagnostics": diag
-                }));
-            } else if out.stdout.len() >= 4 && &out.stdout[0..4] == b"PK\x03\x04" {
-                diag.push(format!(
-                    "{}: Downloaded file is a ZIP/DOCX archive (PK header), not a PDF. Trying Google Docs PDF export…",
-                    label
-                ));
-                let exp_url = format!(
+            // 1b. If Google Doc, export as PDF; otherwise download via alt=media
+            let dl_url = if mime_type == "application/vnd.google-apps.document" {
+                format!(
                     "https://www.googleapis.com/drive/v3/files/{}/export?mimeType=application/pdf",
                     target_id
-                );
-                let mut exp_cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
-                exp_cmd.args(["-L", "--silent", "--max-time", "90", "-H", &auth_hdr, &exp_url]);
-                #[cfg(target_os = "windows")]
-                exp_cmd.creation_flags(0x08000000);
-                if let Ok(exp_out) = exp_cmd.output() {
-                    if exp_out.stdout.len() > 100 && &exp_out.stdout[0..4] == b"%PDF" {
+                )
+            } else {
+                format!(
+                    "https://www.googleapis.com/drive/v3/files/{}?alt=media&supportsAllDrives=true",
+                    target_id
+                )
+            };
+
+            let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+            cmd.args([
+                "-L",
+                "--silent",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "30",
+                "-H",
+                &auth_hdr,
+                &dl_url,
+            ]);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000);
+
+            match cmd.output() {
+                Ok(out) => {
+                    if !out.status.success() {
+                        diag.push(format_curl_status_error(label, "Download", &out));
+                    } else if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
+                        diag.push(format!("{}: Downloaded valid PDF ({} bytes)", label, out.stdout.len()));
                         let cache_dir = resolve_data_dir().join("pdf_cache");
                         let _ = fs::create_dir_all(&cache_dir);
-                        let _ = fs::write(cache_dir.join(format!("{}.pdf", safe_id)), &exp_out.stdout);
-                        return Ok(serde_json::json!({
+                        let _ = fs::write(cache_dir.join(format!("{}.pdf", safe_id)), &out.stdout);
+                        return serde_json::json!({
                             "ok": true,
-                            "base64": BASE64.encode(&exp_out.stdout),
+                            "base64": BASE64.encode(&out.stdout),
                             "diagnostics": diag
-                        }));
+                        });
+                    } else if out.stdout.len() >= 4 && &out.stdout[0..4] == b"PK\x03\x04" {
+                        diag.push(format!(
+                            "{}: Downloaded file is a ZIP/DOCX archive (PK header), not a PDF. Trying Google Docs PDF export…",
+                            label
+                        ));
+                        let exp_url = format!(
+                            "https://www.googleapis.com/drive/v3/files/{}/export?mimeType=application/pdf",
+                            target_id
+                        );
+                        let mut exp_cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+                        exp_cmd.args([
+                            "-L",
+                            "--silent",
+                            "--connect-timeout",
+                            "10",
+                            "--max-time",
+                            "30",
+                            "-H",
+                            &auth_hdr,
+                            &exp_url,
+                        ]);
+                        #[cfg(target_os = "windows")]
+                        exp_cmd.creation_flags(0x08000000);
+                        match exp_cmd.output() {
+                            Ok(exp_out) => {
+                                if !exp_out.status.success() {
+                                    diag.push(format_curl_status_error(label, "PDF export", &exp_out));
+                                } else if exp_out.stdout.len() > 100 && &exp_out.stdout[0..4] == b"%PDF" {
+                                    let cache_dir = resolve_data_dir().join("pdf_cache");
+                                    let _ = fs::create_dir_all(&cache_dir);
+                                    let _ = fs::write(cache_dir.join(format!("{}.pdf", safe_id)), &exp_out.stdout);
+                                    return serde_json::json!({
+                                        "ok": true,
+                                        "base64": BASE64.encode(&exp_out.stdout),
+                                        "diagnostics": diag
+                                    });
+                                } else if exp_out.stdout.is_empty() {
+                                    diag.push(format!("{}: PDF export returned empty response", label));
+                                } else {
+                                    diag.push(format!(
+                                        "{}: PDF export returned non-PDF response ({} bytes)",
+                                        label,
+                                        exp_out.stdout.len()
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                diag.push(format!("{}: PDF export curl execution failed — {}", label, e));
+                            }
+                        }
+                    } else if let Ok(err_json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                        let code = err_json
+                            .get("error")
+                            .and_then(|e| e.get("code"))
+                            .and_then(|c| c.as_u64())
+                            .unwrap_or(0);
+                        let msg = err_json
+                            .get("error")
+                            .and_then(|e| e.get("message"))
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("Unknown error");
+                        diag.push(format!("{}: Download returned HTTP {} — {}", label, code, msg));
+                    } else if out.stdout.is_empty() {
+                        diag.push(format!("{}: Download returned empty response", label));
+                    } else {
+                        diag.push(format!(
+                            "{}: Download returned non-PDF response ({} bytes)",
+                            label,
+                            out.stdout.len()
+                        ));
                     }
                 }
-            } else if let Ok(err_json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                let code = err_json
-                    .get("error")
-                    .and_then(|e| e.get("code"))
-                    .and_then(|c| c.as_u64())
-                    .unwrap_or(0);
-                let msg = err_json
-                    .get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("Unknown error");
-                diag.push(format!("{}: Download returned HTTP {} — {}", label, code, msg));
-            }
-        }
-    }
-
-    // 2. Fallback: Direct public/shared link download
-    let public_urls = [
-        (
-            "Public Drive Download",
-            format!(
-                "https://drive.usercontent.google.com/download?id={}&export=download&confirm=t",
-                safe_id
-            ),
-        ),
-        (
-            "Public Google Doc Export",
-            format!("https://docs.google.com/document/d/{}/export?format=pdf", safe_id),
-        ),
-    ];
-
-    for (label, url) in &public_urls {
-        let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
-        cmd.args([
-            "-L",
-            "--silent",
-            "--max-time",
-            "90",
-            "-A",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            url,
-        ]);
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x08000000);
-        if let Ok(out) = cmd.output() {
-            if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
-                diag.push(format!("{}: Succeeded ({} bytes)", label, out.stdout.len()));
-                let cache_dir = resolve_data_dir().join("pdf_cache");
-                let _ = fs::create_dir_all(&cache_dir);
-                let _ = fs::write(cache_dir.join(format!("{}.pdf", safe_id)), &out.stdout);
-                return Ok(serde_json::json!({
-                    "ok": true,
-                    "base64": BASE64.encode(&out.stdout),
-                    "diagnostics": diag
-                }));
-            } else {
-                let preview = String::from_utf8_lossy(&out.stdout[..std::cmp::min(out.stdout.len(), 600)]);
-                if preview.contains("ServiceLogin") || preview.contains("accounts.google.com") {
-                    diag.push(format!(
-                        "{}: Redirected to Google Sign-In page — file is RESTRICTED to specific email accounts.",
-                        label
-                    ));
-                } else if out.stdout.len() >= 4 && &out.stdout[0..4] == b"PK\x03\x04" {
-                    diag.push(format!("{}: File is a Word .docx / ZIP file, not a PDF.", label));
-                } else {
-                    diag.push(format!(
-                        "{}: Returned non-PDF response ({} bytes).",
-                        label,
-                        out.stdout.len()
-                    ));
+                Err(e) => {
+                    diag.push(format!("{}: Download curl execution failed — {}", label, e));
                 }
             }
         }
-    }
 
-    let summary_err = if diag.iter().any(|d| d.contains("RESTRICTED") || d.contains("HTTP 404") || d.contains("HTTP 403")) {
-        "File is restricted — click '🔑 Sign in Gmail for Restricted Links' at the top of the modal and sign in with the email account that has access.".to_string()
-    } else {
-        "Could not download PDF from Google Drive.".to_string()
-    };
+        // 2. Fallback: Direct public/shared link download
+        let public_urls = [
+            (
+                "Public Drive Download",
+                format!(
+                    "https://drive.usercontent.google.com/download?id={}&export=download&confirm=t",
+                    safe_id
+                ),
+            ),
+            (
+                "Public Google Doc Export",
+                format!("https://docs.google.com/document/d/{}/export?format=pdf", safe_id),
+            ),
+        ];
 
-    Ok(serde_json::json!({
-        "ok": false,
-        "error": summary_err,
-        "diagnostics": diag
-    }))
+        for (label, url) in &public_urls {
+            let mut cmd = std::process::Command::new(r"C:\Windows\System32\curl.exe");
+            cmd.args([
+                "-L",
+                "--silent",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "30",
+                "-A",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                url,
+            ]);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000);
+            match cmd.output() {
+                Ok(out) => {
+                    if !out.status.success() {
+                        diag.push(format_curl_status_error(label, "Download", &out));
+                    } else if out.stdout.len() > 100 && &out.stdout[0..4] == b"%PDF" {
+                        diag.push(format!("{}: Succeeded ({} bytes)", label, out.stdout.len()));
+                        let cache_dir = resolve_data_dir().join("pdf_cache");
+                        let _ = fs::create_dir_all(&cache_dir);
+                        let _ = fs::write(cache_dir.join(format!("{}.pdf", safe_id)), &out.stdout);
+                        return serde_json::json!({
+                            "ok": true,
+                            "base64": BASE64.encode(&out.stdout),
+                            "diagnostics": diag
+                        });
+                    } else if out.stdout.is_empty() {
+                        diag.push(format!("{}: Returned empty response.", label));
+                    } else {
+                        let preview = String::from_utf8_lossy(&out.stdout[..std::cmp::min(out.stdout.len(), 600)]);
+                        if preview.contains("ServiceLogin") || preview.contains("accounts.google.com") {
+                            diag.push(format!(
+                                "{}: Redirected to Google Sign-In page — file is RESTRICTED to specific email accounts.",
+                                label
+                            ));
+                        } else if out.stdout.len() >= 4 && &out.stdout[0..4] == b"PK\x03\x04" {
+                            diag.push(format!("{}: File is a Word .docx / ZIP file, not a PDF.", label));
+                        } else {
+                            diag.push(format!(
+                                "{}: Returned non-PDF response ({} bytes).",
+                                label,
+                                out.stdout.len()
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    diag.push(format!("{}: Curl execution failed — {}", label, e));
+                }
+            }
+        }
+
+        let summary_err = if diag.iter().any(|d| d.contains("RESTRICTED") || d.contains("HTTP 404") || d.contains("HTTP 403")) {
+            "File is restricted — click '🔑 Sign in Gmail for Restricted Links' at the top of the modal and sign in with the email account that has access.".to_string()
+        } else {
+            "Could not download PDF from Google Drive.".to_string()
+        };
+
+        serde_json::json!({
+            "ok": false,
+            "error": summary_err,
+            "diagnostics": diag
+        })
+    })
+    .await
+    .map_err(|e| format!("Download worker error: {}", e))
 }
 
 #[tauri::command]

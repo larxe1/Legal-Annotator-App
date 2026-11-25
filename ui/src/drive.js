@@ -843,12 +843,24 @@ export async function driveOrganizeAll({ silent = false } = {}) {
 
 // ── Upload PDF to Drive ──
 // targetFolderId: optional Drive folder ID to place the file in (defaults to root app folder)
-export async function driveUploadPDF(file, targetFolderId) {
+export async function driveUploadPDF(file, targetFolderId, opts = {}) {
+  const timeoutMs = Number(opts?.timeoutMs) > 0 ? Number(opts.timeoutMs) : 45000;
+  const externalSignal = opts?.signal || null;
+
+  const makeAbortError = () => {
+    const err = new Error('Upload cancelled');
+    err.name = 'AbortError';
+    return err;
+  };
+  if (externalSignal?.aborted) throw makeAbortError();
+
   if (!S.driveToken) {
     await ensureDriveTokenFresh();
   }
+  if (externalSignal?.aborted) throw makeAbortError();
   if (!S.driveToken) throw new Error('Not signed in to Google Drive (ec.mataac@gmail.com)');
   if (!S.driveFolderId) S.driveFolderId = await ensureAppFolder();
+  if (externalSignal?.aborted) throw makeAbortError();
 
   const parentId = targetFolderId || S.driveFolderId;
 
@@ -865,29 +877,61 @@ export async function driveUploadPDF(file, targetFolderId) {
     return f;
   };
 
-  let resp = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${S.driveToken}` },
-      body: buildForm(),
+  const fetchUploadAttempt = async () => {
+    if (externalSignal?.aborted) throw makeAbortError();
+    const controller = new AbortController();
+    let timedOut = false;
+    let externalAborted = false;
+
+    const onExternalAbort = () => {
+      externalAborted = true;
+      controller.abort();
+    };
+    if (externalSignal) {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     }
-  );
-  if (resp.status === 401) {
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+
     try {
-      await _requestToken(true, true);
-      resp = await fetch(
+      return await fetch(
         'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
         {
           method: 'POST',
           headers: { Authorization: `Bearer ${S.driveToken}` },
           body: buildForm(),
+          signal: controller.signal,
         }
       );
+    } catch (err) {
+      if (timedOut) {
+        syncErr('Upload timed out');
+        throw new Error(`Google Drive upload timed out after ${Math.round(timeoutMs / 1000)}s`);
+      }
+      if (externalAborted || externalSignal?.aborted) {
+        syncErr('Upload cancelled');
+        throw makeAbortError();
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (externalSignal) {
+        externalSignal.removeEventListener('abort', onExternalAbort);
+      }
+    }
+  };
+
+  let resp = await fetchUploadAttempt();
+  if (resp.status === 401) {
+    try {
+      await _requestToken(true, true);
     } catch {
       _onSessionExpired();
       throw new Error('Google Drive session expired. Please sign in again.');
     }
+    resp = await fetchUploadAttempt();
   }
   if (!resp.ok) {
     const err = await resp.text();
