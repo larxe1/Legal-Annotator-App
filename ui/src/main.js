@@ -153,6 +153,17 @@ async function init() {
         import('./print-studio.js'),
         import('./export.js'),
       ]);
+      const folderViewer = document.getElementById('folder-doc-viewer');
+      const isFolderViewerOpen = Boolean(
+        folderViewer &&
+        (folderViewer.classList.contains('open') || (folderViewer.style.display && folderViewer.style.display !== 'none'))
+      );
+      const fTitle = document.getElementById('folder-doc-title')?.textContent?.trim();
+      const activeFolder = isFolderViewerOpen
+        ? ((S.activeFolderId && S.folders.find(f => f.id === S.activeFolderId)) ||
+           (fTitle ? S.folders.find(f => stripEmojis(f.name).trim() === stripEmojis(fTitle || '').trim()) : null))
+        : null;
+
       const selectedFolders = [...(S.selectedIds || [])]
         .map(id => S.folders.find(f => f.id === id))
         .filter(Boolean);
@@ -160,7 +171,19 @@ async function init() {
         .map(id => S.pdfs.find(p => p.id === id))
         .filter(Boolean);
 
-      if (selectedFolders.length > 0) {
+      if (isFolderViewerOpen && activeFolder) {
+        const folderIds = selectedFolders.length > 1
+          ? selectedFolders.map(f => f.id)
+          : [activeFolder.id];
+        await openPrintStudio({
+          targetType: 'folder',
+          folderIds,
+          includeFolderDocs: true,
+          title: folderIds.length > 1
+            ? `${folderIds.length} Folders — Print Studio`
+            : `${activeFolder.name} — Print Studio`,
+        });
+      } else if (selectedFolders.length > 0) {
         await openPrintStudio({
           targetType: 'folder',
           folderIds: selectedFolders.map(f => f.id),
@@ -176,34 +199,14 @@ async function init() {
             ? `${selectedPdfs.length} Cases — Print Studio`
             : `${(selectedPdfs[0].name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
         });
+      } else if (S.curPDF) {
+        await openPrintStudio({
+          targetType: 'pdf',
+          pdfIds: [S.curPDF.id],
+          title: `${(S.curPDF.name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
+        });
       } else {
-        const folderViewer = document.getElementById('folder-doc-viewer');
-        const isFolderViewerOpen = Boolean(
-          folderViewer &&
-          (folderViewer.classList.contains('open') || (folderViewer.style.display && folderViewer.style.display !== 'none'))
-        );
-        const fTitle = document.getElementById('folder-doc-title')?.textContent?.trim();
-        const activeFolder = isFolderViewerOpen
-          ? ((S.activeFolderId && S.folders.find(f => f.id === S.activeFolderId)) ||
-             (fTitle ? S.folders.find(f => stripEmojis(f.name).trim() === stripEmojis(fTitle || '').trim()) : null))
-          : null;
-
-        if (activeFolder) {
-          await openPrintStudio({
-            targetType: 'folder',
-            folderIds: [activeFolder.id],
-            includeFolderDocs: true,
-            title: `${activeFolder.name} — Print Studio`,
-          });
-        } else if (S.curPDF) {
-          await openPrintStudio({
-            targetType: 'pdf',
-            pdfIds: [S.curPDF.id],
-            title: `${(S.curPDF.name || 'Case').replace(/\.pdf$/i, '')} — Print Studio`,
-          });
-        } else {
-          await openPrintStudio({ targetType: 'library', title: 'Legal Print Studio' });
-        }
+        await openPrintStudio({ targetType: 'library', title: 'Legal Print Studio' });
       }
     } catch (e) {
       console.warn('[PrintStudio] openPrintStudio error:', e);

@@ -253,7 +253,9 @@ export function updateCopyInstructionButtonState() {
     btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Instruction</span>';
   } else {
     btn.classList.remove('has-instr');
-    btn.innerHTML = folderId ? '<span>+ Add Instruction</span>' : '<span>+ Edit Instructions</span>';
+    btn.innerHTML = folderId
+      ? '<span>+<span class="cb-ext"> Add</span> Instruction</span>'
+      : '<span>+<span class="cb-ext"> Edit</span> Instructions</span>';
   }
 
   if (!folderId) {

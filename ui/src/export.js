@@ -253,7 +253,7 @@ export async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
       }
 
       return `
-        <div class="case-section" data-toc-id="${tocId}" data-case-name="${escapeHtml(pdfName)}" data-folder-path="${escapeHtml(folderPath)}" style="margin: 4pt 0; padding: 5pt 8pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
+        <div class="case-section case-section--table-only" data-tables-only="1" data-toc-id="${tocId}" data-case-name="${escapeHtml(pdfName)}" data-folder-path="${escapeHtml(folderPath)}" style="margin: 4pt 0; padding: 5pt 8pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
           <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 3pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
             ${escapeHtml(pdfName)}
           </div>
@@ -278,8 +278,9 @@ export async function buildPdfCaseHTML(pdf, caseRegistry = [], opts = {}) {
     opts.tocCollector.push({ tocId, label: pdfName, kind: 'case' });
   }
 
+  const caseNameAttr = (!includeDigest && !tablesOnly) ? '' : ` data-case-name="${escapeHtml(pdfName)}"`;
   let html = `
-    <div class="case-section" data-toc-id="${tocId}" data-case-name="${escapeHtml(pdfName)}" data-folder-path="${escapeHtml(folderPath)}" style="margin: 4pt 0; padding: 5pt 8pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
+    <div class="case-section" data-toc-id="${tocId}"${caseNameAttr} data-folder-path="${escapeHtml(folderPath)}" style="margin: 4pt 0; padding: 5pt 8pt; border: 0.75pt solid #cbd5e1; border-radius: 4pt; background: #ffffff;">
       <div class="case-title" style="font-size: 10pt; font-weight: 700; color: #0f172a; margin-bottom: 3pt; border-bottom: 0.75pt solid #e2e8f0; padding-bottom: 2pt;">
         ${escapeHtml(pdfName)}
       </div>
@@ -394,7 +395,7 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
         else opts.tocCollector.push(entry);
       }
       folderNotesHtml += `
-        <div class="folder-notes-section" data-toc-id="${tocId}" data-case-name="${escapeHtml(folderName)}" data-folder-path="${escapeHtml(folderPathStr)}" style="margin: 4pt 0 6pt 0; padding: 5pt 8pt; background: #f8fafc; border: 0.75pt solid #e2e8f0; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
+        <div class="folder-notes-section" data-toc-id="${tocId}" data-folder-path="${escapeHtml(folderPathStr)}" style="margin: 4pt 0 6pt 0; padding: 5pt 8pt; background: #f8fafc; border: 0.75pt solid #e2e8f0; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
           <div class="section-badge" style="font-size: 7pt; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3pt;">Folder Notes</div>
           <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderNotes)}</div>
         </div>
@@ -415,7 +416,7 @@ export async function buildFolderHTML(folderId, depth = 1, caseRegistry = [], op
           else opts.tocCollector.push(entry);
         }
         folderNotesHtml += `
-          <div class="folder-notes-section" data-toc-id="${tocId}" data-case-name="${escapeHtml(folderName)}" data-folder-path="${escapeHtml(folderPathStr)}" style="margin: 4pt 0 6pt 0; padding: 5pt 8pt; background: #ffffff; border: 0.75pt solid #cbd5e1; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
+          <div class="folder-notes-section" data-toc-id="${tocId}" data-folder-path="${escapeHtml(folderPathStr)}" style="margin: 4pt 0 6pt 0; padding: 5pt 8pt; background: #ffffff; border: 0.75pt solid #cbd5e1; border-radius: 4pt; color: #1e293b; line-height: 1.25;">
             <div class="note-content" style="color: #1e293b;">${cleanAndSanitizeHtml(folderTables)}</div>
           </div>
         `;
@@ -530,6 +531,7 @@ export async function exportFolderToPDF(foldersOrFolder, opts = {}) {
     pageTitle,
     subtitleHtml,
     fallbackPath,
+    tablesOnly,
   });
 }
 
@@ -608,6 +610,7 @@ export async function exportPdfsToPDF(pdfsOrPdf, opts = {}) {
     pageTitle,
     subtitleHtml,
     fallbackPath,
+    tablesOnly,
   });
 }
 
@@ -692,6 +695,8 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
   const isTight = layoutMode === 'tight';
   const isTwoCol = Number(opts.columns) === 2;
   const includeToc = Boolean(opts.includeToc);
+  const tablesOnly = Boolean(opts.tablesOnly);
+  const includeDigest = opts.includeDigest !== false;
   const runningHeaders = opts.runningHeaders !== false;
   const embeddedPreview = Boolean(opts.embeddedPreview);
   const autoPrint = opts.autoPrint !== undefined ? Boolean(opts.autoPrint) : !embeddedPreview;
@@ -792,6 +797,9 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
     (function() {
       var runningHeaders = ${runningHeaders ? 'true' : 'false'};
       var SHOW_TOC = ${includeToc ? 'true' : 'false'};
+      var tablesOnly = ${tablesOnly ? 'true' : 'false'};
+      var includeDigest = ${includeDigest ? 'true' : 'false'};
+      var notesOnlyMode = !includeDigest && !tablesOnly;
       var fallbackPath = ${JSON.stringify(fallbackPath || 'Library')};
       var docTitle = ${JSON.stringify(pageTitle || 'Legal Print Studio')};
 
@@ -801,7 +809,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
         var sheets = Array.from(pagesRoot.querySelectorAll('.ps-page-sheet'));
         var total = sheets.length;
         var activePath = fallbackPath;
-        var activeName = docTitle;
+        var activeName = '';
         var lastSec = docTitle;
 
         for (var i = 0; i < total; i++) {
@@ -809,11 +817,34 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
           var pageNum = i + 1;
           sheet.setAttribute('data-page-num', String(pageNum));
 
-          var namedNodes = sheet.querySelectorAll('[data-case-name]');
+          var pathNodes = sheet.querySelectorAll('[data-folder-path]');
+          var firstPathNode = pathNodes.length > 0 ? pathNodes[0] : null;
+          var lastPathNode = pathNodes.length > 0 ? pathNodes[pathNodes.length - 1] : null;
+
+          var hasCaseOnPage = Boolean(sheet.querySelector('.case-section'));
+          var hasFolderNotesOnPage = Boolean(sheet.querySelector('.folder-notes-section'));
+          var hasTocOnPage = Boolean(sheet.querySelector('.print-toc-block'));
+
+          var namedNodes = notesOnlyMode
+            ? []
+            : Array.from(sheet.querySelectorAll('[data-case-name]')).filter(function(el) {
+                return Boolean((el.getAttribute('data-case-name') || '').trim());
+              });
           var firstNamed = namedNodes.length > 0 ? namedNodes[0] : null;
           var lastNamed = namedNodes.length > 0 ? namedNodes[namedNodes.length - 1] : null;
-          var hdrPath = firstNamed ? (firstNamed.getAttribute('data-folder-path') || activePath) : activePath;
-          var hdrName = firstNamed ? (firstNamed.getAttribute('data-case-name') || activeName) : activeName;
+
+          if (notesOnlyMode || (!hasCaseOnPage && (hasFolderNotesOnPage || hasTocOnPage) && !firstNamed)) {
+            activeName = '';
+          }
+
+          var hdrPath = firstPathNode
+            ? (firstPathNode.getAttribute('data-folder-path') || activePath)
+            : activePath;
+          var hdrName = notesOnlyMode
+            ? ''
+            : (firstNamed
+                ? (firstNamed.getAttribute('data-case-name') || '').trim()
+                : activeName);
 
           var secNodes = sheet.querySelectorAll('[data-section-title]');
           var firstSec = secNodes.length > 0 ? secNodes[0] : null;
@@ -831,9 +862,19 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
             if (ftr) ftr.textContent = 'Page ' + pageNum + ' of ' + total;
           }
 
-          if (lastNamed) {
-            activePath = lastNamed.getAttribute('data-folder-path') || activePath;
-            activeName = lastNamed.getAttribute('data-case-name') || activeName;
+          if (lastPathNode) {
+            activePath = lastPathNode.getAttribute('data-folder-path') || activePath;
+          }
+          if (notesOnlyMode) {
+            activeName = '';
+          } else {
+            var folderNotesNodes = sheet.querySelectorAll('.folder-notes-section');
+            var lastFolderNotes = folderNotesNodes.length > 0 ? folderNotesNodes[folderNotesNodes.length - 1] : null;
+            if (lastFolderNotes && (!lastNamed || (lastNamed.compareDocumentPosition(lastFolderNotes) & 4))) {
+              activeName = '';
+            } else if (lastNamed) {
+              activeName = (lastNamed.getAttribute('data-case-name') || '').trim() || activeName;
+            }
           }
           if (lastSecNode) {
             lastSec = lastSecNode.getAttribute('data-section-title') || lastSec;
@@ -1497,7 +1538,7 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
               hdrLeft.textContent = fallbackPath || '\\u00a0';
               hdrRight = document.createElement('span');
               hdrRight.className = 'ps-page-hdr-right';
-              hdrRight.textContent = docTitle || '\\u00a0';
+              hdrRight.textContent = '';
               hdr.appendChild(hdrLeft);
               hdr.appendChild(hdrRight);
               sheet.appendChild(hdr);
@@ -1689,11 +1730,17 @@ export function buildPrintDocumentHTML(sectionsHtml, caseRegistry = [], opts = {
                 node = textWrap;
               }
 
-              // Always start every fresh case on a clean new page so its summary table never starts mid-page.
+              // Regular digest summary cases start on a clean new page, while summary-table-only sections flow continuously.
+              var isTableOnlySection = Boolean(
+                tablesOnly ||
+                (node.nodeType === 1 && node.classList && node.classList.contains('case-section--table-only')) ||
+                (node.nodeType === 1 && node.getAttribute && node.getAttribute('data-tables-only') === '1')
+              );
               var isFreshCase = node.nodeType === 1 &&
                 node.classList &&
                 node.classList.contains('case-section') &&
-                !node.classList.contains('is-continuation');
+                !node.classList.contains('is-continuation') &&
+                !isTableOnlySection;
               if (isFreshCase) {
                 if (pageHasMeaningfulNonHeading(curPage)) {
                   cur = advanceToNewPage(queue);
@@ -2361,6 +2408,9 @@ function renderExportPrintDocument({
   pageTitle,
   subtitleHtml,
   fallbackPath,
+  tablesOnly = false,
+  includeDigest = true,
+  includeNotes = true,
   autoPrint = true,
   extraTopBarControlsHtml = '',
   extraStyles = '',
@@ -2375,6 +2425,9 @@ function renderExportPrintDocument({
     layout: 'tight',
     columns: 1,
     includeToc: false,
+    tablesOnly,
+    includeDigest,
+    includeNotes,
     marginPreset: 'narrow',
     runningHeaders: true,
     embeddedPreview: false,

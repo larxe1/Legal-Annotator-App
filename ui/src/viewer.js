@@ -109,6 +109,14 @@ export async function openFolderDoc(fold) {
 
   // 2. Look up fresh live folder from state
   const liveFold = S.folders.find(f => f.id === fold.id) || fold;
+  S.activeFolderId = liveFold.id;
+  if (S.selectedIds instanceof Set) {
+    S.selectedIds.clear();
+    S.selectedIds.add(liveFold.id);
+  } else {
+    S.selectedIds = new Set([liveFold.id]);
+  }
+  import('./library.js').then(m => m.updateSelectionUI?.()).catch(() => {});
   notifyTabOpened(liveFold, 'folder');
 
   // Switch to Folder Document Mode

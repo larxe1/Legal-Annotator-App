@@ -1528,7 +1528,11 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
         return;
       }
 
-      const titleSuffix = state.prefs.tablesOnly ? 'Summary Tables Only' : 'Notes & Case Digests';
+      const isTablesOnly = Boolean(state.prefs.tablesOnly);
+      const isNotesOnly = !state.prefs.includeDigest && !isTablesOnly;
+      const titleSuffix = isTablesOnly
+        ? 'Summary Tables'
+        : (isNotesOnly ? 'Notes' : 'Notes & Case Digests');
       let docTitle = state.jobTitle || `Legal Print Studio — ${titleSuffix}`;
       let subtitle = `${sectionCount} ${sectionCount === 1 ? 'section' : 'sections'}`;
       let fallbackPath = 'Library';
@@ -1560,7 +1564,11 @@ function mountPrintStudioUI(rootEl, { job, modeInfo, isOverlay = false, onClose 
           const names = queuedFolders.slice(0, 3).map(getFolderDisplayTitle);
           docTitle = `${names.join(', ')}${queuedFolders.length > 3 ? ` +${queuedFolders.length - 3}` : ''} — ${titleSuffix}`;
         } else {
-          docTitle = `Legal Print Packet (${pdfsCount || sectionCount} ${pdfsCount === 1 ? 'Case' : 'Cases'}) — ${titleSuffix}`;
+          const countVal = isNotesOnly ? (sectionCount || pdfsCount) : (pdfsCount || sectionCount);
+          const unitLabel = isNotesOnly
+            ? (countVal === 1 ? 'Section' : 'Sections')
+            : (countVal === 1 ? 'Case' : 'Cases');
+          docTitle = `Legal Print Packet (${countVal} ${unitLabel}) — ${titleSuffix}`;
         }
       }
 

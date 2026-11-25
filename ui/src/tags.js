@@ -53,17 +53,187 @@ let selectedFilterTag = 'ALL';
 let activeNotesTopic = null;
 let _tagJumpIndices = {};
 let _singleTopicRenderGen = 0;
+let _singleTopicSearchGen = 0;
+let _singleTopicQueryTagKey = '';
+let _singleTopicQueryText = '';
+let _singleTopicScrollCleanup = null;
+let _topicChangedDebounceTimer = null;
+let _topicNotesDirtyForEvent = false;
 
-// ── Lazily-Invalidated Tag Index: Map<tagName, Ann[]> ──
+const _TP_PAGE_SIZE = 50;
+const _TP_HTML_ENTITY_MAP = {
+  '&nbsp;': ' ',
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&apos;': "'",
+  '&mdash;': '—',
+  '&ndash;': '–',
+  '&hellip;': '…',
+  '&ldquo;': '“',
+  '&rdquo;': '”',
+  '&lsquo;': '‘',
+  '&rsquo;': '’',
+};
+
+function _normTagKey(tagName) {
+  return String(tagName || '').trim().toLowerCase();
+}
+
+function _fastHtmlToPlainText(html) {
+  if (!html || typeof html !== 'string') return '';
+  if (html.indexOf('<') === -1 && html.indexOf('&') === -1) {
+    return html.replace(/\s+/g, ' ').trim();
+  }
+  let s = html
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<img\b[^>]*>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ');
+  if (s.indexOf('&') !== -1) {
+    s = s.replace(/&(?:#x([0-9a-fA-F]+)|#(\d+)|([a-zA-Z]+));/g, (m, hex, dec, named) => {
+      if (hex) {
+        const cp = parseInt(hex, 16);
+        return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : ' ';
+      }
+      if (dec) {
+        const cp = parseInt(dec, 10);
+        return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : ' ';
+      }
+      const key = `&${named.toLowerCase()};`;
+      return Object.prototype.hasOwnProperty.call(_TP_HTML_ENTITY_MAP, key) ? _TP_HTML_ENTITY_MAP[key] : m;
+    });
+  }
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function _buildMarkedSnippetHtml(plain, queryLower, maxLen = 135) {
+  const text = String(plain || '');
+  if (!text) return '';
+  if (!queryLower) {
+    const sliced = text.length > maxLen ? text.slice(0, maxLen).trimEnd() + '…' : text;
+    return escapeHtml(sliced);
+  }
+  const lower = text.toLowerCase();
+  const hitIdx = lower.indexOf(queryLower);
+  if (hitIdx < 0) {
+    const sliced = text.length > maxLen ? text.slice(0, maxLen).trimEnd() + '…' : text;
+    return escapeHtml(sliced);
+  }
+  const qLen = queryLower.length;
+  const ctxBefore = Math.min(40, Math.floor((maxLen - qLen) / 3));
+  let start = Math.max(0, hitIdx - ctxBefore);
+  let end = Math.min(text.length, start + maxLen);
+  if (end - start < maxLen && start > 0) {
+    start = Math.max(0, end - maxLen);
+  }
+  if (start > 0) {
+    const sp = text.indexOf(' ', start);
+    if (sp > start && sp < hitIdx && sp - start < 14) start = sp + 1;
+  }
+  const slice = text.slice(start, end);
+  const sliceLower = slice.toLowerCase();
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < text.length ? '…' : '';
+  let out = prefix;
+  let pos = 0;
+  let marks = 0;
+  while (pos < slice.length && marks < 10) {
+    const idx = sliceLower.indexOf(queryLower, pos);
+    if (idx < 0) {
+      out += escapeHtml(slice.slice(pos));
+      pos = slice.length;
+      break;
+    }
+    if (idx > pos) out += escapeHtml(slice.slice(pos, idx));
+    out += `<mark class="sar-mark">${escapeHtml(slice.slice(idx, idx + qLen))}</mark>`;
+    pos = idx + qLen;
+    marks++;
+  }
+  if (pos < slice.length) out += escapeHtml(slice.slice(pos));
+  return out + suffix;
+}
+
+// ── Lazily-Invalidated Tag Index: exact Map + case-insensitive lower Map ──
 let _tagIndexMap = new Map();
+let _tagIndexLowerMap = new Map();
+let _tagDisplayByLower = new Map();
 let _tagIndexTaggedCount = 0;
 let _tagIndexVersion = 0;
 let _tagIndexBuiltVersion = -1;
 let _tagIndexAnnsRef = null;
 let _tagIndexAnnsLen = -1;
 
+// Lightweight plaintext caches (no raw HTML or base64 <img> retained)
+const _tagAnnPlainCache = new Map(); // ann.id -> { fp, textPlain, textLower, notes: [{ id, type, plain, lower }] }
+const _topicPlainCache = new Map();  // lowerKey -> { htmlLen, updatedAt, plain, lower }
+
 function _invalidateTagIndex() {
   _tagIndexVersion++;
+}
+
+export function invalidateTagSearchCache() {
+  _tagIndexVersion++;
+  _tagAnnPlainCache.clear();
+  _topicPlainCache.clear();
+}
+
+function _dispatchTagsChanged(detail = {}) {
+  if (typeof window !== 'undefined' && typeof CustomEvent !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('la:tags-changed', { detail }));
+  }
+}
+
+function _notifyTagsMutated(detail = {}) {
+  invalidateTagSearchCache();
+  _dispatchTagsChanged(detail);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('la:annotations-changed', () => {
+    invalidateTagSearchCache();
+  });
+}
+
+function _annPlainFingerprint(ann) {
+  const hiLen = (ann.highlighted_text || '').length;
+  const notes = Array.isArray(ann.notes) ? ann.notes : [];
+  let noteSig = notes.length;
+  for (let i = 0; i < notes.length; i++) {
+    const n = notes[i];
+    noteSig += `:${n?.id || i}:${(n?.note_html || '').length}`;
+  }
+  return `${hiLen}|${noteSig}`;
+}
+
+function _getCachedAnnPlain(ann) {
+  if (!ann) return { textPlain: '', textLower: '', notes: [] };
+  const fp = _annPlainFingerprint(ann);
+  const cached = _tagAnnPlainCache.get(ann.id);
+  if (cached && cached.fp === fp) return cached;
+
+  const textPlain = String(ann.highlighted_text || '').replace(/\s+/g, ' ').trim();
+  const textLower = textPlain.toLowerCase();
+  const rawNotes = Array.isArray(ann.notes) ? ann.notes : [];
+  const notes = [];
+  for (let i = 0; i < rawNotes.length; i++) {
+    const n = rawNotes[i];
+    if (!n || !n.note_html) continue;
+    const isCase = n.note_html.includes('data-note-type="case"') || n.note_html.includes("data-note-type='case'");
+    const plain = _fastHtmlToPlainText(n.note_html);
+    if (!plain) continue;
+    notes.push({
+      id: n.id || String(i),
+      type: isCase ? 'case' : 'general',
+      plain,
+      lower: plain.toLowerCase(),
+    });
+  }
+  const entry = { fp, textPlain, textLower, notes };
+  _tagAnnPlainCache.set(ann.id, entry);
+  return entry;
 }
 
 function _ensureTagIndex() {
@@ -74,27 +244,46 @@ function _ensureTagIndex() {
     _tagIndexAnnsLen !== anns.length
   ) {
     const nextMap = new Map();
+    const nextLowerMap = new Map();
+    const nextDisplayByLower = new Map();
     let taggedCount = 0;
     for (const ann of anns) {
       if (!ann) continue;
       const tags = getAnnTags(ann);
       if (!tags || tags.length === 0) continue;
       taggedCount++;
-      const seenForAnn = tags.length > 1 ? new Set() : null;
-      for (const t of tags) {
-        if (seenForAnn) {
-          if (seenForAnn.has(t)) continue;
-          seenForAnn.add(t);
+      const seenExact = tags.length > 1 ? new Set() : null;
+      const seenLower = tags.length > 1 ? new Set() : null;
+      for (const rawT of tags) {
+        const t = String(rawT || '').trim();
+        if (!t) continue;
+        const lower = t.toLowerCase();
+        if (!nextDisplayByLower.has(lower)) nextDisplayByLower.set(lower, t);
+
+        if (!seenExact || !seenExact.has(t)) {
+          if (seenExact) seenExact.add(t);
+          let arr = nextMap.get(t);
+          if (!arr) {
+            arr = [];
+            nextMap.set(t, arr);
+          }
+          arr.push(ann);
         }
-        let arr = nextMap.get(t);
-        if (!arr) {
-          arr = [];
-          nextMap.set(t, arr);
+
+        if (!seenLower || !seenLower.has(lower)) {
+          if (seenLower) seenLower.add(lower);
+          let lowerArr = nextLowerMap.get(lower);
+          if (!lowerArr) {
+            lowerArr = [];
+            nextLowerMap.set(lower, lowerArr);
+          }
+          lowerArr.push(ann);
         }
-        arr.push(ann);
       }
     }
     _tagIndexMap = nextMap;
+    _tagIndexLowerMap = nextLowerMap;
+    _tagDisplayByLower = nextDisplayByLower;
     _tagIndexTaggedCount = taggedCount;
     _tagIndexBuiltVersion = _tagIndexVersion;
     _tagIndexAnnsRef = anns;
@@ -103,9 +292,101 @@ function _ensureTagIndex() {
   return _tagIndexMap;
 }
 
+export function getAnnsForTag(tagName) {
+  const key = _normTagKey(tagName);
+  if (!key) return [];
+  _ensureTagIndex();
+  const arr = _tagIndexLowerMap.get(key);
+  return arr ? arr.slice() : [];
+}
+
 function _getAnnsForTag(tagName) {
-  if (!tagName) return [];
-  return _ensureTagIndex().get(tagName) || [];
+  return getAnnsForTag(tagName);
+}
+
+export function getTopicNotesEntry(tagName) {
+  const key = _normTagKey(tagName);
+  if (!key || !currentTagData?.topics) return null;
+
+  let topic = currentTagData.topics[tagName] || null;
+  if (!topic) {
+    for (const [k, v] of Object.entries(currentTagData.topics)) {
+      const candidateKey = _normTagKey(v?.name || k);
+      if (candidateKey === key) {
+        if (!topic || (!topic.notesHtml && v?.notesHtml)) {
+          topic = v;
+        }
+      }
+    }
+  }
+  if (!topic) return null;
+
+  const html = typeof topic.notesHtml === 'string' ? topic.notesHtml : '';
+  const updatedAt = topic.updatedAt || 0;
+  let cached = _topicPlainCache.get(key);
+  if (!cached || cached.htmlLen !== html.length || cached.updatedAt !== updatedAt) {
+    const plain = _fastHtmlToPlainText(html);
+    cached = {
+      htmlLen: html.length,
+      updatedAt,
+      plain,
+      lower: plain.toLowerCase(),
+    };
+    _topicPlainCache.set(key, cached);
+  }
+
+  return {
+    name: topic.name || tagName,
+    key,
+    color: topic.color || pickTopicColor(topic.name || tagName),
+    notesHtml: html,
+    notesPlain: cached.plain,
+    notesPlainLower: cached.lower,
+    updatedAt,
+  };
+}
+
+export function getAllTagsWithCounts() {
+  _ensureTagIndex();
+  const merged = new Map(); // lowerKey -> { name, key, color, count, hasNotes }
+
+  if (currentTagData?.topics) {
+    for (const [rawKey, topic] of Object.entries(currentTagData.topics)) {
+      const name = String(topic?.name || rawKey || '').trim();
+      const key = _normTagKey(name);
+      if (!key) continue;
+      const count = _tagIndexLowerMap.get(key)?.length || 0;
+      const entry = getTopicNotesEntry(name);
+      const hasNotes = Boolean(entry && entry.notesPlain);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, {
+          name,
+          key,
+          color: topic?.color || pickTopicColor(name),
+          count,
+          hasNotes,
+        });
+      } else if (!existing.hasNotes && hasNotes) {
+        existing.hasNotes = true;
+      }
+    }
+  }
+
+  for (const [key, arr] of _tagIndexLowerMap.entries()) {
+    if (!merged.has(key)) {
+      const displayName = _tagDisplayByLower.get(key) || key;
+      merged.set(key, {
+        name: displayName,
+        key,
+        color: pickTopicColor(displayName),
+        count: arr.length,
+        hasNotes: false,
+      });
+    }
+  }
+
+  return Array.from(merged.values()).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
 function getCurTrueId() {
@@ -197,10 +478,13 @@ export async function loadTagsForPdf(trueId) {
 
   currentTagData = localData;
   syncAnnTagsWithState();
+  _notifyTagsMutated({ reason: 'load-local', trueId });
   redrawAllTagBadges();
 
   if (isSwitchingPdf) {
     selectedFilterTag = 'ALL';
+    _singleTopicQueryTagKey = '';
+    _singleTopicQueryText = '';
     _activeQuickTag = safeStorageGet('active_quick_tag_' + trueId, '') || null;
     updateQuickTagUI();
   }
@@ -222,6 +506,7 @@ export async function loadTagsForPdf(trueId) {
           currentTagData = cloudData;
           safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
           syncAnnTagsWithState();
+          _notifyTagsMutated({ reason: 'load-cloud', trueId });
           redrawAllTagBadges();
           if (isTagsPanelOpen()) renderTagsPanel();
         } else if (localTime > cloudTime) {
@@ -288,7 +573,7 @@ export async function addTagToAnn(ann, tagName, options = {}) {
   }
 
   currentTagData.updatedAt = Date.now();
-  _invalidateTagIndex();
+  _notifyTagsMutated({ reason: 'add', tag, annId: ann.id });
 
   safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
   if (!options.skipSaveAnn && trueId) {
@@ -330,7 +615,7 @@ export async function removeTagFromAnn(ann, tagName, options = {}) {
     currentTagData.updatedAt = Date.now();
     safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
   }
-  _invalidateTagIndex();
+  _notifyTagsMutated({ reason: 'remove', tag, annId: ann.id });
 
   if (!options.skipSaveAnn && trueId) {
     scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
@@ -401,7 +686,7 @@ export async function addTagToAnnsBatch(anns, tagName) {
   }
 
   currentTagData.updatedAt = now;
-  _invalidateTagIndex();
+  _notifyTagsMutated({ reason: 'batch-add', tag, count: modifiedAnns.length });
   safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
   scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
   scheduleCloudSave(trueId);
@@ -465,7 +750,7 @@ export async function removeTagFromAnnsBatch(anns, tagName) {
     currentTagData.updatedAt = Date.now();
     safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
   }
-  _invalidateTagIndex();
+  _notifyTagsMutated({ reason: 'batch-remove', tag, count: modifiedAnns.length });
   scheduleDebouncedLocalAnnsSave(trueId, () => S.annotations);
   scheduleCloudSave(trueId);
 
@@ -490,17 +775,17 @@ export async function removeTagFromAnnsBatch(anns, tagName) {
 
 export function getAllTopicsForCurrentPdf() {
   if (!currentTagData || !currentTagData.topics) return [];
-  const map = _ensureTagIndex();
+  _ensureTagIndex();
   const list = Object.values(currentTagData.topics);
   return list.map(t => {
-    const count = map.get(t.name)?.length || 0;
+    const count = _tagIndexLowerMap.get(_normTagKey(t.name))?.length || 0;
     return { ...t, count };
   }).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
 export function onAnnDeleted(annId) {
   if (!annId || !currentTagData) return;
-  _invalidateTagIndex();
+  _notifyTagsMutated({ reason: 'ann-deleted', annId });
   if (currentTagData.annTags && currentTagData.annTags[annId]) {
     delete currentTagData.annTags[annId];
     currentTagData.updatedAt = Date.now();
@@ -846,6 +1131,7 @@ export function renderTagsPanel() {
         currentTagData.updatedAt = Date.now();
         safeStorageSet('local_pdf_tags_v1_' + trueId, JSON.stringify(currentTagData));
         scheduleCloudSave(trueId);
+        _notifyTagsMutated({ reason: 'create-topic', tag: val });
       }
       selectedFilterTag = val;
       renderTagsPanel();
@@ -902,62 +1188,79 @@ export function renderTagsPanel() {
   }
 }
 
-function _buildTopicAnnCardHtml(ann) {
+function _buildTopicAnnCardHtml(ann, queryLower = '', matchedNotes = null) {
   const notes = Array.isArray(ann.notes) ? ann.notes : [];
-  const hasCase = notes.some(n => n.note_html?.includes('data-note-type="case"'));
+  const hasCase = notes.some(n => n.note_html?.includes('data-note-type="case"') || n.note_html?.includes("data-note-type='case'"));
   const noteCount = notes.length;
+  const quoteText = ann.highlighted_text || '(Box Highlight)';
+  const quoteHtml = queryLower
+    ? _buildMarkedSnippetHtml(quoteText, queryLower, 150)
+    : escapeHtml(quoteText);
+
+  let noteHitHtml = '';
+  if (queryLower && Array.isArray(matchedNotes) && matchedNotes.length > 0) {
+    const first = matchedNotes[0];
+    const extra = matchedNotes.length > 1 ? ` <span class="tp-mini-badge note">+${matchedNotes.length - 1} more</span>` : '';
+    const lbl = first.type === 'case' ? '⚖️ Case:' : '📝 Note:';
+    noteHitHtml = `
+      <div class="tp-ann-note-hit" data-open-ann-note="${escapeHtml(ann.id)}" data-note-tab="${escapeHtml(first.type)}" title="Open note in Annotation Panel">
+        <span class="tp-ann-note-hit-lbl">${lbl}</span>
+        <span>${_buildMarkedSnippetHtml(first.plain, queryLower, 120)}</span>${extra}
+      </div>
+    `;
+  }
+
   return `
-    <div class="tp-ann-card" data-ann-id="${ann.id}">
+    <div class="tp-ann-card" data-ann-id="${escapeHtml(ann.id)}">
       <div class="tp-ann-hd">
         <span class="tp-ann-page">Page ${ann.page}</span>
         <div class="tp-ann-badges">
           ${hasCase ? '<span class="tp-mini-badge case">⚖️ Case</span>' : ''}
           ${noteCount > 0 ? `<span class="tp-mini-badge note">📝 ${noteCount}</span>` : ''}
         </div>
-        <button class="tp-ann-untag-btn" title="Remove tag from this provision" data-untag="${ann.id}">✕</button>
+        <button class="tp-ann-untag-btn" title="Remove tag from this provision" data-untag="${escapeHtml(ann.id)}">✕</button>
       </div>
-      <div class="tp-ann-quote">"${escapeHtml(ann.highlighted_text || '(Box Highlight)')}"</div>
+      <div class="tp-ann-quote">"${quoteHtml}"</div>
+      ${noteHitHtml}
       <div class="tp-ann-ft">
-        <button class="tp-ann-jump-btn" data-jump="${ann.id}">Jump to Provision ↗</button>
+        <button class="tp-ann-jump-btn" data-jump="${escapeHtml(ann.id)}">Jump to Provision ↗</button>
       </div>
     </div>
   `;
 }
 
+function _cleanupSingleTopicScroll() {
+  if (typeof _singleTopicScrollCleanup === 'function') {
+    try { _singleTopicScrollCleanup(); } catch {}
+    _singleTopicScrollCleanup = null;
+  }
+}
+
 function renderSingleTopicView(container, tagName) {
+  _cleanupSingleTopicScroll();
   const myGen = ++_singleTopicRenderGen;
-  const topic = currentTagData?.topics?.[tagName] || {
-    name: tagName,
-    color: pickTopicColor(tagName),
-    notesHtml: '',
-  };
-  const color = topic.color || pickTopicColor(tagName);
-  const matching = [..._getAnnsForTag(tagName)];
+  const tagKey = _normTagKey(tagName);
+  const topicEntry = getTopicNotesEntry(tagName);
+  const displayTag = topicEntry?.name || tagName;
+  const color = topicEntry?.color || pickTopicColor(displayTag);
+  const matching = [..._getAnnsForTag(displayTag)];
   matching.sort(compareAnnotationsReadingOrder);
 
-  const curIdx = (_tagJumpIndices[tagName] ?? -1) + 1;
-  const posLabel = matching.length > 0 ? (curIdx > 0 ? `${curIdx} of ${matching.length}` : `1 of ${matching.length}`) : '0 of 0';
-
-  const shouldChunk = matching.length > 60;
-  let initialListHtml = '';
-  if (matching.length === 0) {
-    initialListHtml = `
-      <div class="tp-empty">
-        <div style="font-size:32px;margin-bottom:8px">🏷️</div>
-        <div style="font-weight:600;color:#e8e4db;margin-bottom:4px">No highlights tagged "${escapeHtml(tagName)}" yet.</div>
-        <div style="font-size:12px;color:var(--muted);line-height:1.5">Highlight provisions in the codal and click <strong>+ ${escapeHtml(tagName)}</strong> in the Notes Panel to link them to this topic!</div>
-      </div>
-    `;
-  } else if (!shouldChunk) {
-    initialListHtml = matching.map(_buildTopicAnnCardHtml).join('');
+  if (_singleTopicQueryTagKey !== tagKey) {
+    _singleTopicQueryTagKey = tagKey;
+    _singleTopicQueryText = '';
   }
+  const initialQuery = _singleTopicQueryText;
+
+  const curIdx = (_tagJumpIndices[displayTag] ?? _tagJumpIndices[tagName] ?? -1) + 1;
+  const posLabel = matching.length > 0 ? (curIdx > 0 ? `${curIdx} of ${matching.length}` : `1 of ${matching.length}`) : '0 of 0';
 
   container.innerHTML = `
     <div class="tp-topic-card" style="border-left: 4px solid ${color};">
       <div class="tp-tc-header">
         <div class="tp-tc-title-row">
           <span class="tp-tc-dot" style="background:${color}"></span>
-          <span class="tp-tc-title">${escapeHtml(tagName)}</span>
+          <span class="tp-tc-title">${escapeHtml(displayTag)}</span>
         </div>
         <span class="tp-tc-cnt">${matching.length} highlighted provision${matching.length === 1 ? '' : 's'}</span>
       </div>
@@ -981,24 +1284,207 @@ function renderSingleTopicView(container, tagName) {
       ` : ''}
     </div>
 
+    <div class="tp-tag-search-bar">
+      <input id="tp-tag-search-input" class="tp-tag-search-input" type="search" placeholder="Search in ${escapeHtml(displayTag)} highlights &amp; notes…" value="${escapeHtml(initialQuery)}" autocomplete="off" spellcheck="false" />
+      <button type="button" id="tp-tag-search-clear" class="tp-tag-search-clear" title="Clear search"${initialQuery ? '' : ' hidden'}>✕</button>
+      <button type="button" id="tp-tag-open-global" class="tp-tag-open-global" title="Open in Search Panel" aria-label="Open in Search Panel">↗</button>
+    </div>
+    <div class="tp-tag-search-meta" id="tp-tag-search-meta"></div>
+
     <div class="tp-provisions-sec-title">Tagged Codal Provisions:</div>
-    <div class="tp-anns-list">${initialListHtml}</div>
+    <div class="tp-anns-list"></div>
   `;
 
   // Wire header/stepper buttons
   container.querySelector('#tp-btn-open-workspace')?.addEventListener('click', () => {
-    openTopicNotesModal(tagName);
+    openTopicNotesModal(displayTag);
   });
   container.querySelector('#tp-btn-print-tag')?.addEventListener('click', () => {
-    printTagNotes(tagName);
+    printTagNotes(displayTag);
   });
 
-  container.querySelector('#tp-step-prev')?.addEventListener('click', () => jumpThroughTag(tagName, -1));
-  container.querySelector('#tp-step-next')?.addEventListener('click', () => jumpThroughTag(tagName, 1));
+  container.querySelector('#tp-step-prev')?.addEventListener('click', () => jumpThroughTag(displayTag, -1));
+  container.querySelector('#tp-step-next')?.addEventListener('click', () => jumpThroughTag(displayTag, 1));
 
-  // Event delegation on .tp-anns-list supports both synchronous and chunked rAF cards
+  const searchInput = container.querySelector('#tp-tag-search-input');
+  const clearBtn = container.querySelector('#tp-tag-search-clear');
+  const openGlobalBtn = container.querySelector('#tp-tag-open-global');
+  const metaEl = container.querySelector('#tp-tag-search-meta');
   const listEl = container.querySelector('.tp-anns-list');
+
+  let activeEntries = [];
+  let activeQueryLower = '';
+  let renderedOffset = 0;
+  let searchDebounce = null;
+
+  const appendNextPage = () => {
+    if (!listEl || !listEl.isConnected || myGen !== _singleTopicRenderGen) return;
+    if (renderedOffset >= activeEntries.length) return;
+
+    listEl.querySelector('.tp-load-more-btn')?.remove();
+
+    const end = Math.min(renderedOffset + _TP_PAGE_SIZE, activeEntries.length);
+    const tpl = document.createElement('template');
+    let chunkHtml = '';
+    for (; renderedOffset < end; renderedOffset++) {
+      const item = activeEntries[renderedOffset];
+      chunkHtml += _buildTopicAnnCardHtml(item.ann, activeQueryLower, item.matchedNotes);
+    }
+    tpl.innerHTML = chunkHtml;
+    const frag = document.createDocumentFragment();
+    frag.appendChild(tpl.content);
+
+    const remaining = activeEntries.length - renderedOffset;
+    if (remaining > 0) {
+      const moreBtn = document.createElement('button');
+      moreBtn.type = 'button';
+      moreBtn.className = 'tp-load-more-btn';
+      moreBtn.textContent = `Show more (${remaining} remaining)`;
+      frag.appendChild(moreBtn);
+    }
+    listEl.appendChild(frag);
+  };
+
+  const executeTopicSearch = (rawQuery) => {
+    const qGen = ++_singleTopicSearchGen;
+    if (myGen !== _singleTopicRenderGen || !listEl || !listEl.isConnected) return;
+
+    const trimmed = String(rawQuery || '').trim();
+    _singleTopicQueryText = trimmed;
+    const qLower = trimmed.toLowerCase();
+    activeQueryLower = qLower;
+
+    if (clearBtn) clearBtn.hidden = !trimmed;
+
+    const nextEntries = [];
+    if (!qLower) {
+      for (let i = 0; i < matching.length; i++) {
+        nextEntries.push({ ann: matching[i], matchedNotes: null });
+      }
+    } else {
+      for (let i = 0; i < matching.length; i++) {
+        const ann = matching[i];
+        const plainEntry = _getCachedAnnPlain(ann);
+        const textHit = plainEntry.textLower.includes(qLower);
+        let matchedNotes = null;
+        for (let j = 0; j < plainEntry.notes.length; j++) {
+          if (plainEntry.notes[j].lower.includes(qLower)) {
+            if (!matchedNotes) matchedNotes = [];
+            matchedNotes.push(plainEntry.notes[j]);
+          }
+        }
+        if (textHit || (matchedNotes && matchedNotes.length > 0)) {
+          nextEntries.push({ ann, matchedNotes });
+        }
+      }
+    }
+
+    if (qGen !== _singleTopicSearchGen || myGen !== _singleTopicRenderGen) return;
+
+    const latestTopic = getTopicNotesEntry(displayTag);
+    const topicNoteHit = Boolean(qLower && latestTopic && latestTopic.notesPlainLower.includes(qLower));
+
+    if (metaEl) {
+      if (qLower) {
+        const totalNoteHits = nextEntries.reduce((acc, e) => acc + (e.matchedNotes ? e.matchedNotes.length : 0), 0);
+        const summaryParts = [`${nextEntries.length} highlight${nextEntries.length === 1 ? '' : 's'}`];
+        if (totalNoteHits > 0) summaryParts.push(`${totalNoteHits} note${totalNoteHits === 1 ? '' : 's'}`);
+        if (topicNoteHit) summaryParts.push('Topic Notes');
+        let metaHtml = `<span class="tp-tag-search-count">${summaryParts.join(' · ')} matched</span>`;
+        if (topicNoteHit) {
+          metaHtml += `
+            <button type="button" class="tp-topic-note-hit" id="tp-topic-note-hit-btn" title="Open Topic Notes workspace">
+              <strong>📖 Topic Notes:</strong> ${_buildMarkedSnippetHtml(latestTopic.notesPlain, qLower, 110)}
+            </button>
+          `;
+        }
+        metaEl.innerHTML = metaHtml;
+        metaEl.querySelector('#tp-topic-note-hit-btn')?.addEventListener('click', () => {
+          openTopicNotesModal(displayTag, trimmed);
+        });
+      } else {
+        metaEl.innerHTML = '';
+      }
+    }
+
+    activeEntries = nextEntries;
+    renderedOffset = 0;
+    listEl.innerHTML = '';
+
+    if (activeEntries.length === 0) {
+      if (qLower) {
+        listEl.innerHTML = `
+          <div class="tp-empty">
+            <div style="font-weight:600;color:#e8e4db;margin-bottom:4px">No highlight or note matches for "${escapeHtml(trimmed)}".</div>
+            ${topicNoteHit ? '<div style="font-size:12px;color:var(--gold)">Match found in Topic Notes above — click it to open.</div>' : ''}
+          </div>
+        `;
+      } else {
+        listEl.innerHTML = `
+          <div class="tp-empty">
+            <div style="font-size:32px;margin-bottom:8px">🏷️</div>
+            <div style="font-weight:600;color:#e8e4db;margin-bottom:4px">No highlights tagged "${escapeHtml(displayTag)}" yet.</div>
+            <div style="font-size:12px;color:var(--muted);line-height:1.5">Highlight provisions in the codal and click <strong>+ ${escapeHtml(displayTag)}</strong> in the Notes Panel to link them to this topic!</div>
+          </div>
+        `;
+      }
+      return;
+    }
+
+    appendNextPage();
+  };
+
+  searchInput?.addEventListener('input', () => {
+    if (clearBtn) clearBtn.hidden = !searchInput.value;
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => executeTopicSearch(searchInput.value), 180);
+  });
+
+  searchInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && searchInput.value) {
+      e.preventDefault();
+      e.stopPropagation();
+      searchInput.value = '';
+      clearTimeout(searchDebounce);
+      executeTopicSearch('');
+    }
+  });
+
+  clearBtn?.addEventListener('click', () => {
+    if (searchInput) {
+      searchInput.value = '';
+      searchInput.focus();
+    }
+    clearTimeout(searchDebounce);
+    executeTopicSearch('');
+  });
+
+  openGlobalBtn?.addEventListener('click', () => {
+    const q = searchInput ? searchInput.value.trim() : '';
+    import('./search.js').then(({ openSearchWithTag }) => {
+      openSearchWithTag(displayTag, q);
+    }).catch(() => {});
+  });
+
+  // Event delegation on .tp-anns-list for jump, open-note, untag, and load-more
   listEl?.addEventListener('click', async (e) => {
+    const loadMoreBtn = e.target.closest('.tp-load-more-btn');
+    if (loadMoreBtn) {
+      appendNextPage();
+      return;
+    }
+    const noteHitEl = e.target.closest('[data-open-ann-note]');
+    if (noteHitEl) {
+      const target = getAnnotationById(noteHitEl.dataset.openAnnNote);
+      const tabType = noteHitEl.dataset.noteTab || 'general';
+      if (target) {
+        await jumpToAnn(target);
+        const { openAnnPanel } = await import('./annotate.js');
+        openAnnPanel(target);
+        document.querySelector(`.ap-tab[data-aptab="${tabType}"]`)?.click();
+      }
+      return;
+    }
     const jumpBtn = e.target.closest('[data-jump]');
     if (jumpBtn) {
       const target = getAnnotationById(jumpBtn.dataset.jump);
@@ -1010,33 +1496,30 @@ function renderSingleTopicView(container, tagName) {
       e.stopPropagation();
       const target = getAnnotationById(untagBtn.dataset.untag);
       if (target) {
-        await removeTagFromAnn(target, tagName);
+        await removeTagFromAnn(target, displayTag);
       }
     }
   });
 
-  if (shouldChunk && listEl) {
-    const CHUNK_SIZE = 50;
-    let offset = 0;
-    const appendBatch = (isFirst) => {
-      if (!isFirst && (myGen !== _singleTopicRenderGen || !listEl.isConnected)) return;
-      const end = Math.min(offset + CHUNK_SIZE, matching.length);
-      let chunkHtml = '';
-      for (; offset < end; offset++) {
-        chunkHtml += _buildTopicAnnCardHtml(matching[offset]);
-      }
-      if (chunkHtml) {
-        listEl.insertAdjacentHTML('beforeend', chunkHtml);
-      }
-      if (offset < matching.length) {
-        requestAnimationFrame(() => appendBatch(false));
-      }
-    };
-    appendBatch(true);
-  }
+  // Auto-load next 50 cards when .tp-content scrolls near bottom
+  const onContainerScroll = () => {
+    if (myGen !== _singleTopicRenderGen) return;
+    if (renderedOffset >= activeEntries.length) return;
+    if (container.scrollTop + container.clientHeight >= container.scrollHeight - 180) {
+      appendNextPage();
+    }
+  };
+  container.addEventListener('scroll', onContainerScroll, { passive: true });
+  _singleTopicScrollCleanup = () => {
+    clearTimeout(searchDebounce);
+    container.removeEventListener('scroll', onContainerScroll);
+  };
+
+  executeTopicSearch(initialQuery);
 }
 
 function renderAllTopicsView(container, allTopics) {
+  _cleanupSingleTopicScroll();
   _singleTopicRenderGen++;
   if (allTopics.length === 0) {
     container.innerHTML = `
@@ -1096,8 +1579,53 @@ function renderAllTopicsView(container, allTopics) {
   });
 }
 
+function _highlightTopicEditorQuery(editor, rawQuery) {
+  const q = String(rawQuery || '').trim().toLowerCase();
+  if (!editor || !q) return;
+  try {
+    const nodes = [];
+    let full = '';
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      nodes.push({ node: n, start: full.length });
+      full += n.nodeValue || '';
+    }
+    if (!nodes.length) return;
+    const hay = full.toLowerCase();
+    const locate = (pos) => {
+      let lo = 0, hi = nodes.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (nodes[mid].start <= pos) lo = mid;
+        else hi = mid - 1;
+      }
+      return nodes[lo];
+    };
+    const ranges = [];
+    for (let i = hay.indexOf(q); i !== -1 && ranges.length < 200; i = hay.indexOf(q, i + q.length)) {
+      const a = locate(i);
+      const b = locate(i + q.length - 1);
+      const r = document.createRange();
+      r.setStart(a.node, i - a.start);
+      r.setEnd(b.node, i + q.length - b.start);
+      ranges.push(r);
+    }
+    if (!ranges.length) return;
+    const hasHighlightAPI = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight !== 'undefined';
+    if (hasHighlightAPI) {
+      CSS.highlights.set('panel-find-all', new Highlight(...ranges));
+      CSS.highlights.set('panel-find-cur', new Highlight(ranges[0]));
+    } else {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(ranges[0]);
+    }
+    ranges[0].startContainer?.parentElement?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  } catch {}
+}
+
 // ── 7. Openable Topic Notes Workspace ("📖 Open Topic Notes / Outside Laws") ──
-export function openTopicNotesModal(tagName) {
+export function openTopicNotesModal(tagName, highlightQuery = '') {
   const trueId = getCurTrueId();
   if (!trueId) {
     toast('Please open a PDF first');
@@ -1107,15 +1635,17 @@ export function openTopicNotesModal(tagName) {
   const modal = document.getElementById('topic-notes-modal');
   if (!modal) return;
 
-  activeNotesTopic = tagName;
-  const topic = currentTagData?.topics?.[tagName] || {
-    name: tagName,
-    color: pickTopicColor(tagName),
-    notesHtml: '',
+  const entry = getTopicNotesEntry(tagName);
+  const canonicalName = entry?.name || tagName;
+  activeNotesTopic = canonicalName;
+  const topic = currentTagData?.topics?.[canonicalName] || {
+    name: canonicalName,
+    color: entry?.color || pickTopicColor(canonicalName),
+    notesHtml: entry?.notesHtml || '',
   };
 
-  const color = topic.color || pickTopicColor(tagName);
-  const matching = [..._getAnnsForTag(tagName)];
+  const color = topic.color || pickTopicColor(canonicalName);
+  const matching = [..._getAnnsForTag(canonicalName)];
   matching.sort(compareAnnotationsReadingOrder);
 
   // Title and badge
@@ -1146,11 +1676,26 @@ export function openTopicNotesModal(tagName) {
   if (statusEl) statusEl.textContent = '✓ Saved to Cloud';
 
   modal.classList.add('open');
+
+  if (editor && highlightQuery && String(highlightQuery).trim()) {
+    requestAnimationFrame(() => _highlightTopicEditorQuery(editor, highlightQuery));
+  }
 }
 
 export function closeTopicNotesModal() {
   const modal = document.getElementById('topic-notes-modal');
   if (modal) modal.classList.remove('open');
+  if (typeof CSS !== 'undefined' && CSS.highlights) {
+    try {
+      CSS.highlights.delete('panel-find-all');
+      CSS.highlights.delete('panel-find-cur');
+    } catch {}
+  }
+  if (_topicNotesDirtyForEvent) {
+    clearTimeout(_topicChangedDebounceTimer);
+    _topicNotesDirtyForEvent = false;
+    _dispatchTagsChanged({ reason: 'topic-notes-close', tag: activeNotesTopic });
+  }
   activeNotesTopic = null;
 }
 
@@ -1229,6 +1774,16 @@ function saveTopicEditorContent() {
   currentTagData.topics[activeNotesTopic].notesHtml = html;
   currentTagData.topics[activeNotesTopic].updatedAt = Date.now();
   currentTagData.updatedAt = Date.now();
+
+  // Immediately invalidate cached topic plaintext; debounce cross-module event so typing stays 0-jank
+  _topicPlainCache.delete(_normTagKey(activeNotesTopic));
+  _topicNotesDirtyForEvent = true;
+  clearTimeout(_topicChangedDebounceTimer);
+  const editedTag = activeNotesTopic;
+  _topicChangedDebounceTimer = setTimeout(() => {
+    _topicNotesDirtyForEvent = false;
+    _dispatchTagsChanged({ reason: 'topic-notes', tag: editedTag });
+  }, 300);
 
   const trueId = getCurTrueId();
   if (trueId) {
@@ -1806,6 +2361,24 @@ function injectTagsCSS() {
       display: -webkit-box;
       -webkit-line-clamp: 3;
       -webkit-box-orient: vertical;
+    }
+    .tp-ann-note-hit {
+      font-size: 11.5px;
+      line-height: 1.4;
+      color: #d6d3cb;
+      background: rgba(255,255,255,0.04);
+      border-left: 2px solid var(--gold);
+      border-radius: 0 4px 4px 0;
+      padding: 4px 7px;
+      cursor: pointer;
+    }
+    .tp-ann-note-hit:hover {
+      background: rgba(201,168,76,0.12);
+    }
+    .tp-ann-note-hit-lbl {
+      font-weight: 600;
+      color: var(--gold);
+      margin-right: 4px;
     }
     .tp-ann-ft {
       display: flex;

@@ -1,7 +1,7 @@
 {
-    "version":  "1.26.1",
-    "build":  94,
-    "updatedAt":  "2026-11-24T09:34:37Z",
+    "version":  "1.27.0",
+    "build":  95,
+    "updatedAt":  "2026-11-24T23:58:22Z",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Improved mouse hover smoothness, instant highlight tooltip positioning, and faster large-PDF scrolling, sidebar rendering, and annotation storage."
+    "notes":  "Added tag-filtered highlight, note, case, and topic-note search across the Search and Tags panels; fixed print summary tables pagination and blank top-right headers on notes-only pages; prioritized open folder notes in Print Studio; and prevented notepad toolbar button overlap across screen widths."
 }

@@ -596,6 +596,13 @@ export async function flushNotepadSave(specificPdfId = null) {
   }
 }
 
+function _syncNotepadWidthVar(panel) {
+  const el = panel || $panel();
+  if (!el) return;
+  const w = parseInt(el.style.width, 10) || el.offsetWidth || 360;
+  document.documentElement.style.setProperty('--np-w', w + 'px');
+}
+
 // ── Open notepad for a specific PDF with atomic sequencing & cache priming ──
 export async function openNotepad(pdfId) {
   if (!pdfId) {
@@ -623,6 +630,7 @@ export async function openNotepad(pdfId) {
 
   closeOtherPanels('notepad-panel');
   panel.classList.add('open');
+  _syncNotepadWidthVar(panel);
 
   // Reset/sync save status label for the active PDF
   const lbl = $saveLbl();
@@ -830,6 +838,7 @@ export async function closeNotepad() {
   // Flush BEFORE removing .open so DOM editors are guaranteed to be read
   await flushNotepadSave();
   $panel()?.classList.remove('open');
+  document.documentElement.style.removeProperty('--np-w');
   const lbl = $saveLbl();
   if (lbl && (lbl.textContent === 'Unsaved…' || lbl.className === 'saving')) {
     lbl.textContent = '';
@@ -3684,6 +3693,7 @@ function initNotepadResizer() {
     const w = parseInt(savedWidth);
     if (w >= 260 && w <= window.innerWidth * 0.85) {
       panel.style.width = w + 'px';
+      _syncNotepadWidthVar(panel);
     }
   }
 
@@ -3711,6 +3721,7 @@ function initNotepadResizer() {
     const maxW = Math.floor(window.innerWidth * 0.85);
     const newWidth = Math.max(minW, Math.min(maxW, startWidth + deltaX));
     panel.style.width = newWidth + 'px';
+    _syncNotepadWidthVar(panel);
   });
 
   const stopResize = (e) => {
@@ -3724,6 +3735,7 @@ function initNotepadResizer() {
       handle.releasePointerCapture(e.pointerId);
     } catch {}
     safeStorageSet('notepad_width', panel.offsetWidth);
+    _syncNotepadWidthVar(panel);
   };
 
   handle.addEventListener('pointerup', stopResize);
