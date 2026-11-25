@@ -9,7 +9,7 @@ import { renderColorDots } from './colors.js';
 import { showTablePicker, handlePaste, handleCopy, insertBannerHeader, toggleGrayOut, handleEditorKeyDown, outdentLine, indentLine, buildHighlightDropdown, copyFirstSummaryTable } from './tablepicker.js';
 import { openPdfLinkModal, insertWebLink } from './pdflink.js';
 import { safeStorageGet, safeStorageSet, flushDebouncedStorageWrites } from './storage.js';
-import { notifyTabOpened, notifyTabClosedToHome, renderStudyDesk } from './goodnotes-ui.js';
+import { notifyTabOpened, notifyTabClosedToHome, renderStudyDesk, getRecentPdfsForShelf } from './goodnotes-ui.js';
 import { setupDrawListeners, renderCanvas } from './draw.js';
 import { hasOcrData, applyOcrToRenderedPage } from './ocr.js';
 
@@ -730,7 +730,7 @@ export async function closeActivePDF() {
 }
 
 // ── Open PDF from library ──
-export async function openPDFFromLibrary(pdfFile, retries = 5) {
+export async function openPDFFromLibrary(pdfFile, retries = 5, opts = {}) {
   // Flush reading position for departing PDF and lock scroll listener IMMEDIATELY
   const { flushCurrentReadingPosition, setIsJumping, parseReadPosPayload, scrollToPageAndRatio } = await import('./ui.js');
   flushCurrentReadingPosition();
@@ -758,7 +758,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
 
   S.curPDF = pdfFile;
   updateActivePDF();
-  notifyTabOpened(pdfFile, 'pdf');
+  notifyTabOpened(pdfFile, 'pdf', opts);
 
   const { closeOtherPanels } = await import('./ui.js');
   closeOtherPanels();
@@ -1040,7 +1040,9 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     renderColorDots();
 
     // Track recent PDFs
-    pushRecent(pdfFile);
+    if (!opts?.skipRecent) {
+      pushRecent(pdfFile);
+    }
 
     // Load OCR layer & Tags for current PDF in background
     import('./ocr.js').then(m => m.loadOcrForCurrentPdf?.(trueId)).catch(() => {});
@@ -1076,7 +1078,7 @@ export async function openPDFFromLibrary(pdfFile, retries = 5) {
     if (retries > 0 && !e.message?.includes('Not signed in') && !e.message?.includes('session expired') && !e.message?.includes('No Google Drive file')) {
       console.warn('PDF load failed, retrying...', e);
       await new Promise(r => setTimeout(r, 300));
-      return openPDFFromLibrary(pdfFile, retries - 1);
+      return openPDFFromLibrary(pdfFile, retries - 1, opts);
     }
     console.error(e);
     const { recordError } = await import('./ui.js');
@@ -2025,7 +2027,16 @@ export function updateActivePDF() {
 
 // ── Recent PDFs tracking ──
 function pushRecent(pdf) {
-  S.recentPDFs = [pdf, ...S.recentPDFs.filter(p => p.id !== pdf.id)].slice(0, 5);
+  const canonical = getRecentPdfsForShelf(5).map(entry => entry.pdf);
+  if (canonical.length > 0) {
+    S.recentPDFs = canonical;
+  } else if (pdf && !isPdfArchived(pdf)) {
+    const tid = String(pdf.linked_pdf_id || pdf.id);
+    S.recentPDFs = [
+      pdf,
+      ...(Array.isArray(S.recentPDFs) ? S.recentPDFs : []).filter(p => p && String(p.linked_pdf_id || p.id) !== tid),
+    ].slice(0, 5);
+  }
   renderRecentPDFs();
 }
 
@@ -2033,14 +2044,35 @@ function renderRecentPDFs() {
   const list = document.getElementById('recent-list');
   if (!list) return;
   list.innerHTML = '';
-  const visible = (Array.isArray(S.recentPDFs) ? S.recentPDFs : [])
-    .filter(item => item && !isPdfArchived(item))
-    .map(item => (typeof item === 'object' ? item : S.pdfs.find(p => String(p.id) === String(item))))
-    .filter(Boolean);
+
+  let visible = [];
+  if (Array.isArray(S.pdfs) && S.pdfs.length > 0) {
+    visible = getRecentPdfsForShelf(5).map(entry => entry.pdf);
+    S.recentPDFs = visible;
+  } else {
+    const seen = new Set();
+    for (const item of (Array.isArray(S.recentPDFs) ? S.recentPDFs : [])) {
+      const pdf = typeof item === 'object' ? item : null;
+      if (!pdf || isPdfArchived(pdf)) continue;
+      const tid = String(pdf.linked_pdf_id || pdf.id);
+      if (seen.has(tid)) continue;
+      seen.add(tid);
+      visible.push(pdf);
+      if (visible.length >= 5) break;
+    }
+  }
+
   for (const pdf of visible) {
     const item = document.createElement('div');
     item.className = 'recent-item';
-    item.innerHTML = `<span>📄</span><span class="recent-name" title="${pdf.name}">${pdf.name}</span>`;
+    const icon = document.createElement('span');
+    icon.textContent = '📄';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'recent-name';
+    nameEl.title = pdf.name || '';
+    nameEl.textContent = pdf.name || '';
+    item.appendChild(icon);
+    item.appendChild(nameEl);
     item.addEventListener('click', () => openPDFFromLibrary(pdf));
     list.appendChild(item);
   }

@@ -65,6 +65,28 @@ let _loadSeq = 0;
 
 // Active editor tab: 'highlights' | 'notes' | 'digest'
 let _activeTab = 'notes';
+// Monotonic sequence incremented on every explicit tab switch to guard async auto-selection
+let _tabSwitchSeq = 0;
+// Suppress blur-triggered dirty capture during programmatic tab layout / focus changes
+let _suppressBlurCapture = false;
+
+function _hasMeaningfulHtml(html) {
+  if (!html || typeof html !== 'string') return false;
+  const stripped = html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/[\u200B\uFEFF]/g, '')
+    .trim();
+  return stripped.length > 0 || /<img\b|<table\b/i.test(html);
+}
+
+/** Pick the initial notepad tab ('digest' or 'notes') from HTML content and digest presence hint. */
+export function pickAutoNotepadTab(notesHtml, digestHtml, hasDigestHint = false) {
+  return (!_hasMeaningfulHtml(notesHtml) && (_hasMeaningfulHtml(digestHtml) || Boolean(hasDigestHint)))
+    ? 'digest'
+    : 'notes';
+}
 let _highlightsView = safeStorageGet('la_np_hi_view_v2', 'all') === 'category' ? 'category' : 'all';
 let _showHighlightNotes = safeStorageGet('la_np_hi_notes', 'false') === 'true';
 let _hiDragState = null;
@@ -603,8 +625,23 @@ function _syncNotepadWidthVar(panel) {
   document.documentElement.style.setProperty('--np-w', w + 'px');
 }
 
+function _focusEditorAtEnd(editor) {
+  if (!editor) return;
+  try {
+    const range = document.createRange();
+    const sel   = window.getSelection();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    editor.focus();
+  } catch {
+    try { editor.focus(); } catch {}
+  }
+}
+
 // ── Open notepad for a specific PDF with atomic sequencing & cache priming ──
-export async function openNotepad(pdfId) {
+export async function openNotepad(pdfId, opts = {}) {
   if (!pdfId) {
     _domBoundPdfId = null;
     if ($notesEditor()) $notesEditor().innerHTML = '';
@@ -616,6 +653,12 @@ export async function openNotepad(pdfId) {
     return;
   }
 
+  const panel = $panel();
+  const tabSeqAtStart = _tabSwitchSeq;
+  const wasOpen = Boolean(panel && panel.classList.contains('open'));
+  const explicitTab = opts?.tab || null;
+  const shouldAutoPick = !explicitTab && !(wasOpen && _activeTab === 'highlights');
+
   // 1. Flush previous PDF notes if switching
   if (_activePdfId && _activePdfId !== pdfId) {
     await flushNotepadSave(_activePdfId);
@@ -624,12 +667,11 @@ export async function openNotepad(pdfId) {
   _activePdfId = pdfId;
   const seq = ++_loadSeq;
 
-  const panel = $panel();
   const notesEd = $notesEditor();
   const digestEd = $digestEditor();
 
   closeOtherPanels('notepad-panel');
-  panel.classList.add('open');
+  panel?.classList.add('open');
   _syncNotepadWidthVar(panel);
 
   // Reset/sync save status label for the active PDF
@@ -671,22 +713,41 @@ export async function openNotepad(pdfId) {
   if (notesEd) notesEd.innerHTML = initialContent;
   if (digestEd) digestEd.innerHTML = initialDigest;
   _domBoundPdfId = pdfId;
-  _applyNotepadTabLayout(_activeTab);
-  renderNotepadHighlights(_activeTab === 'highlights');
+  if (!_notepadCache.has(pdfId)) {
+    _notepadCache.set(pdfId, {
+      content: notesEd ? (notesEd.innerHTML ?? initialContent) : initialContent,
+      digest: digestEd ? (digestEd.innerHTML ?? initialDigest) : initialDigest,
+      dirty: false,
+      timestamp: Date.now(),
+    });
+  }
 
-  if (_activeTab !== 'highlights') {
-    const activeEd = $currentEditor();
-    if (activeEd) {
-      try {
-        const range = document.createRange();
-        const sel   = window.getSelection();
-        range.selectNodeContents(activeEd);
-        range.collapse(false);
-        sel.removeAllRanges();
-        sel.addRange(range);
-        activeEd.focus();
-      } catch {}
+  _suppressBlurCapture = true;
+  try {
+    if (_tabSwitchSeq === tabSeqAtStart) {
+      if (explicitTab) {
+        _applyNotepadTabLayout(explicitTab);
+      } else if (shouldAutoPick) {
+        const targetTab = pickAutoNotepadTab(
+          initialContent,
+          initialDigest,
+          Boolean(S.digestMap?.[truePdfId] || S.digestMap?.[pdfId])
+        );
+        _applyNotepadTabLayout(targetTab);
+      } else {
+        _applyNotepadTabLayout(_activeTab);
+      }
+    } else {
+      _applyNotepadTabLayout(_activeTab);
     }
+
+    renderNotepadHighlights(_activeTab === 'highlights');
+
+    if (_activeTab !== 'highlights') {
+      _focusEditorAtEnd($currentEditor());
+    }
+  } finally {
+    _suppressBlurCapture = false;
   }
 
   // 3. Load latest data from database
@@ -793,6 +854,26 @@ export async function openNotepad(pdfId) {
     if (notesEd) notesEd.innerHTML = finalContent;
     if (digestEd) digestEd.innerHTML = finalDigest;
     _domBoundPdfId = pdfId;
+
+    if (shouldAutoPick && _tabSwitchSeq === tabSeqAtStart) {
+      const resolvedTab = pickAutoNotepadTab(finalContent, finalDigest, false);
+      if (resolvedTab !== _activeTab) {
+        const activeEl = document.activeElement;
+        const shouldFocus = Boolean(
+          panel &&
+          (activeEl === document.body || (activeEl && panel.contains(activeEl)))
+        );
+        _suppressBlurCapture = true;
+        try {
+          _applyNotepadTabLayout(resolvedTab);
+          if (shouldFocus) {
+            _focusEditorAtEnd($currentEditor());
+          }
+        } finally {
+          _suppressBlurCapture = false;
+        }
+      }
+    }
 
     if (didMerge || pushLocal) {
       // Push the merged/recovered local notes or digest to Supabase immediately
@@ -1594,6 +1675,7 @@ function _applyNotepadTabLayout(tab) {
 
 // ── Switch between Highlights, Notes, and Digest tabs ──
 export function switchNotepadTab(tab) {
+  _tabSwitchSeq++;
   // Capture latest text from both editors into cache if dirty, but do NOT mark dirty
   // merely from clicking tabs (prevents empty tab clicks during load from overwriting cloud data).
   if (_activePdfId && _domBoundPdfId === _activePdfId) {
@@ -1618,14 +1700,19 @@ export function switchNotepadTab(tab) {
     }
   }
 
-  _applyNotepadTabLayout(tab);
+  _suppressBlurCapture = true;
+  try {
+    _applyNotepadTabLayout(tab);
 
-  if (_activeTab === 'highlights') {
-    renderNotepadHighlights(true);
-  } else if (_activeTab === 'digest') {
-    $digestEditor()?.focus();
-  } else {
-    $notesEditor()?.focus();
+    if (_activeTab === 'highlights') {
+      renderNotepadHighlights(true);
+    } else if (_activeTab === 'digest') {
+      $digestEditor()?.focus();
+    } else {
+      $notesEditor()?.focus();
+    }
+  } finally {
+    _suppressBlurCapture = false;
   }
 }
 
@@ -3528,7 +3615,7 @@ export function initNotepad() {
     ed.addEventListener('cut', () => setTimeout(captureEditorChange, 0));
     ed.addEventListener('drop', () => setTimeout(captureEditorChange, 0));
     ed.addEventListener('blur', () => {
-      captureEditorChange();
+      if (!_suppressBlurCapture) captureEditorChange();
     });
     
     ed.addEventListener('paste', handlePaste);

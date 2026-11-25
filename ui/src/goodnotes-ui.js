@@ -11,14 +11,16 @@ const THEME_KEY = 'app_ui_theme';
 const OPEN_TABS_KEY = 'gn_open_tabs_v1';
 const LEGACY_RECENT_V1 = 'gn_recent_pdf_ids_v1';
 const LEGACY_RECENT_V2 = 'gn_recent_reads_v2';
-const RECENT_READS_KEY = 'gn_recent_reads_v3';
+export const RECENT_READS_KEY = 'gn_recent_reads_v3';
+const MAX_RECENT_STORED = 12;
+const MAX_DISMISSED_TOMBSTONES = 50;
 
 export const AUTO_CLOSE_TABS_KEY = 'auto_close_tabs_10m';
 export const INACTIVE_TAB_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
-// Authoritative in-memory recent reads list so opening/dismissing works 100% of the time
-// even if localStorage is full
-let _recentEntries = null;
+// Authoritative in-memory canonical recent reads state so opening/dismissing works 100% of the time
+// even if localStorage is full: { items: [{ id, trueId, ts }], clearedAt, dismissed: { [trueId]: ts } }
+let _recentState = null;
 
 // Curated GoodNotes academic binder palette
 const BINDER_PALETTE = [
@@ -330,7 +332,7 @@ function saveTabs() {
   } catch {}
 }
 
-export function notifyTabOpened(item, type = 'pdf') {
+export function notifyTabOpened(item, type = 'pdf', opts = {}) {
   const now = Date.now();
   // Refresh lastActiveAt on previously active tab right as user switches away from it
   const prevTab = _openTabs.find(t => t.tabId === _activeTabId);
@@ -365,7 +367,7 @@ export function notifyTabOpened(item, type = 'pdf') {
   }
   saveTabs();
 
-  if (type === 'pdf') {
+  if (type === 'pdf' && !opts?.skipRecent) {
     pushRecentPdfId(item.id);
   }
   renderDocTabs();
@@ -393,7 +395,7 @@ export async function closeDocTab(tabId, e) {
   if (_activeTabId === tabId) {
     const nextTab = _openTabs[idx] || _openTabs[idx - 1] || null;
     if (nextTab) {
-      await activateDocTab(nextTab.tabId);
+      await activateDocTab(nextTab.tabId, { skipRecent: true });
       return;
     } else {
       const { closeActivePDF } = await import('./viewer.js');
@@ -405,7 +407,7 @@ export async function closeDocTab(tabId, e) {
   renderStudyDesk();
 }
 
-export async function activateDocTab(tabId) {
+export async function activateDocTab(tabId, opts = {}) {
   const now = Date.now();
   // Before switching away from previous tab, update departing tab's lastActiveAt
   const departingTab = _openTabs.find(t => t.tabId === _activeTabId);
@@ -441,7 +443,7 @@ export async function activateDocTab(tabId) {
       return;
     }
     const { openPDFFromLibrary } = await import('./viewer.js');
-    await openPDFFromLibrary(pdf);
+    await openPDFFromLibrary(pdf, 5, opts);
   } else if (tab.type === 'folder') {
     const fold = S.folders.find(f => f.id === tab.id);
     if (!fold) {
@@ -535,9 +537,164 @@ export function renderDocTabs() {
 }
 
 // ── 5. Recent Cases Persistence & Study Desk Home Screen ────────────────────
-function loadRecentEntries() {
-  if (Array.isArray(_recentEntries)) {
-    return _recentEntries;
+function resolveCanonicalTrueId(pdfIdOrObj, fallbackTrueId = null) {
+  if (pdfIdOrObj && typeof pdfIdOrObj === 'object') {
+    const id = pdfIdOrObj.linked_pdf_id || pdfIdOrObj.id;
+    return id != null ? String(id) : '';
+  }
+  const sid = pdfIdOrObj != null ? String(pdfIdOrObj) : '';
+  const pdfs = Array.isArray(S.pdfs) ? S.pdfs : [];
+  if (sid) {
+    const pdf = pdfs.find(x => String(x.id) === sid);
+    if (pdf) return String(pdf.linked_pdf_id || pdf.id);
+  }
+  if (fallbackTrueId != null && String(fallbackTrueId) !== '') {
+    const fsid = String(fallbackTrueId);
+    const pdfByFallback = pdfs.find(x => String(x.id) === fsid);
+    if (pdfByFallback) return String(pdfByFallback.linked_pdf_id || pdfByFallback.id);
+    return fsid;
+  }
+  return sid;
+}
+
+function pruneDismissed(dismissedMap) {
+  if (!dismissedMap || typeof dismissedMap !== 'object' || Array.isArray(dismissedMap)) return {};
+  const canonical = new Map();
+  for (const [k, rawTs] of Object.entries(dismissedMap)) {
+    if (!k) continue;
+    const ts = Number(rawTs);
+    if (!Number.isFinite(ts) || ts <= 0) continue;
+    const ck = resolveCanonicalTrueId(k);
+    if (!ck) continue;
+    const prev = canonical.get(ck) || 0;
+    if (ts > prev) canonical.set(ck, ts);
+  }
+  const entries = [...canonical.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_DISMISSED_TOMBSTONES);
+  const out = {};
+  for (const [k, ts] of entries) out[k] = ts;
+  return out;
+}
+
+export function normalizeRecentState(raw) {
+  let parsed = raw;
+  if (typeof parsed === 'string') {
+    const trimmed = parsed.trim();
+    if (!trimmed) return { items: [], clearedAt: 0, dismissed: {} };
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return { items: [], clearedAt: 0, dismissed: {} };
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { items: [], clearedAt: 0, dismissed: {} };
+  }
+
+  let rawItems = [];
+  let clearedAt = 0;
+  let dismissed = {};
+
+  if (Array.isArray(parsed)) {
+    rawItems = parsed;
+  } else {
+    rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+    const rawCleared = Number(parsed.clearedAt);
+    clearedAt = Number.isFinite(rawCleared) && rawCleared > 0 ? rawCleared : 0;
+    dismissed = pruneDismissed(parsed.dismissed);
+  }
+
+  const byTrueId = new Map();
+  for (const entry of rawItems) {
+    if (!entry || entry.id == null) continue;
+    const sid = String(entry.id);
+    if (!sid) continue;
+    const rawTs = Number(entry.ts);
+    const ts = Number.isFinite(rawTs) && rawTs > 0 ? rawTs : (entry.ts == null ? 1 : 0);
+    const trueId = resolveCanonicalTrueId(sid, entry.trueId);
+    if (!trueId) continue;
+    const prev = byTrueId.get(trueId);
+    if (!prev || ts > prev.ts) {
+      byTrueId.set(trueId, { id: sid, trueId, ts });
+    }
+  }
+
+  const items = [...byTrueId.values()]
+    .filter(item => item.ts > clearedAt && item.ts > (dismissed[item.trueId] || 0))
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, MAX_RECENT_STORED);
+
+  return { items, clearedAt, dismissed };
+}
+
+export function mergeRecentStates(localRaw, remoteRaw) {
+  const local = normalizeRecentState(localRaw);
+  const remote = normalizeRecentState(remoteRaw);
+
+  const clearedAt = Math.max(local.clearedAt || 0, remote.clearedAt || 0);
+
+  const combinedDismissed = {};
+  for (const [k, ts] of Object.entries(remote.dismissed || {})) {
+    const ck = resolveCanonicalTrueId(k);
+    if (ck) combinedDismissed[ck] = Math.max(combinedDismissed[ck] || 0, ts);
+  }
+  for (const [k, ts] of Object.entries(local.dismissed || {})) {
+    const ck = resolveCanonicalTrueId(k);
+    if (ck) combinedDismissed[ck] = Math.max(combinedDismissed[ck] || 0, ts);
+  }
+  const dismissed = pruneDismissed(combinedDismissed);
+
+  const byTrueId = new Map();
+  for (const entry of [...local.items, ...remote.items]) {
+    if (!entry || entry.id == null) continue;
+    const sid = String(entry.id);
+    const trueId = resolveCanonicalTrueId(sid, entry.trueId);
+    const ts = Number(entry.ts) || 0;
+    if (!trueId) continue;
+    const prev = byTrueId.get(trueId);
+    if (!prev || ts > prev.ts) {
+      byTrueId.set(trueId, { id: sid, trueId, ts });
+    }
+  }
+
+  const items = [...byTrueId.values()]
+    .filter(item => item.ts > clearedAt && item.ts > (dismissed[item.trueId] || 0))
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, MAX_RECENT_STORED);
+
+  return { items, clearedAt, dismissed };
+}
+
+function areRecentStatesEqual(a, b) {
+  if (!a || !b) return false;
+  if ((a.clearedAt || 0) !== (b.clearedAt || 0)) return false;
+  const aItems = Array.isArray(a.items) ? a.items : [];
+  const bItems = Array.isArray(b.items) ? b.items : [];
+  if (aItems.length !== bItems.length) return false;
+  for (let i = 0; i < aItems.length; i++) {
+    if (
+      aItems[i].id !== bItems[i].id ||
+      aItems[i].trueId !== bItems[i].trueId ||
+      aItems[i].ts !== bItems[i].ts
+    ) {
+      return false;
+    }
+  }
+  const aDis = a.dismissed || {};
+  const bDis = b.dismissed || {};
+  const aKeys = Object.keys(aDis);
+  const bKeys = Object.keys(bDis);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (aDis[k] !== bDis[k]) return false;
+  }
+  return true;
+}
+
+function loadRecentState() {
+  if (_recentState && typeof _recentState === 'object') {
+    return _recentState;
   }
   try {
     // Purge legacy keys that contained old fallback PDFs
@@ -546,39 +703,59 @@ function loadRecentEntries() {
 
     const rawV3 = safeStorageGet(RECENT_READS_KEY);
     if (rawV3) {
-      const parsed = JSON.parse(rawV3);
-      if (Array.isArray(parsed)) {
-        _recentEntries = parsed
-          .filter(x => x && x.id != null)
-          .map(x => ({ id: String(x.id), ts: Number(x.ts) || Date.now() }));
-        return _recentEntries;
-      }
+      _recentState = normalizeRecentState(rawV3);
+      return _recentState;
     }
   } catch {}
-  _recentEntries = [];
-  return _recentEntries;
+  _recentState = { items: [], clearedAt: 0, dismissed: {} };
+  return _recentState;
 }
 
-function saveRecentEntries(entries) {
-  const trimmed = (entries || [])
-    .filter(x => x && x.id != null)
-    .map(x => ({ id: String(x.id), ts: Number(x.ts) || Date.now() }))
-    .slice(0, 6);
-  _recentEntries = trimmed;
+function saveRecentState(state, { skipCloud = false } = {}) {
+  const normalized = normalizeRecentState(state);
+  _recentState = normalized;
   try {
-    safeStorageRemove(RECENT_READS_KEY);
-    safeStorageSet(RECENT_READS_KEY, JSON.stringify(trimmed));
-    dbSetSetting(RECENT_READS_KEY, JSON.stringify(trimmed)).catch(() => {});
+    const payload = JSON.stringify(normalized);
+    safeStorageSet(RECENT_READS_KEY, payload);
+    if (!skipCloud) {
+      dbSetSetting(RECENT_READS_KEY, payload).catch(() => {});
+    }
   } catch {}
+  return normalized;
+}
+
+function syncSidebarRecentPDFs() {
+  const recent = getRecentPdfsForShelf(5).map(entry => entry.pdf);
+  S.recentPDFs = recent;
+  import('./viewer.js').then(m => m.renderRecentPDFs?.()).catch(() => {});
 }
 
 export function pushRecentPdfId(pdfId) {
   if (!pdfId) return;
   const sid = String(pdfId);
-  const now = Date.now();
-  const entries = loadRecentEntries().filter(e => String(e.id) !== sid);
-  entries.unshift({ id: sid, ts: now });
-  saveRecentEntries(entries);
+  const trueId = resolveCanonicalTrueId(sid);
+  if (!trueId) return;
+  const current = loadRecentState();
+  const ts = Math.max(
+    Date.now(),
+    (current.clearedAt || 0) + 1,
+    (current.dismissed?.[trueId] || 0) + 1
+  );
+  const remaining = current.items.filter(
+    e => String(e.id) !== sid && resolveCanonicalTrueId(e.id, e.trueId) !== trueId
+  );
+  const nextItems = [{ id: sid, trueId, ts }, ...remaining]
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, MAX_RECENT_STORED);
+  saveRecentState({
+    items: nextItems,
+    clearedAt: current.clearedAt,
+    dismissed: current.dismissed,
+  });
+  syncSidebarRecentPDFs();
+  if (typeof document !== 'undefined' && document.getElementById('welcome-calendar')) {
+    renderStudyDesk({ skipSchedule: true });
+  }
 }
 
 export function removeRecentRead(pdfId, e) {
@@ -586,17 +763,33 @@ export function removeRecentRead(pdfId, e) {
     e.preventDefault();
     e.stopPropagation();
   }
+  if (pdfId == null) return;
   const sid = String(pdfId);
-  const pdfObj = S.pdfs.find(x => String(x.id) === sid);
-  const linkedSid = pdfObj?.linked_pdf_id ? String(pdfObj.linked_pdf_id) : null;
-  const next = loadRecentEntries().filter(
-    x => String(x.id) !== sid && (!linkedSid || String(x.id) !== linkedSid)
-  );
-  saveRecentEntries(next);
-  if (Array.isArray(S.recentPDFs)) {
-    S.recentPDFs = S.recentPDFs.filter(p => String(p.id) !== sid);
+  const trueId = resolveCanonicalTrueId(sid);
+  if (!trueId) return;
+  const current = loadRecentState();
+  let maxMatchingTs = 0;
+  const nextItems = [];
+  for (const item of current.items) {
+    const itemTrueId = resolveCanonicalTrueId(item.id, item.trueId);
+    if (String(item.id) === sid || itemTrueId === trueId) {
+      if ((item.ts || 0) > maxMatchingTs) maxMatchingTs = item.ts || 0;
+    } else {
+      nextItems.push(item);
+    }
   }
-  renderStudyDesk();
+  const dismissTs = Math.max(Date.now(), current.dismissed?.[trueId] || 0, maxMatchingTs);
+  const nextDismissed = pruneDismissed({
+    ...(current.dismissed || {}),
+    [trueId]: dismissTs,
+  });
+  saveRecentState({
+    items: nextItems,
+    clearedAt: current.clearedAt,
+    dismissed: nextDismissed,
+  });
+  syncSidebarRecentPDFs();
+  renderStudyDesk({ skipSchedule: true });
 }
 
 export function clearAllRecentReads(e) {
@@ -604,11 +797,55 @@ export function clearAllRecentReads(e) {
     e.preventDefault();
     e.stopPropagation();
   }
-  saveRecentEntries([]);
-  if (Array.isArray(S.recentPDFs)) {
-    S.recentPDFs = [];
+  const current = loadRecentState();
+  const maxItemTs = current.items.reduce((acc, item) => Math.max(acc, item.ts || 0), 0);
+  const clearedAt = Math.max(Date.now(), current.clearedAt || 0, maxItemTs);
+  saveRecentState({
+    items: [],
+    clearedAt,
+    dismissed: current.dismissed,
+  });
+  syncSidebarRecentPDFs();
+  renderStudyDesk({ skipSchedule: true });
+}
+
+export function applyRemoteRecentReads(rawVal) {
+  if (rawVal === null || rawVal === undefined || rawVal === '') return;
+  const currentLocal = loadRecentState();
+  const remote = normalizeRecentState(rawVal);
+  const merged = mergeRecentStates(currentLocal, remote);
+  const localChanged = !areRecentStatesEqual(merged, currentLocal);
+  _recentState = merged;
+  if (localChanged) {
+    try {
+      safeStorageSet(RECENT_READS_KEY, JSON.stringify(merged));
+    } catch {}
   }
-  renderStudyDesk();
+  syncSidebarRecentPDFs();
+  renderStudyDesk({ skipSchedule: true });
+}
+
+function hydrateRecentReadsFromCloud() {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  dbGetSetting(RECENT_READS_KEY).then(cloudRaw => {
+    if (cloudRaw === null || cloudRaw === undefined || cloudRaw === '') return;
+    const currentLocal = loadRecentState();
+    const remote = normalizeRecentState(cloudRaw);
+    const merged = mergeRecentStates(currentLocal, remote);
+    const localChanged = !areRecentStatesEqual(merged, currentLocal);
+    const remoteMissingLocalData = !areRecentStatesEqual(merged, remote);
+    _recentState = merged;
+    if (localChanged) {
+      try {
+        safeStorageSet(RECENT_READS_KEY, JSON.stringify(merged));
+      } catch {}
+    }
+    if (remoteMissingLocalData) {
+      dbSetSetting(RECENT_READS_KEY, JSON.stringify(merged)).catch(() => {});
+    }
+    syncSidebarRecentPDFs();
+    renderStudyDesk({ skipSchedule: true });
+  }).catch(() => {});
 }
 
 function formatRelativeTime(ts) {
@@ -629,22 +866,35 @@ function formatRelativeTime(ts) {
   }
 }
 
-function getRecentPdfsForShelf(limit = 6) {
-  const entries = [...loadRecentEntries()].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+export function getRecentPdfsForShelf(limit = 6) {
+  const state = loadRecentState();
+  const pdfs = Array.isArray(S.pdfs) ? S.pdfs : [];
+  const entries = [...state.items].sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const found = [];
+  const seenTrueIds = new Set();
+
   for (const entry of entries) {
     const sid = String(entry.id);
+    const trueId = resolveCanonicalTrueId(sid, entry.trueId);
+    if (!trueId || seenTrueIds.has(trueId)) continue;
+    if (entry.ts <= (state.clearedAt || 0) || entry.ts <= (state.dismissed?.[trueId] || 0)) continue;
+
     const p =
-      S.pdfs.find(x => String(x.id) === sid) ||
-      S.pdfs.find(x => x.linked_pdf_id && String(x.linked_pdf_id) === sid);
-    if (p && !isPdfArchived(p) && !found.some(f => String(f.pdf.id) === String(p.id))) {
-      found.push({ pdf: p, ts: entry.ts });
+      pdfs.find(x => String(x.id) === sid && !isPdfArchived(x)) ||
+      pdfs.find(x => String(x.id) === trueId && !isPdfArchived(x)) ||
+      pdfs.find(x => String(x.linked_pdf_id || x.id) === trueId && !isPdfArchived(x));
+
+    if (p) {
+      const resolvedTrueId = String(p.linked_pdf_id || p.id);
+      if (!seenTrueIds.has(resolvedTrueId)) {
+        seenTrueIds.add(trueId);
+        seenTrueIds.add(resolvedTrueId);
+        found.push({ pdf: p, ts: entry.ts });
+      }
     }
     if (found.length >= limit) break;
   }
-  if (found.length === 0 && Array.isArray(S.pdfs) && S.pdfs.length > 0) {
-    return S.pdfs.filter(p => !isPdfArchived(p)).slice(0, limit).map(p => ({ pdf: p, ts: 0 }));
-  }
+
   return found;
 }
 
@@ -798,7 +1048,16 @@ export function renderStudyDesk(options = {}) {
       grid.appendChild(card);
     });
   } else {
-    shelf.style.display = 'none';
+    shelf.style.display = 'block';
+    shelf.innerHTML = `
+      <div class="gn-shelf-hd desk__section-head">
+        <span class="desk__section-label" style="display:inline-flex;align-items:center;gap:6px;"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-book"/></svg><span>ACTIVE FOLIOS · CONTINUE STUDYING</span></span>
+      </div>
+      <div class="gn-shelf-empty" style="padding:18px 20px;border:1px dashed var(--hairline, var(--border, rgba(128,128,128,0.28)));border-radius:10px;color:var(--ink-muted, var(--muted));font-size:13px;display:flex;align-items:center;gap:10px;">
+        <svg class="icon icon-sm" aria-hidden="true" style="opacity:0.7;flex-shrink:0;"><use href="#i-note"/></svg>
+        <span>Open any PDF or case to resume studying here.</span>
+      </div>
+    `;
   }
 
   // 3. Connect Study Desk Schedule to schedule.js & Enhance Class Schedule Cards
@@ -844,9 +1103,11 @@ export function initGoodNotesUI() {
 
   applyAppTheme(getAppTheme());
   loadSavedTabs();
-  loadRecentEntries();
+  loadRecentState();
+  syncSidebarRecentPDFs();
   renderDocTabs();
   renderStudyDesk();
+  hydrateRecentReadsFromCloud();
 
   document.getElementById('btn-theme-toggle')?.addEventListener('click', (e) => cycleAppTheme(e));
   document.getElementById('skin-switch-rail')?.addEventListener('click', (e) => cycleAppTheme(e));

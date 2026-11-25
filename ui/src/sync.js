@@ -221,6 +221,21 @@ export function initRealtimeSync() {
             }
             return;
           }
+          if (key === 'gn_recent_reads_v3') {
+            if (payload.eventType === 'DELETE') return;
+            if (payload.new?.value !== undefined) {
+              import('./goodnotes-ui.js').then(m => m.applyRemoteRecentReads?.(payload.new.value)).catch(() => {});
+            } else {
+              dbGetSetting('gn_recent_reads_v3')
+                .then(v => {
+                  if (v !== null && v !== undefined) {
+                    import('./goodnotes-ui.js').then(m => m.applyRemoteRecentReads?.(v)).catch(() => {});
+                  }
+                })
+                .catch(() => {});
+            }
+            return;
+          }
           if (!S.curPDF) {
             if (key === 'gn_open_tabs_v1') {
               import('./goodnotes-ui.js').then(m => m.renderDocTabs?.()).catch(() => {});

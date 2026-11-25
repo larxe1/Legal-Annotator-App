@@ -5,6 +5,7 @@ import { S } from './state.js';
 import { driveFetchPDF } from './drive.js';
 import { renderPageInto } from './viewer.js';
 import { syncOK, toast } from './ui.js';
+import { pushRecentPdfId, notifyTabOpened } from './goodnotes-ui.js';
 
 // -- Pane B state (independent from global S) --
 export const PB = {
@@ -28,6 +29,7 @@ export async function openPDFInPaneB(pdfFile) {
   scroll.innerHTML = '<div class=spin-w><div class=spinner></div>Loading reference...</div>';
 
   _enterDualView(pdfFile.name);
+  pushRecentPdfId(pdfFile.id);
 
   const targetDriveId = pdfFile.drive_file_id || S.pdfs.find(p => p.id === pdfFile.linked_pdf_id)?.drive_file_id;
   if (!targetDriveId) {
@@ -92,6 +94,7 @@ export async function swapPanes() {
   const { redrawAllDrawings }    = await import('./draw.js');
 
   updateActivePDF();
+  notifyTabOpened(oldB_pdf, 'pdf');
   const trueId = oldB_pdf.linked_pdf_id || oldB_pdf.id;
   await notepadOnPDFChange(trueId);
 

@@ -63,6 +63,7 @@ export function updateOutboxUI() {
 function getUpsertOptions(table) {
   if (table === 'dictionary') return { onConflict: 'word' };
   if (table === 'pdf_notes') return { onConflict: 'pdf_id' };
+  if (table === 'app_settings') return { onConflict: 'key' };
   return undefined;
 }
 
