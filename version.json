@@ -1,7 +1,7 @@
 {
-    "version":  "1.28.0",
-    "build":  100,
-    "updatedAt":  "2026-11-26T06:52:40Z",
+    "version":  "1.28.1",
+    "build":  101,
+    "updatedAt":  "2026-11-26T13:07:43Z",
     "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/releases/latest/download/Legal-Annotator.exe",
-    "notes":  "Releases are now built automatically by GitHub and published on the Releases tab; the app now updates from GitHub Releases and shows the real reason if an update check fails (fixes update errors on some laptops)."
+    "notes":  "Fix Syllabus Auto-Import login race that caused persistent email sign-out and WebView2 black-screen crash when signing in."
 }

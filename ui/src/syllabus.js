@@ -111,6 +111,9 @@ let _syllabusToken = safeStorageGet('syllabusSourceToken') || null;
 let _syllabusEmail = safeStorageGet('syllabusSourceEmail') || DEFAULT_SYLLABUS_EMAIL;
 let _syllabusHasReadonly = false;
 let _syllabusRefreshTimer = null;
+let _inflightSilentRefresh = null;
+let _inflightInteractiveSignIn = null;
+let _statusVerifySeq = 0;
 
 const LEGAL_STOPWORDS = new Set([
   'people', 'philippines', 'republic', 'court', 'appeals', 'supreme', 'sandiganbayan',
@@ -139,61 +142,96 @@ function _scheduleSyllabusRefresh() {
 }
 
 async function requestSyllabusToken(silent = false, forceRefresh = false) {
-  const hintEmail = _syllabusEmail || safeStorageGet('syllabusSourceEmail') || DEFAULT_SYLLABUS_EMAIL;
-  let accessToken = null;
-
-  if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function') {
-    const resp = await window.__DESKTOP_GOOGLE_OAUTH__(
-      CLIENT_ID,
-      SYLLABUS_SCOPE,
-      silent,
-      true,
-      hintEmail,
-      forceRefresh
-    );
-    accessToken = resp?.access_token || null;
-  } else if (typeof google !== 'undefined' && google.accounts?.oauth2) {
-    accessToken = await new Promise((resolve, reject) => {
-      const client = google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SYLLABUS_SCOPE,
-        hint: hintEmail,
-        callback: resp => {
-          if (resp.error) reject(new Error(resp.error_description || resp.error));
-          else resolve(resp.access_token);
-        },
-      });
-      client.requestAccessToken({
-        prompt: silent ? '' : 'select_account',
-        hint: hintEmail,
-      });
-    });
-  } else {
-    throw new Error('Google Sign-In library not loaded');
+  if (silent) {
+    if (_inflightInteractiveSignIn) {
+      throw new Error('Interactive sign-in in progress');
+    }
+    if (_inflightSilentRefresh) {
+      return _inflightSilentRefresh;
+    }
+  } else if (_inflightInteractiveSignIn) {
+    return _inflightInteractiveSignIn;
   }
 
-  if (!accessToken) throw new Error('No access token returned');
+  const run = (async () => {
+    const hintEmail = _syllabusEmail || safeStorageGet('syllabusSourceEmail') || DEFAULT_SYLLABUS_EMAIL;
+    let accessToken = null;
 
-  let email = hintEmail;
-  try {
-    const ur = await fetchWithTimeout(
-      'https://www.googleapis.com/oauth2/v3/userinfo',
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-      12_000
-    );
-    if (ur.ok) {
-      const uinfo = await ur.json();
-      if (uinfo.email) email = uinfo.email;
+    if (typeof window !== 'undefined' && typeof window.__DESKTOP_GOOGLE_OAUTH__ !== 'function' && window.__TAURI_INTERNALS__?.invoke) {
+      try {
+        await import('./desktop-bridge.js');
+      } catch {}
     }
-  } catch {}
 
-  _syllabusToken = accessToken;
-  _syllabusEmail = email;
-  safeStorageSet('syllabusSourceToken', accessToken);
-  safeStorageSet('syllabusSourceEmail', email);
-  safeStorageSet('syllabusSourceExpiry', Date.now() + 3500_000);
-  _scheduleSyllabusRefresh();
-  return accessToken;
+    if (typeof window.__DESKTOP_GOOGLE_OAUTH__ === 'function') {
+      const resp = await window.__DESKTOP_GOOGLE_OAUTH__(
+        CLIENT_ID,
+        SYLLABUS_SCOPE,
+        silent,
+        true,
+        hintEmail,
+        forceRefresh
+      );
+      accessToken = resp?.access_token || null;
+    } else if (typeof google !== 'undefined' && google.accounts?.oauth2) {
+      accessToken = await new Promise((resolve, reject) => {
+        const client = google.accounts.oauth2.initTokenClient({
+          client_id: CLIENT_ID,
+          scope: SYLLABUS_SCOPE,
+          hint: hintEmail,
+          callback: resp => {
+            if (resp.error) reject(new Error(resp.error_description || resp.error));
+            else resolve(resp.access_token);
+          },
+        });
+        client.requestAccessToken({
+          prompt: silent ? '' : 'select_account',
+          hint: hintEmail,
+        });
+      });
+    } else {
+      throw new Error('Google Sign-In library not loaded');
+    }
+
+    if (!accessToken) throw new Error('No access token returned');
+
+    let email = hintEmail;
+    try {
+      const ur = await fetchWithTimeout(
+        'https://www.googleapis.com/oauth2/v3/userinfo',
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+        12_000
+      );
+      if (ur.ok) {
+        const uinfo = await ur.json();
+        if (uinfo.email) email = uinfo.email;
+      }
+    } catch {}
+
+    _syllabusToken = accessToken;
+    _syllabusEmail = email;
+    safeStorageSet('syllabusSourceToken', accessToken);
+    safeStorageSet('syllabusSourceEmail', email);
+    safeStorageSet('syllabusSourceExpiry', Date.now() + 3500_000);
+    _scheduleSyllabusRefresh();
+    return accessToken;
+  })();
+
+  if (silent) {
+    _inflightSilentRefresh = run;
+  } else {
+    _inflightInteractiveSignIn = run;
+  }
+
+  try {
+    return await run;
+  } finally {
+    if (silent) {
+      if (_inflightSilentRefresh === run) _inflightSilentRefresh = null;
+    } else {
+      if (_inflightInteractiveSignIn === run) _inflightInteractiveSignIn = null;
+    }
+  }
 }
 
 export async function ensureSyllabusTokenFresh(forceRefresh = false) {
@@ -208,21 +246,20 @@ export async function ensureSyllabusTokenFresh(forceRefresh = false) {
   }
 }
 
-// Warm up persistent syllabus token in background shortly after startup
-setTimeout(() => {
-  ensureSyllabusTokenFresh(false).catch(() => {});
-}, 2500);
-
 // ── Verify token scopes & email via Google tokeninfo / userinfo ──
-async function verifySourceTokenStatus() {
+async function verifySourceTokenStatus({ allowSilentRefresh = true } = {}) {
+  if (_inflightInteractiveSignIn) return;
   const statusEl = document.getElementById('syl-auth-status');
   const btnEl = document.getElementById('syl-auth-btn');
   if (!statusEl) return;
 
+  const mySeq = ++_statusVerifySeq;
+
   const exp = Number(safeStorageGet('syllabusSourceExpiry') || 0);
-  if (!_syllabusToken || (exp && Date.now() >= exp - 60_000)) {
+  if (allowSilentRefresh && (!_syllabusToken || (exp && Date.now() >= exp - 60_000))) {
     statusEl.innerHTML = `<span style="color:var(--muted);">⏳ Restoring persistent session for <strong>${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL}</strong>…</span>`;
     await ensureSyllabusTokenFresh(false);
+    if (mySeq !== _statusVerifySeq || _inflightInteractiveSignIn) return;
   }
 
   let tok = getActiveSourceToken();
@@ -235,13 +272,16 @@ async function verifySourceTokenStatus() {
 
   try {
     let r = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(tok)}`);
-    if (!r.ok) {
+    if (mySeq !== _statusVerifySeq || _inflightInteractiveSignIn) return;
+    if (!r.ok && allowSilentRefresh) {
       // Token expired early — try silent background renewal for ermataac@up.edu.ph
       statusEl.innerHTML = `<span style="color:var(--muted);">⏳ Silently renewing token for <strong>${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL}</strong>…</span>`;
       const refreshed = await ensureSyllabusTokenFresh(true);
+      if (mySeq !== _statusVerifySeq || _inflightInteractiveSignIn) return;
       if (refreshed && refreshed !== tok) {
         tok = refreshed;
         r = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(tok)}`);
+        if (mySeq !== _statusVerifySeq || _inflightInteractiveSignIn) return;
       }
     }
 
@@ -257,6 +297,7 @@ async function verifySourceTokenStatus() {
     }
 
     const info = await r.json();
+    if (mySeq !== _statusVerifySeq || _inflightInteractiveSignIn) return;
     const scopes = String(info.scope || '');
     const email = info.email || _syllabusEmail || DEFAULT_SYLLABUS_EMAIL;
     if (info.email && tok === _syllabusToken) {
@@ -273,12 +314,18 @@ async function verifySourceTokenStatus() {
       if (btnEl) btnEl.textContent = `🔑 Authorize ${email}`;
     }
   } catch {
+    if (mySeq !== _statusVerifySeq || _inflightInteractiveSignIn) return;
     statusEl.innerHTML = `<span style="color:var(--muted);">🔑 Syllabus Account: ${_syllabusEmail || DEFAULT_SYLLABUS_EMAIL}</span>`;
   }
 }
 
 // ── Sign in with a specific Gmail / UP Mail account for reading restricted syllabus links ──
 async function signInSyllabusGmail() {
+  if (_inflightInteractiveSignIn) {
+    try { await _inflightInteractiveSignIn; } catch {}
+    return;
+  }
+  ++_statusVerifySeq;
   const btnEl = document.getElementById('syl-auth-btn');
   if (btnEl) {
     btnEl.disabled = true;
@@ -286,12 +333,12 @@ async function signInSyllabusGmail() {
   }
   try {
     await requestSyllabusToken(false, true);
-    await verifySourceTokenStatus();
+    await verifySourceTokenStatus({ allowSilentRefresh: false });
     toast(`✅ Persistent syllabus account (${_syllabusEmail}) connected!`);
   } catch (err) {
     console.warn('[Syllabus] Gmail sign-in error:', err);
     toast('⚠️ Sign-in cancelled or failed: ' + (err.message || err));
-    await verifySourceTokenStatus();
+    await verifySourceTokenStatus({ allowSilentRefresh: false });
   } finally {
     if (btnEl) btnEl.disabled = false;
   }

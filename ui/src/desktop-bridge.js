@@ -24,20 +24,16 @@ function arrayBufferToBase64(buffer) {
 
 // ── Native Tauri Google (Gmail) OAuth Bridge ──────────────────────────────
 if (invoke) {
-  window.__DESKTOP_GOOGLE_OAUTH__ = async (
-    _clientId,
-    _scope,
-    silent = false,
-    forSyllabus = false,
-    loginHint = null,
-    forceRefresh = false
-  ) => {
-    const startRes = await invoke('desktop_start_google_oauth', {
+  async function runDesktopOAuth({ silent = false, forSyllabus = false, forCalendar = false, loginHint = null, forceRefresh = false }) {
+    const startArgs = {
       silent: !!silent,
       forSyllabus: !!forSyllabus,
       loginHint: loginHint ? String(loginHint) : null,
       forceRefresh: !!forceRefresh,
-    });
+    };
+    if (forCalendar) startArgs.forCalendar = true;
+
+    const startRes = await invoke('desktop_start_google_oauth', startArgs);
     if (startRes?.status === 'success' && startRes?.accessToken) {
       return { access_token: startRes.accessToken };
     }
@@ -45,16 +41,22 @@ if (invoke) {
       throw new Error('Silent refresh requires interactive login');
     }
 
-    const maxWait = silent ? 7_500 : 180_000;
+    const sessionId = typeof startRes?.sessionId === 'number' ? startRes.sessionId : null;
+    const maxWait = silent ? 11_500 : 180_000;
     const pollInterval = silent ? 200 : 300;
     const startedAt = Date.now();
     while (Date.now() - startedAt < maxWait) {
       await new Promise(r => setTimeout(r, pollInterval));
-      const poll = await invoke('desktop_poll_google_oauth', {
-        forSyllabus: !!forSyllabus,
-      });
+      const pollArgs = { forSyllabus: !!forSyllabus };
+      if (forCalendar) pollArgs.forCalendar = true;
+      if (sessionId !== null) pollArgs.sessionId = sessionId;
+
+      const poll = await invoke('desktop_poll_google_oauth', pollArgs);
       if (poll?.status === 'success' && poll?.accessToken) {
         return { access_token: poll.accessToken };
+      }
+      if (poll?.status === 'superseded') {
+        throw new Error('OAuth session superseded');
       }
       if (
         poll?.status === 'needs_interactive' ||
@@ -67,7 +69,16 @@ if (invoke) {
       }
     }
     throw new Error(silent ? 'Silent refresh timed out' : 'Google sign-in timed out');
-  };
+  }
+
+  window.__DESKTOP_GOOGLE_OAUTH__ = async (
+    _clientId,
+    _scope,
+    silent = false,
+    forSyllabus = false,
+    loginHint = null,
+    forceRefresh = false
+  ) => runDesktopOAuth({ silent, forSyllabus, forCalendar: false, loginHint, forceRefresh });
 
   window.__DESKTOP_GOOGLE_SIGNOUT__ = async (forSyllabus = false) => {
     try {
@@ -79,45 +90,7 @@ if (invoke) {
     silent = false,
     loginHint = null,
     forceRefresh = false
-  ) => {
-    const startRes = await invoke('desktop_start_google_oauth', {
-      silent: !!silent,
-      forSyllabus: false,
-      forCalendar: true,
-      loginHint: loginHint ? String(loginHint) : null,
-      forceRefresh: !!forceRefresh,
-    });
-    if (startRes?.status === 'success' && startRes?.accessToken) {
-      return { access_token: startRes.accessToken };
-    }
-    if (startRes?.status === 'needs_interactive') {
-      throw new Error('Silent refresh requires interactive login');
-    }
-
-    const maxWait = silent ? 7_500 : 180_000;
-    const pollInterval = silent ? 200 : 300;
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < maxWait) {
-      await new Promise(r => setTimeout(r, pollInterval));
-      const poll = await invoke('desktop_poll_google_oauth', {
-        forSyllabus: false,
-        forCalendar: true,
-      });
-      if (poll?.status === 'success' && poll?.accessToken) {
-        return { access_token: poll.accessToken };
-      }
-      if (
-        poll?.status === 'needs_interactive' ||
-        poll?.status === 'closed' ||
-        poll?.status === 'idle'
-      ) {
-        throw new Error(
-          silent ? 'Silent refresh requires interactive login' : 'Google sign-in window closed'
-        );
-      }
-    }
-    throw new Error(silent ? 'Silent refresh timed out' : 'Google sign-in timed out');
-  };
+  ) => runDesktopOAuth({ silent, forSyllabus: false, forCalendar: true, loginHint, forceRefresh });
 
   window.__DESKTOP_GOOGLE_CALENDAR_SIGNOUT__ = async () => {
     try {

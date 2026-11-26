@@ -14,7 +14,10 @@ use std::{
     ffi::{c_char, c_int, c_void, CString},
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -38,20 +41,122 @@ pub(crate) struct PdfiumHolder {
 
 unsafe impl Send for PdfiumHolder {}
 
+pub(crate) struct OAuthSlotState {
+    pub(crate) session_id: u64,
+    pub(crate) token: Option<String>,
+    pub(crate) status: String,
+    pub(crate) is_silent: bool,
+    pub(crate) active_window_label: Option<String>,
+    pub(crate) active_window_closed: Option<Arc<AtomicBool>>,
+}
+
+impl OAuthSlotState {
+    pub(crate) fn new(initial_tok: Option<String>) -> Self {
+        let status = if initial_tok.is_some() {
+            "success".to_string()
+        } else {
+            "idle".to_string()
+        };
+        Self {
+            session_id: 0,
+            token: initial_tok,
+            status,
+            is_silent: true,
+            active_window_label: None,
+            active_window_closed: None,
+        }
+    }
+
+    pub(crate) fn begin_session(
+        &mut self,
+        base_label: &str,
+        is_silent: bool,
+    ) -> (
+        u64,
+        String,
+        Arc<AtomicBool>,
+        Option<(String, Arc<AtomicBool>)>,
+    ) {
+        let prev = self
+            .active_window_label
+            .take()
+            .zip(self.active_window_closed.take());
+        self.session_id += 1;
+        let my_session_id = self.session_id;
+        let win_label = format!("{}-{}", base_label, my_session_id);
+        let my_closed = Arc::new(AtomicBool::new(false));
+        self.token = None;
+        self.status = "pending".into();
+        self.is_silent = is_silent;
+        self.active_window_label = Some(win_label.clone());
+        self.active_window_closed = Some(Arc::clone(&my_closed));
+        (my_session_id, win_label, my_closed, prev)
+    }
+
+    pub(crate) fn mark_needs_interactive_if_pending(&mut self, expected_sid: u64) -> bool {
+        if self.session_id == expected_sid && self.status == "pending" {
+            self.status = "needs_interactive".into();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn mark_closed_if_current(&mut self, expected_sid: u64) {
+        if self.session_id == expected_sid {
+            self.status = "closed".into();
+            self.active_window_label = None;
+            self.active_window_closed = None;
+        }
+    }
+
+    pub(crate) fn poll_response(&self, req_sid: Option<u64>) -> OAuthPollResponse {
+        let cur_sid = self.session_id;
+        if let Some(req) = req_sid {
+            if req != cur_sid {
+                return OAuthPollResponse {
+                    status: "superseded".into(),
+                    access_token: None,
+                    session_id: Some(cur_sid),
+                };
+            }
+        }
+        if let Some(tok) = self.token.clone() {
+            return OAuthPollResponse {
+                status: "success".into(),
+                access_token: Some(tok),
+                session_id: Some(cur_sid),
+            };
+        }
+        OAuthPollResponse {
+            status: self.status.clone(),
+            access_token: None,
+            session_id: Some(cur_sid),
+        }
+    }
+
+    pub(crate) fn clear_session(&mut self) -> Option<(String, Arc<AtomicBool>)> {
+        self.session_id += 1;
+        self.token = None;
+        self.status = "idle".into();
+        self.is_silent = true;
+        self.active_window_label
+            .take()
+            .zip(self.active_window_closed.take())
+    }
+}
+
 pub(crate) struct AppState {
     pub(crate) pdfium: Mutex<PdfiumHolder>,
     pub(crate) sqlite_path: PathBuf,
     pub(crate) pdf_cache_dir: PathBuf,
     pub(crate) page_vault_dir: PathBuf,
     pub(crate) oauth_path: PathBuf,
-    pub(crate) oauth_token: Arc<Mutex<Option<String>>>,
-    pub(crate) oauth_status: Arc<Mutex<String>>,
+    pub(crate) oauth_slot: Arc<Mutex<OAuthSlotState>>,
     pub(crate) syllabus_oauth_path: PathBuf,
-    pub(crate) syllabus_oauth_token: Arc<Mutex<Option<String>>>,
-    pub(crate) syllabus_oauth_status: Arc<Mutex<String>>,
+    pub(crate) syllabus_oauth_slot: Arc<Mutex<OAuthSlotState>>,
     pub(crate) calendar_oauth_path: PathBuf,
-    pub(crate) calendar_oauth_token: Arc<Mutex<Option<String>>>,
-    pub(crate) calendar_oauth_status: Arc<Mutex<String>>,
+    pub(crate) calendar_oauth_slot: Arc<Mutex<OAuthSlotState>>,
 }
 
 #[derive(Serialize)]
@@ -59,6 +164,8 @@ struct OAuthPollResponse {
     status: String,
     #[serde(rename = "accessToken")]
     access_token: Option<String>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -1014,7 +1121,7 @@ fn percent_decode_simple(s: &str) -> String {
 
 fn extract_ya29_token(s: &str) -> Option<String> {
     let decoded = percent_decode_simple(s);
-    for candidate in [s, decoded.as_str()] {
+    for candidate in [decoded.as_str(), s] {
         if let Some(idx) = candidate.find("ya29.") {
             let rest = &candidate[idx..];
             let token: String = rest
@@ -1099,8 +1206,8 @@ const OAUTH_INIT_SCRIPT: &str = r#"
   }
 
   function reportError(err) {
-    if (window.__TAURI_TOKEN_SENT__) return;
-    window.__TAURI_TOKEN_SENT__ = true;
+    if (window.__TAURI_TOKEN_SENT__ || window.__TAURI_ERROR_SENT__) return;
+    window.__TAURI_ERROR_SENT__ = true;
     try {
       window.location.replace('http://127.0.0.1:19876/__tauri_oauth_error?error=' + encodeURIComponent(String(err || 'oauth_error')));
     } catch (e) {}
@@ -1126,11 +1233,12 @@ const OAUTH_INIT_SCRIPT: &str = r#"
         return true;
       }
       if (
-        s.indexOf('interaction_required') !== -1 ||
-        s.indexOf('login_required') !== -1 ||
-        s.indexOf('consent_required') !== -1 ||
-        s.indexOf('immediate_failed') !== -1 ||
-        s.indexOf('account_selection_required') !== -1
+        window.__TAURI_OAUTH_SILENT__ === true &&
+        (s.indexOf('interaction_required') !== -1 ||
+          s.indexOf('login_required') !== -1 ||
+          s.indexOf('consent_required') !== -1 ||
+          s.indexOf('immediate_failed') !== -1 ||
+          s.indexOf('account_selection_required') !== -1)
       ) {
         reportError('needs_interactive');
         return true;
@@ -1179,6 +1287,70 @@ const OAUTH_INIT_SCRIPT: &str = r#"
 })();
 "#;
 
+fn claim_close_flag(closed_flag: &AtomicBool) -> bool {
+    !closed_flag.swap(true, Ordering::SeqCst)
+}
+
+fn close_oauth_window_once(
+    app: &tauri::AppHandle,
+    win_label: &str,
+    closed_flag: &Arc<AtomicBool>,
+) {
+    if !claim_close_flag(closed_flag) {
+        return;
+    }
+    let app_handle = app.clone();
+    let lbl = win_label.to_string();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(w) = app_handle.get_webview_window(&lbl) {
+            let _ = w.hide();
+            let _ = w.close();
+        }
+    });
+}
+
+fn select_oauth_slot<'a>(
+    state: &'a AppState,
+    for_syllabus: Option<bool>,
+    for_calendar: Option<bool>,
+) -> (
+    &'a PathBuf,
+    &'a Arc<Mutex<OAuthSlotState>>,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+) {
+    if for_calendar.unwrap_or(false) {
+        (
+            &state.calendar_oauth_path,
+            &state.calendar_oauth_slot,
+            "ec.mataac@gmail.com",
+            "google-auth-calendar",
+            "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.readonly%20email%20profile",
+            "Sign in with Google Calendar — Legal Annotator",
+        )
+    } else if for_syllabus.unwrap_or(false) {
+        (
+            &state.syllabus_oauth_path,
+            &state.syllabus_oauth_slot,
+            "ermataac@up.edu.ph",
+            "google-auth-syllabus",
+            "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile",
+            "Sign in with UP Mail / Gmail for Syllabus Links — Legal Annotator",
+        )
+    } else {
+        (
+            &state.oauth_path,
+            &state.oauth_slot,
+            "ec.mataac@gmail.com",
+            "google-auth",
+            "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile",
+            "Sign in with Google (Database Drive) — Legal Annotator",
+        )
+    }
+}
+
 #[tauri::command]
 async fn desktop_start_google_oauth(
     app: tauri::AppHandle,
@@ -1189,77 +1361,76 @@ async fn desktop_start_google_oauth(
     login_hint: Option<String>,
     force_refresh: Option<bool>,
 ) -> Result<OAuthPollResponse, String> {
-    let is_syllabus = for_syllabus.unwrap_or(false);
-    let is_calendar = for_calendar.unwrap_or(false);
     let is_silent = silent.unwrap_or(false);
     let is_force = force_refresh.unwrap_or(false);
+    let (target_path, slot_ref, default_email, base_label, oauth_scope, win_title) =
+        select_oauth_slot(&state, for_syllabus, for_calendar);
+    let target_path = target_path.clone();
+    let target_slot_arc = Arc::clone(slot_ref);
 
-    let (
-        target_path,
-        target_token_arc,
-        target_status_arc,
-        default_email,
-        win_label,
-        oauth_scope,
-        win_title,
-    ) = if is_calendar {
-        (
-            state.calendar_oauth_path.clone(),
-            Arc::clone(&state.calendar_oauth_token),
-            Arc::clone(&state.calendar_oauth_status),
-            "ec.mataac@gmail.com",
-            "google-auth-calendar",
-            "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.readonly%20email%20profile",
-            "Sign in with Google Calendar — Legal Annotator",
-        )
-    } else if is_syllabus {
-        (
-            state.syllabus_oauth_path.clone(),
-            Arc::clone(&state.syllabus_oauth_token),
-            Arc::clone(&state.syllabus_oauth_status),
-            "ermataac@up.edu.ph",
-            "google-auth-syllabus",
-            "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile",
-            "Sign in with UP Mail / Gmail for Syllabus Links — Legal Annotator",
-        )
-    } else {
-        (
-            state.oauth_path.clone(),
-            Arc::clone(&state.oauth_token),
-            Arc::clone(&state.oauth_status),
-            "ec.mataac@gmail.com",
-            "google-auth",
-            "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly%20email%20profile",
-            "Sign in with Google (Database Drive) — Legal Annotator",
-        )
-    };
+    // Step 1: Active interactive protection first
+    let active_interactive = target_slot_arc.lock().ok().and_then(|slot| {
+        if !slot.is_silent && slot.status == "pending" {
+            slot.active_window_label
+                .clone()
+                .map(|lbl| (lbl, slot.session_id))
+        } else {
+            None
+        }
+    });
+    if let Some((lbl, active_sid)) = active_interactive {
+        if app.get_webview_window(&lbl).is_some() {
+            if is_silent {
+                return Ok(OAuthPollResponse {
+                    status: "needs_interactive".into(),
+                    access_token: None,
+                    session_id: None,
+                });
+            } else {
+                let app_focus = app.clone();
+                let lbl_focus = lbl.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(w) = app_focus.get_webview_window(&lbl_focus) {
+                        let _ = w.unminimize();
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                });
+                return Ok(OAuthPollResponse {
+                    status: "pending".into(),
+                    access_token: None,
+                    session_id: Some(active_sid),
+                });
+            }
+        }
+    }
 
-    // 1. If silent and not forced, return cached token from disk immediately if <52 mins old
+    // Step 2: If silent and not forced, return cached token from disk immediately if <52 mins old
     if is_silent && !is_force {
         if let Some(saved) = load_saved_oauth_token(&target_path) {
-            if let Ok(mut g) = target_token_arc.lock() {
-                *g = Some(saved.clone());
-            }
-            if let Ok(mut st) = target_status_arc.lock() {
-                *st = "success".into();
+            if let Ok(mut slot) = target_slot_arc.lock() {
+                slot.token = Some(saved.clone());
+                slot.status = "success".into();
             }
             return Ok(OAuthPollResponse {
                 status: "success".into(),
                 access_token: Some(saved),
+                session_id: None,
             });
         }
     }
 
-    if let Ok(mut g) = target_token_arc.lock() {
-        *g = None;
-    }
-    if let Ok(mut st) = target_status_arc.lock() {
-        *st = "pending".into();
-    }
+    // Step 3: Fresh unique-labeled session
+    let (my_session_id, win_label, my_closed, prev_window) = {
+        let mut slot = target_slot_arc
+            .lock()
+            .map_err(|_| "OAuth slot lock poisoned".to_string())?;
+        slot.begin_session(base_label, is_silent)
+    };
 
-    if let Some(existing) = app.get_webview_window(win_label) {
-        let _ = existing.destroy();
-        std::thread::sleep(std::time::Duration::from_millis(60));
+    // Step 4: Gracefully close any previous window outside lock (no .destroy(), no sleep)
+    if let Some((prev_lbl, prev_closed)) = prev_window {
+        close_oauth_window_once(&app, &prev_lbl, &prev_closed);
     }
 
     let hint_email = login_hint
@@ -1281,39 +1452,45 @@ async fn desktop_start_google_oauth(
     );
     let parsed_url = tauri::Url::parse(&auth_url_str).map_err(|e| e.to_string())?;
 
-    let token_arc = Arc::clone(&target_token_arc);
-    let status_arc = Arc::clone(&target_status_arc);
+    let init_script = format!(
+        "window.__TAURI_OAUTH_SILENT__ = {};\n{}",
+        if is_silent { "true" } else { "false" },
+        OAUTH_INIT_SCRIPT
+    );
+
+    let slot_nav = Arc::clone(&target_slot_arc);
     let oauth_path = target_path.clone();
     let app_for_nav = app.clone();
-    let win_label_nav = win_label.to_string();
+    let win_label_nav = win_label.clone();
+    let closed_nav = Arc::clone(&my_closed);
     let hint_for_save = hint_email.clone();
 
-    let mut builder = WebviewWindowBuilder::new(&app, win_label, WebviewUrl::External(parsed_url))
+    // Step 5: Build unique-labeled WebviewWindow
+    let mut builder = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::External(parsed_url))
         .title(win_title)
         .inner_size(520.0, 680.0)
         .center()
         .visible(!is_silent)
         .focused(!is_silent)
         .skip_taskbar(is_silent)
-        .initialization_script(OAUTH_INIT_SCRIPT);
+        .initialization_script(&init_script);
 
     builder = builder.on_navigation(move |url| {
         let url_str = url.as_str();
         if let Some(tok) = extract_ya29_token(url_str) {
-            save_oauth_token(&oauth_path, &tok, Some(&hint_for_save));
-            if let Ok(mut g) = token_arc.lock() {
-                *g = Some(tok);
-            }
-            if let Ok(mut st) = status_arc.lock() {
-                *st = "success".into();
+            if let Ok(mut slot) = slot_nav.lock() {
+                if slot.session_id == my_session_id {
+                    save_oauth_token(&oauth_path, &tok, Some(&hint_for_save));
+                    slot.token = Some(tok);
+                    slot.status = "success".into();
+                }
             }
             let app_clone = app_for_nav.clone();
             let lbl = win_label_nav.clone();
+            let closed_clone = Arc::clone(&closed_nav);
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(80));
-                if let Some(w) = app_clone.get_webview_window(&lbl) {
-                    let _ = w.close();
-                }
+                close_oauth_window_once(&app_clone, &lbl, &closed_clone);
             });
             return false;
         }
@@ -1323,16 +1500,15 @@ async fn desktop_start_google_oauth(
                 || url_str.contains("ServiceLogin")
                 || url_str.contains("AccountChooser"))
         {
-            if let Ok(mut st) = status_arc.lock() {
-                *st = "needs_interactive".into();
+            if let Ok(mut slot) = slot_nav.lock() {
+                slot.mark_needs_interactive_if_pending(my_session_id);
             }
             let app_clone = app_for_nav.clone();
             let lbl = win_label_nav.clone();
+            let closed_clone = Arc::clone(&closed_nav);
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                if let Some(w) = app_clone.get_webview_window(&lbl) {
-                    let _ = w.close();
-                }
+                close_oauth_window_once(&app_clone, &lbl, &closed_clone);
             });
             return false;
         }
@@ -1344,27 +1520,29 @@ async fn desktop_start_google_oauth(
         true
     });
 
-    builder.build().map_err(|e| e.to_string())?;
+    // Step 6: Handle build error cleanly
+    if let Err(e) = builder.build() {
+        if let Ok(mut slot) = target_slot_arc.lock() {
+            slot.mark_closed_if_current(my_session_id);
+        }
+        return Err(e.to_string());
+    }
 
-    // Safety timeout for hidden silent refresh window so it never lingers if offline or blocked
+    // Step 7: Safety timeout for hidden silent refresh window
     if is_silent {
-        let status_timeout_arc = Arc::clone(&target_status_arc);
+        let slot_timeout = Arc::clone(&target_slot_arc);
         let app_timeout = app.clone();
-        let lbl_timeout = win_label.to_string();
+        let lbl_timeout = win_label.clone();
+        let closed_timeout = Arc::clone(&my_closed);
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(6500));
-            let still_pending = status_timeout_arc
+            std::thread::sleep(std::time::Duration::from_millis(10_000));
+            let timed_out = slot_timeout
                 .lock()
                 .ok()
-                .map(|s| s.as_str() == "pending")
+                .map(|mut slot| slot.mark_needs_interactive_if_pending(my_session_id))
                 .unwrap_or(false);
-            if still_pending {
-                if let Ok(mut st) = status_timeout_arc.lock() {
-                    *st = "needs_interactive".into();
-                }
-                if let Some(w) = app_timeout.get_webview_window(&lbl_timeout) {
-                    let _ = w.close();
-                }
+            if timed_out {
+                close_oauth_window_once(&app_timeout, &lbl_timeout, &closed_timeout);
             }
         });
     }
@@ -1372,6 +1550,7 @@ async fn desktop_start_google_oauth(
     Ok(OAuthPollResponse {
         status: "pending".into(),
         access_token: None,
+        session_id: Some(my_session_id),
     })
 }
 
@@ -1381,86 +1560,70 @@ async fn desktop_poll_google_oauth(
     state: tauri::State<'_, AppState>,
     for_syllabus: Option<bool>,
     for_calendar: Option<bool>,
+    session_id: Option<u64>,
 ) -> Result<OAuthPollResponse, String> {
-    let is_syllabus = for_syllabus.unwrap_or(false);
-    let is_calendar = for_calendar.unwrap_or(false);
-    let (target_token_arc, target_status_arc, win_label) = if is_calendar {
-        (
-            &state.calendar_oauth_token,
-            &state.calendar_oauth_status,
-            "google-auth-calendar",
-        )
-    } else if is_syllabus {
-        (
-            &state.syllabus_oauth_token,
-            &state.syllabus_oauth_status,
-            "google-auth-syllabus",
-        )
-    } else {
-        (&state.oauth_token, &state.oauth_status, "google-auth")
+    let (_, slot_ref, _, _, _, _) = select_oauth_slot(&state, for_syllabus, for_calendar);
+
+    let (resp, close_info, pending_check) = {
+        let slot = slot_ref
+            .lock()
+            .map_err(|_| "OAuth slot lock poisoned".to_string())?;
+        let resp = slot.poll_response(session_id);
+        let close_info = if resp.status == "success" {
+            slot.active_window_label
+                .clone()
+                .zip(slot.active_window_closed.clone())
+        } else {
+            None
+        };
+        let pending_check = if resp.status == "pending" {
+            slot.active_window_label
+                .clone()
+                .map(|lbl| (slot.session_id, lbl))
+        } else {
+            None
+        };
+        (resp, close_info, pending_check)
     };
 
-    let tok_opt = target_token_arc.lock().ok().and_then(|g| g.clone());
-    if let Some(tok) = tok_opt {
-        if let Some(w) = app.get_webview_window(win_label) {
-            let _ = w.close();
-        }
-        return Ok(OAuthPollResponse {
-            status: "success".into(),
-            access_token: Some(tok),
-        });
+    if let Some((lbl, flag)) = close_info {
+        close_oauth_window_once(&app, &lbl, &flag);
+        return Ok(resp);
     }
 
-    let mut status = target_status_arc
-        .lock()
-        .ok()
-        .map(|g| g.clone())
-        .unwrap_or_else(|| "idle".into());
-
-    if status == "pending" && app.get_webview_window(win_label).is_none() {
-        status = "closed".into();
-        if let Ok(mut st) = target_status_arc.lock() {
-            *st = "closed".into();
+    if let Some((cur_sid, lbl)) = pending_check {
+        if app.get_webview_window(&lbl).is_none() {
+            if let Ok(mut slot) = slot_ref.lock() {
+                if slot.session_id == cur_sid && slot.status == "pending" {
+                    slot.status = "closed".into();
+                }
+                return Ok(slot.poll_response(session_id));
+            }
         }
     }
 
-    Ok(OAuthPollResponse {
-        status,
-        access_token: None,
-    })
+    Ok(resp)
 }
 
 #[tauri::command]
 async fn desktop_clear_google_oauth(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     for_syllabus: Option<bool>,
     for_calendar: Option<bool>,
 ) -> Result<bool, String> {
-    if for_calendar.unwrap_or(false) {
-        if let Ok(mut g) = state.calendar_oauth_token.lock() {
-            *g = None;
-        }
-        if let Ok(mut st) = state.calendar_oauth_status.lock() {
-            *st = "idle".into();
-        }
-        let _ = fs::remove_file(&state.calendar_oauth_path);
-    } else if for_syllabus.unwrap_or(false) {
-        if let Ok(mut g) = state.syllabus_oauth_token.lock() {
-            *g = None;
-        }
-        if let Ok(mut st) = state.syllabus_oauth_status.lock() {
-            *st = "idle".into();
-        }
-        let _ = fs::remove_file(&state.syllabus_oauth_path);
-    } else {
-        if let Ok(mut g) = state.oauth_token.lock() {
-            *g = None;
-        }
-        if let Ok(mut st) = state.oauth_status.lock() {
-            *st = "idle".into();
-        }
-        let _ = fs::remove_file(&state.oauth_path);
+    let (target_path, slot_ref, _, _, _, _) =
+        select_oauth_slot(&state, for_syllabus, for_calendar);
+    let prev_window = {
+        let mut slot = slot_ref
+            .lock()
+            .map_err(|_| "OAuth slot lock poisoned".to_string())?;
+        slot.clear_session()
+    };
+    if let Some((prev_lbl, prev_closed)) = prev_window {
+        close_oauth_window_once(&app, &prev_lbl, &prev_closed);
     }
+    let _ = fs::remove_file(target_path);
     Ok(true)
 }
 
@@ -5144,25 +5307,8 @@ fn main() {
     let _ = init_sqlite_mirror(&sqlite_path);
 
     let initial_tok = load_saved_oauth_token(&oauth_path);
-    let initial_status = if initial_tok.is_some() {
-        "success".to_string()
-    } else {
-        "idle".to_string()
-    };
-
     let initial_syl_tok = load_saved_oauth_token(&syllabus_oauth_path);
-    let initial_syl_status = if initial_syl_tok.is_some() {
-        "success".to_string()
-    } else {
-        "idle".to_string()
-    };
-
     let initial_cal_tok = load_saved_oauth_token(&calendar_oauth_path);
-    let initial_cal_status = if initial_cal_tok.is_some() {
-        "success".to_string()
-    } else {
-        "idle".to_string()
-    };
 
     let app_state = AppState {
         pdfium: Mutex::new(PdfiumHolder::new(&data_dir)),
@@ -5170,14 +5316,11 @@ fn main() {
         pdf_cache_dir,
         page_vault_dir,
         oauth_path,
-        oauth_token: Arc::new(Mutex::new(initial_tok)),
-        oauth_status: Arc::new(Mutex::new(initial_status)),
+        oauth_slot: Arc::new(Mutex::new(OAuthSlotState::new(initial_tok))),
         syllabus_oauth_path,
-        syllabus_oauth_token: Arc::new(Mutex::new(initial_syl_tok)),
-        syllabus_oauth_status: Arc::new(Mutex::new(initial_syl_status)),
+        syllabus_oauth_slot: Arc::new(Mutex::new(OAuthSlotState::new(initial_syl_tok))),
         calendar_oauth_path,
-        calendar_oauth_token: Arc::new(Mutex::new(initial_cal_tok)),
-        calendar_oauth_status: Arc::new(Mutex::new(initial_cal_status)),
+        calendar_oauth_slot: Arc::new(Mutex::new(OAuthSlotState::new(initial_cal_tok))),
     };
 
     tauri::Builder::default()
@@ -5260,4 +5403,84 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Legal Annotator Desktop");
+}
+
+#[cfg(test)]
+mod oauth_tests {
+    use super::*;
+
+    #[test]
+    fn slot_generation_bump_and_superseded_detection() {
+        let mut slot = OAuthSlotState::new(None);
+        assert_eq!(slot.status, "idle");
+        assert_eq!(slot.session_id, 0);
+
+        let (sid1, lbl1, _flag1, prev1) = slot.begin_session("google-auth-syllabus", true);
+        assert_eq!(sid1, 1);
+        assert_eq!(lbl1, "google-auth-syllabus-1");
+        assert!(prev1.is_none());
+        assert_eq!(slot.poll_response(Some(sid1)).status, "pending");
+
+        let (sid2, lbl2, _flag2, prev2) = slot.begin_session("google-auth-syllabus", false);
+        assert_eq!(sid2, 2);
+        assert_eq!(lbl2, "google-auth-syllabus-2");
+        assert_eq!(prev2.map(|(l, _)| l), Some("google-auth-syllabus-1".to_string()));
+
+        let stale_poll = slot.poll_response(Some(sid1));
+        assert_eq!(stale_poll.status, "superseded");
+        assert_eq!(stale_poll.access_token, None);
+        assert_eq!(stale_poll.session_id, Some(2));
+
+        let current_poll = slot.poll_response(Some(sid2));
+        assert_eq!(current_poll.status, "pending");
+        assert_eq!(current_poll.session_id, Some(2));
+
+        let prev3 = slot.clear_session();
+        assert_eq!(prev3.map(|(l, _)| l), Some("google-auth-syllabus-2".to_string()));
+        assert_eq!(slot.session_id, 3);
+        assert_eq!(slot.status, "idle");
+        assert_eq!(slot.poll_response(Some(sid2)).status, "superseded");
+    }
+
+    #[test]
+    fn stale_silent_timeout_ignored_when_newer_interactive_started() {
+        let mut slot = OAuthSlotState::new(None);
+        let (silent_sid, _, _, _) = slot.begin_session("google-auth-syllabus", true);
+        let (interactive_sid, _, _, _) = slot.begin_session("google-auth-syllabus", false);
+
+        assert!(!slot.mark_needs_interactive_if_pending(silent_sid));
+        assert_eq!(slot.status, "pending");
+        assert_eq!(slot.session_id, interactive_sid);
+
+        assert!(slot.mark_needs_interactive_if_pending(interactive_sid));
+        assert_eq!(slot.status, "needs_interactive");
+        assert!(!slot.mark_needs_interactive_if_pending(interactive_sid));
+    }
+
+    #[test]
+    fn single_shot_close_guard_fires_only_once() {
+        let flag = Arc::new(AtomicBool::new(false));
+        assert!(claim_close_flag(&flag));
+        assert!(!claim_close_flag(&flag));
+        assert!(!claim_close_flag(&flag));
+    }
+
+    #[test]
+    fn extract_ya29_token_handles_urls_hashes_and_encoding() {
+        let tok = "ya29.a0AfB_byC1234567890-xyz_token";
+        assert_eq!(
+            extract_ya29_token(&format!("http://127.0.0.1:19876/__tauri_oauth?token={tok}")).as_deref(),
+            Some(tok)
+        );
+        assert_eq!(
+            extract_ya29_token(&format!("storagerelay://https/notetaking-app.pages.dev?id=auth123456#access_token={tok}&token_type=Bearer")).as_deref(),
+            Some(tok)
+        );
+        assert_eq!(
+            extract_ya29_token("http://127.0.0.1:19876/__tauri_oauth?token=ya29.a0AfB_byC1234567890%2Dxyz_token").as_deref(),
+            Some(tok)
+        );
+        assert_eq!(extract_ya29_token("https://accounts.google.com/ServiceLogin?error=access_denied"), None);
+        assert_eq!(extract_ya29_token("token=ya29.short"), None);
+    }
 }
