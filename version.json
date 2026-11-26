@@ -1,7 +1,7 @@
 {
-    "version":  "1.27.4",
-    "build":  99,
-    "updatedAt":  "2026-11-25T13:34:29Z",
-    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe",
-    "notes":  "Fixed Syllabus Auto-Import hanging on Saving by adding IndexedDB transaction abort/timeout guards, preventing background folder permission prompts during cache writes, bounding cache and library registration timeouts, and allowing Cancel/Close to dismiss the import modal immediately."
+    "version":  "1.28.0",
+    "build":  100,
+    "updatedAt":  "2026-11-26T06:52:40Z",
+    "downloadUrl":  "https://github.com/larxe1/Legal-Annotator-App/releases/latest/download/Legal-Annotator.exe",
+    "notes":  "Releases are now built automatically by GitHub and published on the Releases tab; the app now updates from GitHub Releases and shows the real reason if an update check fails (fixes update errors on some laptops)."
 }

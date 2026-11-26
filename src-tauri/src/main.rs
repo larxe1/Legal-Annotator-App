@@ -4758,7 +4758,7 @@ async fn desktop_sqlite_load_outbox(state: tauri::State<'_, AppState>) -> Result
 
 const EMBEDDED_VERSION_JSON: &str = include_str!("../../version.json");
 const UPDATE_REPO: &str = "larxe1/Legal-Annotator-App";
-const UPDATE_BRANCH: &str = "main";
+const RELEASE_ASSET_EXE: &str = "Legal-Annotator.exe";
 const UPDATE_USER_AGENT: &str = "LegalAnnotatorDesktop-Updater";
 
 /// Runs Windows' built-in curl.exe silently (CREATE_NO_WINDOW — never shows a console).
@@ -4779,6 +4779,10 @@ fn run_curl(args: &[&str]) -> Result<std::process::Output, String> {
     };
     let mut cmd = std::process::Command::new(&curl);
     cmd.args(["-A", UPDATE_USER_AGENT]);
+    // Laptops behind antivirus/proxies often can't reach Windows' certificate-revocation
+    // servers, which makes curl fail with CRYPT_E_NO_REVOCATION_CHECK. TLS is still verified.
+    #[cfg(target_os = "windows")]
+    cmd.arg("--ssl-no-revoke");
     cmd.args(args);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
@@ -4797,30 +4801,6 @@ fn curl_err(output: &std::process::Output) -> String {
 
 fn parse_version_json(s: &str) -> Option<serde_json::Value> {
     serde_json::from_str(s.trim_start_matches('\u{feff}')).ok()
-}
-
-/// SHA of the newest commit on the release branch. Downloading files pinned to this
-/// exact commit means GitHub's CDN can never hand us a stale (older) copy.
-fn latest_release_sha() -> Option<String> {
-    let url = format!("https://api.github.com/repos/{UPDATE_REPO}/commits/{UPDATE_BRANCH}");
-    let out = run_curl(&[
-        "-fsSL",
-        "--max-time",
-        "10",
-        "-H",
-        "Accept: application/vnd.github.sha",
-        &url,
-    ])
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(sha)
-    } else {
-        None
-    }
 }
 
 /// All numbers N found as `"build": N` inside a binary (the exe embeds its version.json).
@@ -4869,53 +4849,30 @@ async fn desktop_check_github_update() -> Result<serde_json::Value, String> {
         .to_string();
 
     let mut remote: Option<serde_json::Value> = None;
-    let mut download_url = String::new();
     let mut last_err = String::new();
 
-    // 1) Preferred: files pinned to the exact newest commit (never stale).
-    if let Some(sha) = latest_release_sha() {
-        let url = format!("https://raw.githubusercontent.com/{UPDATE_REPO}/{sha}/version.json");
-        match run_curl(&["-fsSL", "--max-time", "15", "--retry", "2", &url]) {
-            Ok(out) if out.status.success() => {
-                if let Some(v) = parse_version_json(&String::from_utf8_lossy(&out.stdout)) {
-                    remote = Some(v);
-                    download_url = format!(
-                        "https://raw.githubusercontent.com/{UPDATE_REPO}/{sha}/Legal%20Annotator.exe"
-                    );
-                }
+    let url = format!("https://github.com/{UPDATE_REPO}/releases/latest/download/version.json");
+    match run_curl(&[
+        "-fsSL",
+        "--max-time",
+        "20",
+        "--retry",
+        "2",
+        "--retry-delay",
+        "2",
+        &url,
+    ]) {
+        Ok(out) if out.status.success() => {
+            match std::str::from_utf8(&out.stdout)
+                .ok()
+                .and_then(parse_version_json)
+            {
+                Some(v) => remote = Some(v),
+                None => last_err = "GitHub returned an unreadable version.json".to_string(),
             }
-            Ok(out) => last_err = curl_err(&out),
-            Err(e) => last_err = e,
         }
-    }
-
-    // 2) Fallback: branch URL (can lag a few minutes behind right after publishing).
-    if remote.is_none() {
-        let url = format!(
-            "https://raw.githubusercontent.com/{UPDATE_REPO}/{UPDATE_BRANCH}/version.json?t={}",
-            now_ms()
-        );
-        match run_curl(&[
-            "-fsSL",
-            "--max-time",
-            "15",
-            "--retry",
-            "2",
-            "-H",
-            "Cache-Control: no-cache",
-            "-H",
-            "Pragma: no-cache",
-            &url,
-        ]) {
-            Ok(out) if out.status.success() => {
-                match parse_version_json(&String::from_utf8_lossy(&out.stdout)) {
-                    Some(v) => remote = Some(v),
-                    None => last_err = "GitHub returned an unreadable version.json".to_string(),
-                }
-            }
-            Ok(out) => last_err = curl_err(&out),
-            Err(e) => last_err = e,
-        }
+        Ok(out) => last_err = curl_err(&out),
+        Err(e) => last_err = e,
     }
 
     let Some(remote_val) = remote else {
@@ -4943,13 +4900,9 @@ async fn desktop_check_github_update() -> Result<serde_json::Value, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    if download_url.is_empty() {
-        download_url = remote_val
-            .get("downloadUrl")
-            .and_then(|v| v.as_str())
-            .unwrap_or("https://github.com/larxe1/Legal-Annotator-App/raw/main/Legal%20Annotator.exe")
-            .to_string();
-    }
+    let download_url = format!(
+        "https://github.com/{UPDATE_REPO}/releases/download/v{remote_version}/{RELEASE_ASSET_EXE}"
+    );
 
     Ok(serde_json::json!({
         "hasUpdate": remote_build > local_build,
@@ -4968,15 +4921,11 @@ async fn desktop_apply_github_update(
     download_url: Option<String>,
     expected_build: Option<u64>,
 ) -> Result<String, String> {
-    let mut url = download_url
+    let url = download_url
         .filter(|u| !u.trim().is_empty())
         .unwrap_or_else(|| {
-            format!("https://raw.githubusercontent.com/{UPDATE_REPO}/{UPDATE_BRANCH}/Legal%20Annotator.exe")
+            format!("https://github.com/{UPDATE_REPO}/releases/latest/download/{RELEASE_ASSET_EXE}")
         });
-    // Branch URLs may be cached by GitHub's CDN — bust the cache (commit-pinned URLs are immutable).
-    if url.contains(&format!("/{UPDATE_BRANCH}/")) && !url.contains('?') {
-        url = format!("{url}?t={}", now_ms());
-    }
 
     let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_dir = current_exe

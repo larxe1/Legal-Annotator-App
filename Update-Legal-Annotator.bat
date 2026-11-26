@@ -10,7 +10,7 @@ echo   Settings ^> App Version ^& Updates ^> Install ^& restart.)
 echo.
 echo [1/3] Downloading the latest Legal Annotator from GitHub (about 33 MB)...
 if exist "Legal Annotator.download" del /f /q "Legal Annotator.download" >nul 2>&1
-"%SystemRoot%\System32\curl.exe" -L --fail --show-error --retry 3 --retry-delay 2 -A "LegalAnnotatorDesktop-Updater" -o "Legal Annotator.download" "https://raw.githubusercontent.com/larxe1/Legal-Annotator-App/main/Legal%%20Annotator.exe"
+"%SystemRoot%\System32\curl.exe" -L --fail --show-error --ssl-no-revoke --retry 3 --retry-delay 2 -A "LegalAnnotatorDesktop-Updater" -o "Legal Annotator.download" "https://github.com/larxe1/Legal-Annotator-App/releases/latest/download/Legal-Annotator.exe"
 if errorlevel 1 goto :fail
 for %%A in ("Legal Annotator.download") do if %%~zA LSS 10000000 goto :fail
 

@@ -1,0 +1,86 @@
+name: Release Windows Desktop App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build and Publish Windows Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $meta = Get-Content -Raw -Path 'version.json' | ConvertFrom-Json
+          $version = "$($meta.version)".Trim()
+          $build = "$($meta.build)".Trim()
+          if (-not $version -or -not $build) {
+            throw "version.json is missing required 'version' or 'build' fields"
+          }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag '$env:GITHUB_REF_NAME' does not match version.json version 'v$version'"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "build=$build" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $notes = if ($meta.notes) { "$($meta.notes)" } else { "Legal Annotator v$version (build $build)" }
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'release-notes.md'), $notes, (New-Object System.Text.UTF8Encoding $false))
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --release --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Stage and verify release assets
+        shell: pwsh
+        env:
+          BUILD: ${{ steps.meta.outputs.build }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'release-assets' | Out-Null
+          Copy-Item -Force -Path 'src-tauri/target/release/legal-annotator-desktop.exe' -Destination 'release-assets/Legal-Annotator.exe'
+          Copy-Item -Force -Path 'version.json' -Destination 'release-assets/version.json'
+
+          $exePath = Join-Path (Get-Location) 'release-assets/Legal-Annotator.exe'
+          $size = (Get-Item -Path $exePath).Length
+          if ($size -lt 10485760) {
+            throw "Built executable is too small: $size bytes (expected at least 10485760 bytes)"
+          }
+
+          $ascii = [System.Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exePath))
+          $pattern = '"build"\s*:\s*' + [regex]::Escape($env:BUILD) + '\b'
+          if ($ascii -notmatch $pattern) {
+            throw "Embedded version.json build number $($env:BUILD) not found in Legal-Annotator.exe"
+          }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.meta.outputs.version }}
+          name: Legal Annotator v${{ steps.meta.outputs.version }} (build ${{ steps.meta.outputs.build }})
+          body_path: release-notes.md
+          files: |
+            release-assets/Legal-Annotator.exe
+            release-assets/version.json
+          make_latest: true

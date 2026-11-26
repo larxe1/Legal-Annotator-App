@@ -1617,7 +1617,8 @@ async function refreshSettingsVersionCard(manual) {
     $('#svc-local').textContent = `v${info.localVersion} (Build #${info.localBuild})`;
     if (info.error || info.remoteBuild === undefined) {
       $('#svc-remote').textContent = 'unavailable';
-      $('#svc-status').innerHTML = `<span class="dsm-warn-val svc-status-line">${desktopSvgIcon('alert', 12)}<span>Couldn't reach GitHub (offline?). Try again later.</span></span>`;
+      const reason = String(info.error || 'no response').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+      $('#svc-status').innerHTML = `<span class="dsm-warn-val svc-status-line">${desktopSvgIcon('alert', 12)}<span>Couldn't reach GitHub: ${reason}</span></span>`;
       return;
     }
     const when = info.updatedAt ? new Date(info.updatedAt).toLocaleString() : '';

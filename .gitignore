@@ -25,8 +25,7 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
-src-tauri/bin/
-ui/vendor/
+Legal Annotator.exe
 
 # OS / editor
 .DS_Store
